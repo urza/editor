@@ -62,19 +62,33 @@ body {
   color: var(--st-sidebar-heading);
 }
 
-.sidebar-heading-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 10px 10px 4px;
-}
-
-.sidebar-heading-row .sidebar-heading { margin: 0; }
-
 /* Recent is a disclosure: closed buffers stay out of sight until expanded. */
 #recent-heading { cursor: pointer; }
 
-/* Small chrome buttons: sidebar "+" and statusbar "↻". */
+/* The primary action. Big on purpose (user decision, 2026-09-01): without
+   Ctrl+N, creating a buffer needs a fast, fat click target. Full sidebar
+   width, about two buffer-row heights. */
+#new-buffer {
+  display: block;
+  width: calc(100% - 16px);
+  height: 48px;
+  margin: 0 8px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#new-buffer:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+
+/* Small chrome buttons: statusbar "↻". */
 .icon-button {
   border: 0;
   background: transparent;
