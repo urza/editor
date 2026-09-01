@@ -6,6 +6,14 @@ importScripts("./sw-precache.js");
 
 const CACHE = "vrtti-" + self.__PRECACHE.version;
 
+// The ~4,000 Twemoji SVGs are not precached (tools/gen_sw.py skips them); they
+// are cached one by one on first use. Their cache name is deliberately fixed
+// and separate from CACHE: the activate handler deletes every other cache on
+// each new build, and an emoji SVG never changes, so re-downloading the set
+// after every deploy would be waste.
+const EMOJI_CACHE = "vrtti-emoji";
+const EMOJI_PATH = "/vendor/twemoji/";
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
@@ -20,7 +28,11 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+        Promise.all(
+          keys
+            .filter((k) => k !== CACHE && k !== EMOJI_CACHE)
+            .map((k) => caches.delete(k))
+        )
       )
       .then(() => self.clients.claim())
   );
@@ -29,11 +41,28 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
-  if (new URL(req.url).origin !== location.origin) return;
+  const url = new URL(req.url);
+  if (url.origin !== location.origin) return;
 
   event.respondWith(
+    // caches.match without a cache name searches every cache, so an already
+    // seen emoji is served from EMOJI_CACHE here.
     caches.match(req, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;
+      // First sighting of this emoji: fetch it and keep it, so it works
+      // offline from now on.
+      if (url.pathname.includes(EMOJI_PATH)) {
+        return fetch(req).then((res) => {
+          if (res.ok) {
+            const copy = res.clone();
+            // waitUntil, or the worker may stop before the write lands.
+            event.waitUntil(
+              caches.open(EMOJI_CACHE).then((cache) => cache.put(req, copy))
+            );
+          }
+          return res;
+        });
+      }
       // A navigation that missed the cache (e.g. a deep link) still gets the
       // app shell, so the installed app opens with no network.
       if (req.mode === "navigate") {

@@ -28,6 +28,7 @@ import {
 import { htmlLanguage } from "@codemirror/lang-html";
 import { cssLanguage } from "@codemirror/lang-css";
 import { tags } from "@lezer/highlight";
+import { twemoji } from "./emoji.js";
 
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
@@ -168,6 +169,9 @@ function baseExtensions(onDocChanged) {
     EditorView.lineWrapping,
     keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
     markdown({ codeLanguages: resolveFenceLanguage }),
+    // Color emoji as vendored SVGs. A view decoration only: the document text
+    // keeps the original characters (architecture.md §10).
+    twemoji(),
     syntaxHighlighting(marianaHighlight),
     marianaTheme,
     EditorView.updateListener.of((update) => {

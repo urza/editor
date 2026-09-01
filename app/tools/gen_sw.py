@@ -28,6 +28,11 @@ APP = Path(__file__).resolve().parent.parent
 EXCLUDE_DIRS = {"tools"}
 EXCLUDE_FILES = {"sw.js", "sw-precache.js", "screenshot.png", "VENDOR.md"}
 
+# Also not precached: the ~4,000 Twemoji SVGs. Precaching them would turn every
+# install into an 11 MB, 4,000-request download for emoji the user may never
+# type. sw.js caches each one on first use instead, in cache "vrtti-emoji".
+EXCLUDE_TREES = ("vendor/twemoji",)
+
 
 def build_stamp():
     sha = os.environ.get("GITHUB_SHA", "")[:7]
@@ -54,13 +59,20 @@ def write_version(stamp):
     (APP / "js" / "version.js").write_text(body)
 
 
+def is_excluded(rel):
+    if rel.parts[0] in EXCLUDE_DIRS or rel.name in EXCLUDE_FILES:
+        return True
+    posix = rel.as_posix()
+    return any(posix.startswith(tree + "/") for tree in EXCLUDE_TREES)
+
+
 def precache_files():
     files = []
     for path in sorted(APP.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(APP)
-        if rel.parts[0] in EXCLUDE_DIRS or rel.name in EXCLUDE_FILES:
+        if is_excluded(rel):
             continue
         files.append(rel)
     return files

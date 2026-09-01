@@ -170,6 +170,23 @@ body {
 
 #editor-host .cm-editor { height: 100%; }
 
+/* Twemoji widgets (js/editor/emoji.js). Sized in em so they track the editor
+   font. 1.2em is a hair taller than the glyphs around them, but the 1.4
+   line-height of .cm-scroller still has room, so a line with emoji keeps the
+   same height as a line without. inline-block plus the negative baseline
+   offset centers the square on the text, instead of hanging it off the
+   baseline and pushing the line down. */
+img.twemoji {
+  width: 1.2em;
+  height: 1.2em;
+  display: inline-block;
+  vertical-align: -0.25em;
+}
+
+/* The span exists only so the img can be swapped for a text fallback; it must
+   not add a box of its own. */
+.twemoji-wrap { white-space: nowrap; }
+
 #statusbar {
   flex: 0 0 auto;
   display: flex;

@@ -49,6 +49,47 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 
 **21 packages, 21 files, 1,456,457 raw bytes (1.39 MiB).**
 
+## Twemoji SVG assets
+
+Vendored on **2026-09-01** for the editor's color emoji (architecture.md §10).
+
+| Item | Value |
+|---|---|
+| Project | [jdecked/twemoji](https://github.com/jdecked/twemoji) (the maintained fork of Twitter's Twemoji) |
+| Version | **v17.0.3** |
+| Source | `https://github.com/jdecked/twemoji/archive/refs/tags/v17.0.3.tar.gz` |
+| Tarball SHA-256 | `a0855654b633045ae2337537e77f1bb4361162f7fcd910e613eaab1d6d9c5fca` |
+| Taken from | `assets/svg/` only |
+| Placed at | `vendor/twemoji/svg/<codepoints>.svg` |
+| Files | **4,009 SVG, 10,121,593 bytes (9.65 MiB)** |
+
+Files are byte-identical to the release; nothing was minified or rewritten.
+Only the SVG directory was extracted. The PNG set, the JS library and the
+repository tooling are not vendored.
+
+### Attribution (required by CC-BY 4.0)
+
+> Graphics from [Twemoji](https://github.com/jdecked/twemoji).
+> Copyright 2022–present Jason Sofonia & Justine De Caires.
+> Copyright 2014–2021 Twitter, Inc and other contributors.
+> Licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+The graphics are CC-BY 4.0; the upstream code is MIT. No graphic was modified.
+
+### Why the GitHub tarball and not npm
+
+- `@twemoji/api` is the fork's own npm package, but it ships the JS library
+  only (11 files). It has no assets.
+- `@twemoji/svg` on npm carries SVGs, but it is a third-party re-publish
+  (`boywithkeyboard/twemoji_svg`), it stops at 15.0.0, and its files are
+  re-optimized. The fork's own tagged release is the source of truth.
+
+### Not precached
+
+`tools/gen_sw.py` skips `vendor/twemoji/`, so the precache list stays at ~40
+URLs. `sw.js` caches each SVG on first use, in a cache named `vrtti-emoji`
+that survives the activate cleanup. See architecture.md §10.
+
 ## Notes on the closure
 
 - Start set: `@codemirror/state`, `@codemirror/view`, `@codemirror/language`,
