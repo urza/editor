@@ -29,6 +29,9 @@ jobs:
         run: python3 poc/tools/gen_sw.py
 
       - uses: actions/configure-pages@v5
+        with:
+          # First run creates the Pages site; the workflow token has pages:write.
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
