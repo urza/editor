@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "7020fa6f1265",
+  "version": "23cf35c31f91",
   "files": [
     "./",
     "./app.css",
@@ -13,6 +13,7 @@ self.__PRECACHE = {
     "./js/model/capabilities.js",
     "./js/model/docs.js",
     "./js/storage/idb.js",
+    "./js/ui/resizer.js",
     "./js/ui/shortcuts.js",
     "./js/ui/sidebar.js",
     "./js/ui/statusbar.js",

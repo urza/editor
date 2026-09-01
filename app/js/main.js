@@ -11,6 +11,7 @@ import { mountEditor } from "./editor/editor.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
+import { mountResizer } from "./ui/resizer.js";
 
 async function start() {
   requestPersistence();
@@ -51,6 +52,7 @@ async function start() {
   mountSidebar(store);
   mountStatusbar(store);
   mountShortcuts();
+  mountResizer();
 
   await store.start();
 

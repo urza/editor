@@ -44,8 +44,8 @@ body {
 }
 
 #sidebar {
-  width: 220px;
-  flex: 0 0 220px;
+  width: var(--sidebar-width, 220px);
+  flex: 0 0 var(--sidebar-width, 220px);
   background: var(--st-sidebar-bg);
   color: var(--st-sidebar-label);
   overflow-y: auto;
@@ -104,6 +104,19 @@ body {
 .buffer-row:hover .buffer-close,
 .buffer-row.active .buffer-close { opacity: 0.7; }
 .buffer-close:hover { opacity: 1; }
+
+/* Drag handle between sidebar and editor (ui/resizer.js). Invisible at rest:
+   the panel background colors already draw the boundary. touch-action none is
+   required, or mobile browsers turn the drag into a scroll. */
+#resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+
+#resizer:hover,
+#resizer.dragging { background: var(--st-selection-border); }
 
 #editor-host {
   flex: 1;
