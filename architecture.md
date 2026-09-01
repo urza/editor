@@ -48,6 +48,31 @@ it is what makes encryption and sync orthogonal to storage.
   `FileSystemObserver` can replace polling when it is stable.
 - An opened folder becomes a sidebar group.
 
+Implementation decisions (2026-09-01, step 2 build):
+
+- Ships as two units: individual files first, folder sections second.
+- IndexedDB v2 migration adds the `handles` store: `{ id, kind: 'file'|'directory',
+  handle, name, addedAt }`. Handles are structured-cloneable and live there;
+  a runtime map id -> handle is loaded at start.
+- Buffer dirty-vs-disk test is timestamps, no hashing: `updatedAt` vs the
+  `file.lastSyncAt` set on every successful disk read or write.
+- Disk write-behind: a second debounce (~1 s) after the IndexedDB write.
+  A disk failure shows in the save indicator; the text is safe in IndexedDB.
+- Silent reload on clean external change goes through a store "replace" path,
+  so the editor view gets the new text as one dispatched change.
+- Conflict fork: the local text becomes a new scratch buffer with a first
+  line "conflict copy of <name>", then the disk version loads. No dialogs.
+- Reconnect: handles whose permission is "prompt" show a reconnect row;
+  the permission request runs on that click (a user gesture is required).
+- UI entry points (mouse-first): "file" and "folder" open buttons under the
+  big "+", a save-to-disk statusbar button for scratch buffers. All hidden
+  when the File System Access API is absent (Firefox, phones).
+- Folder section: lazy tree. Top-level entries listed; subdirectories expand
+  on click and list on demand. Directories first, then files, A-Z. Closing a
+  folder removes the section; buffers opened from it stay open.
+- FSA entry points are called as window.* at invocation time, so tests can
+  stub the pickers with OPFS handles (real FileSystemHandle objects).
+
 ## 3. Sync
 
 One flat document namespace for the single user. No per-device buckets.
@@ -141,6 +166,38 @@ Search and spellcheck only see currently unlocked docs.
   history; acceptable and necessary).
 - Opening a locked doc triggers the unlock prompt first. No other dialogs.
 
+### Prototype findings (2026-09-01, see crypto-proto/REPORT.md)
+
+The plan above is validated end to end in `crypto-proto/`. Key facts:
+
+- typage (`age-encryption@0.3.1`) vendors as pure ESM: 67 files, ~895 KB,
+  six import-map entries, no bundler, no WASM. Pin the noble/scure deps
+  EXACTLY (hashes and curves both 2.0.1): an import map is flat, npm's
+  nested-duplicate trick does not exist here, so "latest" can break at runtime.
+  Vendor from registry tarballs; jsdelivr's +esm build phones home and breaks
+  offline. `crypto-proto/vendor.sh` is the reproducible recipe.
+- Interop with the real age CLI (v1.3.2) is proven in both directions,
+  armored and binary. The scrypt-wrapped device identity is itself a standard
+  age file, so `age -d -i wrapped.age note.age` restores data with the CLI
+  alone. That is the recovery story, keep it.
+- Performance: encrypt+decrypt is ~1 ms at 100 KB with 3 recipients. The
+  autosave debounce is safe by two orders of magnitude. The ONE slow path is
+  scrypt at unlock (~600 ms desktop, worse on phone) and it is synchronous:
+  the unlock step must run in a Web Worker.
+- The unlocked identity lives as a non-extractable X25519 CryptoKey
+  (RFC 8410 PKCS#8 prefix; typage accepts CryptoKey identities directly).
+  Lock then leaves nothing in the JS heap. Unlock transiently handles the
+  identity string; a CryptoKey is structured-cloneable, so nothing may ever
+  write it to IndexedDB. Browsers without WebCrypto X25519 fall back to the
+  string identity (works, weaker hygiene). Test a real iPhone in step 3a.
+- Metadata fix: `enc` stores a PRESET ID, never the resolved recipient list.
+  An age header deliberately hides who can decrypt; writing the list into
+  record metadata would hand the server exactly that. Presets resolve to
+  recipients via the keyring at encrypt time.
+- Sync client note: age wraps a fresh file key per encryption, so ciphertext
+  changes on every save even when the text did not. Any future "skip write if
+  unchanged" optimisation must compare plaintext, not ciphertext.
+
 ### Interplay with sync
 
 - Conflict forks work on ciphertext without keys. LWW and history are unchanged.
@@ -197,7 +254,7 @@ Buffer record:
   kind: 'scratch' | 'file',
   file?: { handleId, path, lastSyncedMtime },
   sync?: { rev, baseRev, dirty, deleted },
-  enc?:  { v: 1, recipients: [...], label },
+  enc?:  { v: 1, preset, label },   // preset id, never the recipient list (§5)
   group, order
 }
 ```
@@ -243,6 +300,39 @@ of this kind, so the pattern already exists in miniature.
   toggling the mode must not write anything.
 - **Open folder**: a folder section can hold hundreds of rows. Rendering
   stays plain replaceChildren until it measurably lags; virtualize only then.
+
+### Language auto-detection (agreed 2026-09-01)
+
+Paste JSON, see JSON colors; paste markdown, see markdown. Rules:
+
+- File-backed buffers: the file extension decides (md, js/ts, html, css, json).
+- Scratch buffers: content sniffing, conservative on purpose. Trimmed text
+  starting with `{` or `[` that JSON.parse accepts is JSON. Text starting
+  with `<!doctype` or `<html` is HTML. Everything else stays Markdown, which
+  already colors fenced code blocks.
+- Detection runs when a buffer opens and after a paste. Never per keystroke.
+- The result is stored on the record as `lang`, so it sticks across restarts.
+  A "set syntax" command can override it by hand later.
+- The editor holds the language in a CodeMirror Compartment, so the mode
+  switches live without rebuilding the state. `@codemirror/lang-json` joins
+  the vendored set.
+
+### Settings panel (agreed 2026-09-01)
+
+The UI stays minimal on both PC and phone. One "settings" button sits pinned
+at the bottom of the sidebar. It opens a plain DOM overlay that covers the
+editor area (the whole app on narrow screens). Escape or a close button
+dismisses it. No modal library, no routing.
+
+- `ui/settings.js` renders the panel from a declarative list of setting items;
+  mutations still go through commands, never directly from the panel.
+- Planned sections: Editor (spellcheck, emoji), Storage (persistence state),
+  Sync (server URL and token, when sync ships), Security (keys, lock),
+  About (build stamp, vendored licenses, the Twemoji CC-BY attribution).
+- Storage: localStorage per device for now. A `settings` IndexedDB store (and
+  later sync for the sharable subset) arrives with the sync phase.
+- Buttons that need instant reach (new buffer, save indicator, update) stay
+  outside the panel; the panel is for the rest, so chrome stays sparse.
 
 ## 10. Twemoji plan (agreed 2026-09-01)
 
@@ -308,5 +398,7 @@ Decided (2026-09-01):
   runtime-cached (not precached), text fallback on missing asset.
 - Harper per section 11: vendored WASM (precached), @codemirror/lint
   integration with quick fixes, lazy load, default on with toggle.
+- Settings: one bottom-of-sidebar button opens an overlay panel over the
+  editor (section 9). Declarative items, commands do the mutations.
 
 Open: none.
