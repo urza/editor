@@ -276,8 +276,12 @@ export function createDocStore() {
    * Open a disk file as a buffer. A file that is already open is activated
    * instead of opened twice.
    * @param {any} handle
+   * @param {{path?: string}} [options] path is where the file sits inside the
+   *   folder it was opened from ("sub/notes.md"). Display only, and absent for
+   *   picker-opened files. It must never replace file.name: the name is what
+   *   titles the buffer and what the save picker suggests.
    */
-  async function createFromFile(handle) {
+  async function createFromFile(handle, options = {}) {
     const existing = await bufferForHandle(handle);
     if (existing) {
       if (existing.closed) await reopen(existing.id);
@@ -288,6 +292,8 @@ export function createDocStore() {
     const record = newBufferRecord();
     record.content = content;
     await linkFile(record, handle);
+    // record.file exists here (linkFile just set it); the check is for ts-check.
+    if (options.path && record.file) record.file.path = options.path;
     buffers.set(record.id, record);
     await putBuffer({ ...record });
     activate(record.id);
@@ -458,6 +464,10 @@ export function createDocStore() {
     // "prompt". Nothing prompts here: that needs a user gesture, and a file
     // buffer opens from its IndexedDB copy either way.
     for (const stored of await getAllHandles()) {
+      // The store also holds directory handles for opened folders
+      // (model/folders.js owns those). A directory handle here would be a file
+      // handle that cannot read.
+      if (stored.kind === "directory") continue;
       handles.set(stored.id, stored.handle);
       if ((await permissionState(stored.handle)) !== "granted") {
         needsPermission.add(stored.id);

@@ -12,6 +12,8 @@
 //    cancelled picker is a decision for the caller, not a silent failure.
 
 /** @typedef {any} FileHandle FileSystemFileHandle; no lib.dom types without a build step. */
+/** @typedef {any} DirHandle FileSystemDirectoryHandle. */
+/** @typedef {{ name: string, kind: 'file'|'directory', handle: any }} DirEntry */
 
 /**
  * @returns {Promise<FileHandle>} Rejects with AbortError when the user cancels.
@@ -19,6 +21,35 @@
 export async function openFilePicker() {
   const handles = await window.showOpenFilePicker({ multiple: false });
   return handles[0];
+}
+
+/**
+ * @returns {Promise<DirHandle>} Rejects with AbortError when the user cancels.
+ */
+export async function openDirectoryPicker() {
+  // "readwrite" up front: the tree exists to open files for editing, and a
+  // second prompt on the first save would be the worse moment to ask.
+  return window.showDirectoryPicker({ mode: "readwrite" });
+}
+
+/**
+ * One directory level, in the order the sidebar draws it: directories first,
+ * then files, each group A-Z. Sorting here keeps the tree renderer dumb.
+ * @param {DirHandle} dirHandle @returns {Promise<DirEntry[]>}
+ */
+export async function listDirectory(dirHandle) {
+  /** @type {DirEntry[]} */
+  const entries = [];
+  for await (const handle of dirHandle.values()) {
+    entries.push({ name: handle.name, kind: handle.kind, handle });
+  }
+  entries.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+    // localeCompare, not <: it sorts "Zebra" before "apple" the way a file
+    // manager does, instead of by code point.
+    return a.name.localeCompare(b.name);
+  });
+  return entries;
 }
 
 /** @param {string} suggestedName @returns {Promise<FileHandle>} */

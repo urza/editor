@@ -11,6 +11,7 @@ import {
   requestPersistence,
 } from "./model/capabilities.js";
 import { createDocStore } from "./model/docs.js";
+import { createFolderStore } from "./model/folders.js";
 import { register, run } from "./commands/registry.js";
 import { mountEditor } from "./editor/editor.js";
 import { isEnabled, setEnabled } from "./editor/spellcheck.js";
@@ -25,6 +26,12 @@ async function start() {
 
   const store = createDocStore();
   await store.load();
+
+  // Built on every platform: without the File System Access API no directory
+  // handle can be stored, so the store loads nothing and the sidebar draws no
+  // section. Only its entry points are gated, below.
+  const folders = createFolderStore();
+  await folders.load();
 
   register({
     id: "buffer.new",
@@ -104,16 +111,55 @@ async function start() {
       title: "Reconnect file",
       run: (id) => store.reconnect(id),
     });
+    register({
+      id: "folder.open",
+      title: "Open folder…",
+      run: async () => {
+        try {
+          return await folders.openFolder();
+        } catch (err) {
+          // A dismissed picker is a decision, not a failure.
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] open folder failed", err);
+        }
+      },
+    });
+    register({
+      id: "folder.close",
+      title: "Close folder",
+      run: (id) => folders.closeFolder(id),
+    });
+    register({
+      id: "folder.reconnect",
+      title: "Reconnect folder",
+      run: (id) => folders.reconnect(id),
+    });
+    register({
+      id: "folder.openFile",
+      title: "Open file from folder",
+      // The path travels with the handle so the buffer can show where it came
+      // from; the doc store keeps the bare file name as the title.
+      // The default keeps an argument-less dispatch (a future palette) out of
+      // a TypeError; createFromFile then rejects inside the catch below.
+      run: async ({ handle, path } = {}) => {
+        try {
+          return await store.createFromFile(handle, { path });
+        } catch (err) {
+          console.log("[vrtti] open from folder failed", path, err);
+        }
+      },
+    });
   }
 
   const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
   mountEditor(host, store);
-  mountSidebar(store);
+  mountSidebar(store, folders);
   mountStatusbar(store);
   mountShortcuts();
   mountResizer();
 
   await store.start();
+  folders.start();
 
   // Exposed for the Playwright checks; the UI itself never calls these.
   // @ts-ignore - deliberate global test hook

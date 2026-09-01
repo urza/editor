@@ -12,6 +12,7 @@
  * @property {string} handleId  Key into the "handles" store.
  * @property {string} name      Disk file name, kept here so the sidebar renders without a handle.
  * @property {number} lastSyncAt  Epoch ms of the last successful disk read or write.
+ * @property {string} [path]  Path inside the folder it was opened from, display only.
  */
 
 /**
@@ -28,8 +29,9 @@
 /**
  * @typedef {Object} HandleRecord
  * @property {string} id
- * @property {'file'} kind  Directory handles join this store in unit 2.
- * @property {any} handle   FileSystemFileHandle; structured-cloneable, so IndexedDB keeps it.
+ * @property {'file' | 'directory'} kind  A file buffer's handle, or an opened folder.
+ * @property {any} handle   FileSystemFileHandle or FileSystemDirectoryHandle;
+ *                          structured-cloneable, so IndexedDB keeps it.
  * @property {string} name
  * @property {number} addedAt
  */
