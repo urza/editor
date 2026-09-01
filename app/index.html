@@ -47,6 +47,13 @@
   <div id="app">
     <aside id="sidebar">
       <button id="new-buffer" type="button" title="New buffer (Alt+N)">+</button>
+      <!-- Disk entry points. Hidden in the markup and unhidden by ui/sidebar.js
+           only where the File System Access API exists: Firefox and phones must
+           never see a button that cannot work. The folder button lands with
+           folder sections. -->
+      <div id="open-actions" hidden>
+        <button id="open-file" type="button" title="Open a file from disk">file</button>
+      </div>
       <h2 class="sidebar-heading">Open</h2>
       <ul id="open-list" class="buffer-list"></ul>
       <h2 class="sidebar-heading" id="recent-heading" hidden></h2>
@@ -62,6 +69,9 @@
     <!-- No title and no state class here: ui/statusbar.js owns both, because
          the spellcheck state comes from localStorage, not from the markup. -->
     <button id="status-spell" class="icon-button" type="button">abc</button>
+    <!-- Save to disk. Hidden here and shown by ui/statusbar.js for scratch
+         buffers only, and only where the File System Access API exists. -->
+    <button id="status-saveas" class="icon-button" type="button" title="Save to disk…" hidden>⤓</button>
     <button id="status-update" class="icon-button" type="button" title="Check for update">↻</button>
   </footer>
   <script type="module" src="./js/main.js"></script>

@@ -4,6 +4,7 @@
 // textContent.
 
 import { titleOf } from "../model/docs.js";
+import { hasFileSystemAccess } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
@@ -15,6 +16,15 @@ export function mountSidebar(store) {
 
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
   newButton.addEventListener("click", () => run("buffer.new"));
+
+  // The disk row stays hidden markup where the API is missing, so the commands
+  // it dispatches (registered only on the same condition) always exist.
+  if (hasFileSystemAccess) {
+    const openActions = /** @type {HTMLElement} */ (document.getElementById("open-actions"));
+    const openFile = /** @type {HTMLElement} */ (document.getElementById("open-file"));
+    openActions.hidden = false;
+    openFile.addEventListener("click", () => run("file.open"));
+  }
 
   const recentHeading = /** @type {HTMLElement} */ (document.getElementById("recent-heading"));
 
@@ -34,10 +44,35 @@ export function mountSidebar(store) {
     li.className = "buffer-row";
     if (record.id === store.activeId) li.classList.add("active");
 
+    // A file-backed row is marked, never labelled: the file name is already
+    // the title, so the marker only has to say "this one is on disk".
+    if (record.kind === "file" && record.file) {
+      const mark = document.createElement("span");
+      mark.className = "buffer-mark";
+      mark.textContent = "⛁";
+      mark.title = "On disk: " + record.file.name;
+      li.appendChild(mark);
+    }
+
     const title = document.createElement("span");
     title.className = "buffer-title";
     title.textContent = titleOf(record);
     li.appendChild(title);
+
+    if (store.needsReconnect(record)) {
+      const warn = document.createElement("button");
+      warn.className = "buffer-warn";
+      warn.type = "button";
+      warn.textContent = "⚠";
+      warn.title = "This file needs permission again. Click to reconnect.";
+      warn.addEventListener("click", (event) => {
+        // The click itself is the user gesture requestPermission needs; a
+        // background retry can never get the grant.
+        event.stopPropagation();
+        run("file.reconnect", record.id);
+      });
+      li.appendChild(warn);
+    }
 
     if (closable) {
       const close = document.createElement("button");

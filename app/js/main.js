@@ -4,7 +4,12 @@
 // Frameworkless on purpose.
 
 import { deleteBuffer, openDb } from "./storage/idb.js";
-import { checkForUpdate, requestPersistence } from "./model/capabilities.js";
+import { openFilePicker } from "./storage/fsa.js";
+import {
+  checkForUpdate,
+  hasFileSystemAccess,
+  requestPersistence,
+} from "./model/capabilities.js";
 import { createDocStore } from "./model/docs.js";
 import { register, run } from "./commands/registry.js";
 import { mountEditor } from "./editor/editor.js";
@@ -62,6 +67,44 @@ async function start() {
     title: "Check for update",
     run: (onStatus) => checkForUpdate(onStatus),
   });
+
+  // Desktop disk files (architecture.md §2). Registered only where the API
+  // exists, so a Firefox or iOS build has no command that could ever run.
+  if (hasFileSystemAccess) {
+    register({
+      id: "file.open",
+      title: "Open file…",
+      run: async () => {
+        try {
+          return await store.createFromFile(await openFilePicker());
+        } catch (err) {
+          // A dismissed picker is a decision, not a failure.
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] open file failed", err);
+        }
+      },
+    });
+    register({
+      id: "file.saveAs",
+      title: "Save to disk…",
+      // No arg means the active buffer, like buffer.close.
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        if (!target) return;
+        try {
+          return await store.saveAs(target);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          console.log("[vrtti] save to disk failed", err);
+        }
+      },
+    });
+    register({
+      id: "file.reconnect",
+      title: "Reconnect file",
+      run: (id) => store.reconnect(id),
+    });
+  }
 
   const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
   mountEditor(host, store);

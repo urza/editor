@@ -3,6 +3,7 @@
 // (commit + build time), so the user can tell which build the PWA is running.
 
 import { titleOf } from "../model/docs.js";
+import { hasFileSystemAccess } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
 import { isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
@@ -14,6 +15,7 @@ export function mountStatusbar(store) {
   const statusBuild = /** @type {HTMLElement} */ (document.getElementById("status-build"));
   const statusUpdate = /** @type {HTMLElement} */ (document.getElementById("status-update"));
   const statusSpell = /** @type {HTMLElement} */ (document.getElementById("status-spell"));
+  const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
 
   const builtAt = new Date(BUILD.builtAt);
   const stamp =
@@ -47,9 +49,18 @@ export function mountStatusbar(store) {
   statusSpell.addEventListener("click", () => renderSpell(run("spell.toggle")));
   renderSpell(isEnabled());
 
+  if (hasFileSystemAccess) {
+    statusSaveAs.addEventListener("click", () => run("file.saveAs"));
+  }
+
   function renderTitle() {
     const record = store.activeId ? store.get(store.activeId) : undefined;
     statusTitle.textContent = record ? titleOf(record) : "";
+    // The button offers a file to a buffer that has none. A file-backed buffer
+    // is already written by the disk write-behind, so the button would only
+    // invite a pointless second copy.
+    statusSaveAs.hidden =
+      !hasFileSystemAccess || !record || record.kind === "file";
   }
 
   store.events.addEventListener("change", renderTitle);

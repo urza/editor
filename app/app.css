@@ -88,6 +88,39 @@ body {
   color: var(--st-sidebar-heading);
 }
 
+/* Disk entry points, one slim row under the big "+". Quiet on purpose: opening
+   a file is a secondary action next to creating a scratch buffer. */
+#open-actions {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 8px;
+}
+
+/* The hidden attribute would lose to the display:flex above, and the row is
+   hidden exactly where the File System Access API is missing. Keep both rules
+   together. */
+#open-actions[hidden] { display: none; }
+
+#open-actions button {
+  flex: 1;
+  height: 22px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+#open-actions button:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
 /* Small chrome buttons: statusbar "↻". */
 .icon-button {
   border: 0;
@@ -130,6 +163,32 @@ body {
 
 .buffer-row:hover { background: #2A2F34; }
 .buffer-row.active { background: var(--st-sidebar-selected); }
+
+/* Disk marker on a file-backed row. Dim and small: it separates disk from
+   scratch at a glance without competing with the file name. */
+.buffer-mark {
+  flex: 0 0 auto;
+  color: var(--st-gutter-fg);
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Reconnect marker: the file needs a permission grant. Clickable, because
+   requestPermission only works inside a user gesture. */
+.buffer-warn {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.buffer-warn:hover { opacity: 1; }
 
 .buffer-title {
   flex: 1;
@@ -213,6 +272,8 @@ img.twemoji {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+#status-saveas { color: var(--st-gutter-fg); font-size: 13px; }
 
 #status-save { color: var(--st-gutter-fg); }
 #status-build { color: var(--st-gutter-fg); }

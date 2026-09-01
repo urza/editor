@@ -10,7 +10,12 @@ import {
   keymap,
   lineNumbers,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  isolateHistory,
+} from "@codemirror/commands";
 import { searchKeymap } from "@codemirror/search";
 import {
   HighlightStyle,
@@ -224,6 +229,26 @@ export function mountEditor(host, store) {
 
   store.events.addEventListener("evict", (event) => {
     states.delete(/** @type {CustomEvent} */ (event).detail.id);
+  });
+
+  // A file changed on disk and the store took the new text. The document is
+  // replaced with one dispatched change instead of a fresh state, so the undo
+  // history survives and the reload itself is undoable.
+  store.events.addEventListener("replace", (event) => {
+    const { id, content } = /** @type {CustomEvent} */ (event).detail;
+    const live = id === store.activeId;
+    // No cached state means the buffer was never opened here; its next
+    // activation builds from the record, which already holds the new text.
+    const base = live ? view.state : states.get(id);
+    if (!base) return;
+    const transaction = base.update({
+      changes: { from: 0, to: base.doc.length, insert: content },
+      // Own undo step. Without this the reload merges into whatever the user
+      // typed in the last half second, and one Ctrl+Z would undo both.
+      annotations: isolateHistory.of("full"),
+    });
+    if (live) view.dispatch(transaction);
+    else states.set(id, transaction.state);
   });
 
   return { view, states };
