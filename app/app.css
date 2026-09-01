@@ -105,6 +105,13 @@ body {
 
 #status-update { color: var(--st-gutter-fg); font-size: 13px; }
 
+/* Spellcheck indicator: the label is the state. Struck through and dimmed
+   means off. The id beats .icon-button:hover on specificity, so the hover
+   rule has to be repeated here or the off state would brighten on hover. */
+#status-spell { color: var(--st-gutter-fg); font-size: 12px; }
+#status-spell.off { opacity: 0.35; text-decoration: line-through; }
+#status-spell.off:hover { opacity: 0.6; }
+
 .buffer-list {
   list-style: none;
   margin: 0;

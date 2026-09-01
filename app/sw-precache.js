@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "b3f03721738d",
+  "version": "ecb9776e5c0a",
   "files": [
     "./",
     "./app.css",
@@ -10,6 +10,7 @@ self.__PRECACHE = {
     "./js/commands/registry.js",
     "./js/editor/editor.js",
     "./js/editor/emoji.js",
+    "./js/editor/spellcheck.js",
     "./js/main.js",
     "./js/model/capabilities.js",
     "./js/model/docs.js",
@@ -27,6 +28,7 @@ self.__PRECACHE = {
     "./vendor/@codemirror/lang-javascript/index.js",
     "./vendor/@codemirror/lang-markdown/index.js",
     "./vendor/@codemirror/language/index.js",
+    "./vendor/@codemirror/lint/index.js",
     "./vendor/@codemirror/search/index.js",
     "./vendor/@codemirror/state/index.js",
     "./vendor/@codemirror/view/index.js",
@@ -39,6 +41,9 @@ self.__PRECACHE = {
     "./vendor/@lezer/markdown/index.js",
     "./vendor/@marijn/find-cluster-break/index.js",
     "./vendor/crelt/index.js",
+    "./vendor/harper/BinaryModule-Aj1vLnwf.js",
+    "./vendor/harper/harper_wasm_slim_bg.wasm",
+    "./vendor/harper/index.js",
     "./vendor/style-mod/index.js",
     "./vendor/w3c-keyname/index.js"
   ]

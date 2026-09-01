@@ -29,6 +29,7 @@ import { htmlLanguage } from "@codemirror/lang-html";
 import { cssLanguage } from "@codemirror/lang-css";
 import { tags } from "@lezer/highlight";
 import { twemoji } from "./emoji.js";
+import { spellcheck } from "./spellcheck.js";
 
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
@@ -172,6 +173,9 @@ function baseExtensions(onDocChanged) {
     // Color emoji as vendored SVGs. A view decoration only: the document text
     // keeps the original characters (architecture.md §10).
     twemoji(),
+    // Harper spellcheck (architecture.md §11). The wasm engine loads on the
+    // first lint pass, so this costs nothing until the user types.
+    spellcheck(),
     syntaxHighlighting(marianaHighlight),
     marianaTheme,
     EditorView.updateListener.of((update) => {

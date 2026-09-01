@@ -28,6 +28,11 @@ IMPORTMAP_RE = re.compile(
     r'<script\s+type="importmap"\s*>(.*?)</script>', re.S | re.I
 )
 
+# Dynamic `import("x")`. These only mark an import map entry as used; they are
+# not resolved, because vendored bundles carry Node-only branches such as
+# `import("fs")` that never run in the browser and would report a false miss.
+DYNAMIC_IMPORT_RE = re.compile(r"""\bimport\(\s*["']([^"'\s]+)["']\s*\)""")
+
 
 def load_import_map():
     with open(os.path.join(ROOT, "index.html"), encoding="utf-8") as fh:
@@ -80,6 +85,7 @@ def main():
                 )
             elif not spec.startswith("."):
                 used.add(spec)
+        used.update(DYNAMIC_IMPORT_RE.findall(text))
 
     print("%d files scanned, %d import specifiers resolved." % (len(files), total))
 

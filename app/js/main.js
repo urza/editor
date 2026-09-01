@@ -8,6 +8,7 @@ import { checkForUpdate, requestPersistence } from "./model/capabilities.js";
 import { createDocStore } from "./model/docs.js";
 import { register, run } from "./commands/registry.js";
 import { mountEditor } from "./editor/editor.js";
+import { isEnabled, setEnabled } from "./editor/spellcheck.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
@@ -45,6 +46,16 @@ async function start() {
     id: "buffer.reopen",
     title: "Reopen buffer",
     run: (id) => store.reopen(id),
+  });
+  register({
+    id: "spell.toggle",
+    title: "Toggle spellcheck",
+    // Returns the new state, so a caller can render the indicator without
+    // reaching into the editor module itself.
+    run: () => {
+      setEnabled(!isEnabled());
+      return isEnabled();
+    },
   });
   register({
     id: "app.update",

@@ -32,6 +32,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `@codemirror/lang-javascript` | 6.2.5 | `dist/index.js` | 20,788 |
 | `@codemirror/lang-markdown` | 6.5.2 | `dist/index.js` | 21,741 |
 | `@codemirror/language` | 6.12.4 | `dist/index.js` | 102,129 |
+| `@codemirror/lint` | 6.9.7 | `dist/index.js` | 36,579 |
 | `@codemirror/search` | 6.7.2 | `dist/index.js` | 48,927 |
 | `@codemirror/state` | 6.7.2 | `dist/index.js` | 147,001 |
 | `@codemirror/view` | 6.43.10 | `dist/index.js` | 491,099 |
@@ -47,7 +48,15 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `style-mod` | 4.1.3 | `src/style-mod.js` | 6,935 |
 | `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
 
-**21 packages, 21 files, 1,456,457 raw bytes (1.39 MiB).**
+**22 packages, 22 files, 1,493,036 raw bytes (1.42 MiB).**
+
+`@codemirror/lint` was added on **2026-09-01** for the Harper spellcheck
+(architecture.md §11), after the other 21. It was fetched by hand, at the same
+URL shape `tools/vendor.py` uses, and not by re-running the script: a full run
+re-pins every CodeMirror package to today's latest, which is a separate
+decision from adding one package. Its dependencies (`@codemirror/state`,
+`@codemirror/view` ≥ 6.42.0, `crelt`) were already in the tree and satisfy its
+ranges, so the closure did not grow.
 
 ## Twemoji SVG assets
 
@@ -90,6 +99,64 @@ The graphics are CC-BY 4.0; the upstream code is MIT. No graphic was modified.
 URLs. `sw.js` caches each SVG on first use, in a cache named `vrtti-emoji`
 that survives the activate cleanup. See architecture.md §10.
 
+## Harper (spellcheck engine)
+
+Vendored on **2026-09-01** for offline English spellcheck (architecture.md §11).
+
+| Item | Value |
+|---|---|
+| Package | [`harper.js`](https://writewithharper.com) by Automattic |
+| Version | **2.7.0** |
+| License | Apache-2.0 |
+| Source | `https://registry.npmjs.org/harper.js/-/harper.js-2.7.0.tgz` |
+| Tarball SHA-256 | `834b36c30037c785dcc62cd7071fa5b7d454a38ccc0dbb1b20350cc7cd153e4f` |
+| Taken from | `dist/` only, three files |
+| Placed at | `vendor/harper/` |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `index.js` | `dist/index.js` | 152,404 |
+| `BinaryModule-Aj1vLnwf.js` | `dist/BinaryModule-Aj1vLnwf.js` | 97,063 |
+| `harper_wasm_slim_bg.wasm` | `dist/harper_wasm_slim_bg.wasm` | 15,634,488 |
+
+**3 files, 15,883,955 bytes (15.15 MiB).** Byte-identical to the published
+package; nothing was minified, renamed or rewritten.
+
+- The hashed name `BinaryModule-Aj1vLnwf.js` is kept as published. `index.js`
+  imports it by that exact name, and renaming it would mean editing a vendored
+  file, which no other package here needs.
+- `harper.js` is not vendored through `tools/vendor.py`: the entry it would
+  pick, `dist/index.js`, is only one third of what the package needs.
+
+### Why `harper.js` and not `harper-wasm`
+
+`harper.js` 2.7.0 builds fine without a bundler. Its `dist/binary.js` resolves
+the binary with `new URL("…", import.meta.url)`, and the public
+`createBinaryModuleFromUrl(url, flavor)` takes any URL, so the vendored path
+goes in explicitly and native ES modules are enough. `harper-wasm`, the
+lower-level wasm-bindgen package, is still at 0.1.1 from the pre-Automattic
+repository and is years behind the engine `harper.js` ships.
+
+### Why the `slim` binary
+
+The package ships two binaries, `harper_wasm_bg.wasm` (15.85 MB) and
+`harper_wasm_slim_bg.wasm` (15.63 MB). Slim is Harper built without the typst
+parser and the thesaurus; the JavaScript API is identical.
+
+The deciding reason is the loader, not the 214 KB. For the `full` flavor,
+`loadBinaryUncached` first initializes the slim glue **with the slim binary**
+and only then loads the full one, inside a `try` that swallows the failure. A
+`full` setup therefore either downloads and instantiates 31 MB, or relies on
+the slim URL returning 404. The `slim` flavor loads exactly one binary once.
+
+### Precached, unlike Twemoji
+
+`tools/gen_sw.py` excludes `vendor/twemoji/` only, so the wasm is in
+`sw-precache.js` and spellcheck works offline (verified: with the service
+worker active and the network cut, linting still runs). This is the deliberate
+opposite of the Twemoji decision: one 15 MB file the feature cannot work
+without, against 4,000 small files most users never need.
+
 ## Notes on the closure
 
 - Start set: `@codemirror/state`, `@codemirror/view`, `@codemirror/language`,
@@ -106,6 +173,11 @@ that survives the activate cleanup. See architecture.md §10.
   `src/style-mod.js`, `@marijn/find-cluster-break` ships `src/index.js`.
 - No vendored file contains a `sourceMappingURL` comment, so the browser makes
   no follow-up requests for missing maps.
+- `js/editor/spellcheck.js` reaches Harper through a dynamic `import("harper.js")`,
+  so the engine is fetched on the first lint and not at startup.
+  `tools/check_imports.py` counts that specifier as used but does not resolve
+  it, because vendored bundles carry Node-only branches such as `import("fs")`.
+  The import map entry it points at is still checked for a missing file.
 
 ## Deviations from `poc-plan.md`
 

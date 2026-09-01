@@ -22,6 +22,7 @@
     "@codemirror/commands": "./vendor/@codemirror/commands/index.js",
     "@codemirror/search": "./vendor/@codemirror/search/index.js",
     "@codemirror/autocomplete": "./vendor/@codemirror/autocomplete/index.js",
+    "@codemirror/lint": "./vendor/@codemirror/lint/index.js",
     "@codemirror/lang-markdown": "./vendor/@codemirror/lang-markdown/index.js",
     "@codemirror/lang-javascript": "./vendor/@codemirror/lang-javascript/index.js",
     "@codemirror/lang-html": "./vendor/@codemirror/lang-html/index.js",
@@ -35,6 +36,7 @@
     "@lezer/css": "./vendor/@lezer/css/index.js",
     "@marijn/find-cluster-break": "./vendor/@marijn/find-cluster-break/index.js",
     "crelt": "./vendor/crelt/index.js",
+    "harper.js": "./vendor/harper/index.js",
     "style-mod": "./vendor/style-mod/index.js",
     "w3c-keyname": "./vendor/w3c-keyname/index.js"
   }
@@ -57,6 +59,9 @@
     <span id="status-title"></span>
     <span id="status-save">saved</span>
     <span id="status-build"></span>
+    <!-- No title and no state class here: ui/statusbar.js owns both, because
+         the spellcheck state comes from localStorage, not from the markup. -->
+    <button id="status-spell" class="icon-button" type="button">abc</button>
     <button id="status-update" class="icon-button" type="button" title="Check for update">↻</button>
   </footer>
   <script type="module" src="./js/main.js"></script>
