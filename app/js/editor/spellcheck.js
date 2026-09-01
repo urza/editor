@@ -63,6 +63,11 @@ let engineBroken = false;
 
 let enabled = readEnabled();
 
+// Fires "change" on every flip of `enabled`. The state lives in this module,
+// so the notification does too: the statusbar indicator and the settings panel
+// both render from it, and neither has to know which one flipped it.
+export const events = new EventTarget();
+
 // The lint plugin only re-runs when the document changes. Neither the toggle
 // nor the engine finishing its load changes text, so both bump this counter,
 // and `needsRefresh` then reports the last pass as stale. See relintAll.
@@ -112,6 +117,7 @@ export function setEnabled(on) {
   } catch {
     // Private mode with storage denied: the toggle still works this session.
   }
+  events.dispatchEvent(new Event("change"));
   relintAll();
 }
 

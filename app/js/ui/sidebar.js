@@ -28,6 +28,13 @@ export function mountSidebar(store, folders) {
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
   newButton.addEventListener("click", () => run("buffer.new"));
 
+  // Pinned outside the scroller by app.css, so a long buffer list never hides
+  // it (architecture.md §9). The panel itself is ui/settings.js.
+  const settingsButton = /** @type {HTMLElement} */ (
+    document.getElementById("sidebar-settings")
+  );
+  settingsButton.addEventListener("click", () => run("settings.toggle"));
+
   // The disk row stays hidden markup where the API is missing, so the commands
   // it dispatches (registered only on the same condition) always exist.
   if (hasFileSystemAccess) {

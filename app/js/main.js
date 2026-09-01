@@ -15,6 +15,7 @@ import { createFolderStore } from "./model/folders.js";
 import { register, run } from "./commands/registry.js";
 import { mountEditor } from "./editor/editor.js";
 import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
@@ -68,6 +69,13 @@ async function start() {
       setEnabled(!isEnabled());
       return isEnabled();
     },
+  });
+  register({
+    id: "storage.persist",
+    title: "Request persistent storage",
+    // Also called once at startup. The command exists so the settings panel
+    // asks through the registry like every other UI (architecture.md §9).
+    run: () => requestPersistence(),
   });
   register({
     id: "app.update",
@@ -153,6 +161,16 @@ async function start() {
 
   const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
   mountEditor(host, store);
+
+  // Mounted before its command, because the command dispatches into the
+  // controller the mount returns. The sidebar button below dispatches the id.
+  const settings = mountSettings();
+  register({
+    id: "settings.toggle",
+    title: "Settings",
+    run: () => settings.toggle(),
+  });
+
   mountSidebar(store, folders);
   mountStatusbar(store);
   mountShortcuts();

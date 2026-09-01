@@ -5,7 +5,7 @@
 import { titleOf } from "../model/docs.js";
 import { hasFileSystemAccess } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
-import { isEnabled } from "../editor/spellcheck.js";
+import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
 
 /** @param {ReturnType<import("../model/docs.js").createDocStore>} store */
@@ -46,7 +46,11 @@ export function mountStatusbar(store) {
       : "Spellcheck off (click to turn on)";
   }
 
-  statusSpell.addEventListener("click", () => renderSpell(run("spell.toggle")));
+  // The click only dispatches; the indicator repaints from the spellcheck
+  // module's own event. That is what keeps this button honest when the
+  // settings panel flips the same setting.
+  statusSpell.addEventListener("click", () => run("spell.toggle"));
+  spellEvents.addEventListener("change", () => renderSpell(isEnabled()));
   renderSpell(isEnabled());
 
   if (hasFileSystemAccess) {

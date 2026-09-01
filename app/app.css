@@ -43,14 +43,49 @@ body {
   min-height: 0;  /* lets the editor pane scroll instead of stretching the page */
 }
 
+/* Column of three: "+" on top, the scroller taking the free height, settings
+   at the bottom. The scroll and the 8px padding moved off #sidebar onto its
+   parts, so a long buffer list can never push a pinned button out of sight. */
 #sidebar {
   width: var(--sidebar-width, 220px);
   flex: 0 0 var(--sidebar-width, 220px);
+  display: flex;
+  flex-direction: column;
   background: var(--st-sidebar-bg);
   color: var(--st-sidebar-label);
-  overflow-y: auto;
-  padding: 8px 0;
   user-select: none;
+}
+
+#sidebar-scroll {
+  flex: 1;
+  min-height: 0;  /* without it the flex item refuses to shrink and never scrolls */
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* Quiet by design: settings is the least-used control in the chrome, so it
+   reads like the "file"/"folder" row, not like the big "+". */
+#sidebar-settings {
+  flex: 0 0 auto;
+  margin: 4px 8px 8px;
+  padding: 0 8px;
+  height: 26px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+#sidebar-settings:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
 }
 
 .sidebar-heading {
@@ -70,9 +105,12 @@ body {
    width, about two buffer-row heights. */
 #new-buffer {
   display: block;
+  flex: 0 0 auto;
   width: calc(100% - 16px);
   height: 48px;
-  margin: 0 8px 6px;
+  /* The 8px top is what #sidebar's padding used to give it, before the
+     scroller took that padding over. */
+  margin: 8px 8px 6px;
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
@@ -293,10 +331,131 @@ body {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  /* Containing block for the settings overlay, which is inset: 0 against it. */
+  position: relative;
   background: var(--st-background);
 }
 
 #editor-host .cm-editor { height: 100%; }
+
+/* Settings overlay (js/ui/settings.js, architecture.md §9). Covers the editor
+   area only, so the sidebar stays usable on a PC. z-index because the
+   CodeMirror DOM is appended after this element and is positioned too. */
+#settings-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow-y: auto;
+  padding: 0 18px 28px;
+  background: var(--st-ui-bg);
+  color: var(--st-text-fg);
+  outline: none;  /* it takes focus on open only to catch Escape */
+}
+
+/* Phone: one full-screen panel. fixed escapes the editor pane, so the sidebar
+   and the status bar are covered too; there is no room to keep them, and the
+   panel scrolls on its own. */
+@media (max-width: 700px) {
+  #settings-panel { position: fixed; }
+}
+
+/* Sticky, so the × stays reachable on a phone without scrolling back up. */
+.settings-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 10px;
+  background: var(--st-ui-bg);
+}
+
+.settings-title {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+#settings-close { font-size: 18px; }
+
+.settings-section { margin-top: 18px; }
+
+.settings-section > h3 {
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--st-sidebar-bg);
+  font-size: 11px;
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+.settings-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+/* The display:flex above would beat the browser's own [hidden] rule, and a
+   conditional row (the persistence request) hides itself through that
+   property. Keep both rules together, like #open-actions. */
+.settings-row[hidden] { display: none; }
+
+.settings-label { flex: 1; }
+
+.settings-hint,
+.settings-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--st-gutter-fg);
+}
+
+.settings-value { color: var(--st-sidebar-label); }
+
+.settings-note a { color: #6699CC; }
+
+/* Toggle: a button that shows its own state, so no framework and no invisible
+   checkbox. aria-pressed is both the state and the style hook. */
+.settings-toggle {
+  flex: 0 0 auto;
+  min-width: 52px;
+  padding: 3px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--st-gutter-fg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.settings-toggle[aria-pressed="true"] {
+  background: var(--st-selection);
+  color: var(--st-sidebar-heading);
+}
+
+.settings-button {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.settings-button:hover { background: var(--st-sidebar-selected); }
 
 /* Twemoji widgets (js/editor/emoji.js). Sized in em so they track the editor
    font. 1.2em is a hair taller than the glyphs around them, but the 1.4

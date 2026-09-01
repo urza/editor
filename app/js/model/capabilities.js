@@ -55,3 +55,34 @@ export async function requestPersistence() {
     return false;
   }
 }
+
+/**
+ * Is the origin already under a persistent-storage grant? A browser without
+ * the API (iOS Safari today) reports false: no grant is the honest answer,
+ * and it is also the state the settings panel should show.
+ * @returns {Promise<boolean>}
+ */
+export async function isPersisted() {
+  if (!navigator.storage || !navigator.storage.persisted) return false;
+  try {
+    return await navigator.storage.persisted();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rough usage and quota in bytes, or null where the API is missing. Both
+ * numbers are deliberately fuzzy in every browser; they answer "am I near the
+ * limit", nothing finer.
+ * @returns {Promise<{usage: number, quota: number} | null>}
+ */
+export async function storageEstimate() {
+  if (!navigator.storage || !navigator.storage.estimate) return null;
+  try {
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+    return { usage, quota };
+  } catch {
+    return null;
+  }
+}
