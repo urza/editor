@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Kept out of the public repo until the user decides otherwise: publishing
+# memories is irreversible (git history), while adding them later is trivial.
+.claude-memory/

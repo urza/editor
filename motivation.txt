@@ -1,0 +1,60 @@
+Vibecoding Text editor
+
+Core inspiration is from SublimeText, but it will be PWA web app running everywhere - on desktop or phone or web browser.
+
+Things I like about Sublime:
+
+* Nice typography - fonts and their rendering are beautiful.
+* Nice color scheme.
+* New files open easily (CTRL+N) and all files (even unsaved ones) are in the sidepanel - I use Sublime as a "scratchpad" for everything - quick note, quick dump from clipboard,..  love the side panel, that you dont need to save files and IT SURVIVES COMPUTER RESTART without saving. Closing file is easy as well (CTRL+W)
+* Syntax highliting - markdown, programming languages..
+* Open directory - opens all in sidepanel. And I can have multiple Sublime windows, one with my random files and one with "open directory" files
+
+What I would like to improve/change:
+
+Closing many "dump files" is tedious because for each i need to CTRL-W and then confirm closing unsaved file by mouse
+Sidepanel with open files is hard to zoom
+Sidepanel files can't be ordered or groupped
+Integrated spellcheck is hard to install - I want Harper for english + something for czech
+Optional encryption or either individual files or folder (Perhaps we can use Age as external tool for that)
+Optional synchronization accross devices and/or running on my server
+Optional connection to local LLM via vLLM
+Possibly rendering nicer emojis such as Twemoji instead of just unicodes
+
+Tech stack:
+if there is some backend I lean towards modern asp.net core
+frontend - offline PWA installable as "app" - I prefer plain vanilla javascrip (typescript?) as much as possible wiith minimum dependencies
+I dont want nodejs and npm
+
+Notes / single-user app, just for me. No real-time collaboration needed.
+
+Ideas per topic:
+
+* Tab closing without prompts: autosave every buffer to local storage as you type. Then closing a tab never needs a save confirmation, it just closes and the content stays in a recent-files list. Same mechanism gives crash recovery for free.
+* Sidepanel as a real list widget: adjustable font-size setting for zoom, plus a virtualized list so it stays smooth with hundreds of scratch files. Manual order and grouping via drag-drop, plus a lightweight tag/folder concept separate from any real opened directory.
+* "Open Directory" via the File System Access API (Chrome/Edge support now, Safari partial). Store the directory handle in IndexedDB so the folder reopens automatically next launch.
+* Spellcheck: Harper has a WASM build, runs fully offline for English. For Czech, a Hunspell-compatible WASM dictionary, since Harper doesn't cover Czech yet.
+* Encryption with Age as an optional layer: either a WASM port for pure client-side use, or shell out to the real `age` binary if the ASP.NET Core backend is running. WASM route keeps backend fully optional.
+* Sync: single-user app, so simple last-write-wins with version history is enough. No CRDT, no operational transform, keeps the backend thin.
+* Local LLM via vllm: it exposes an OpenAI-compatible chat endpoint. Command-palette action with streaming fetch, no special SDK needed.
+* Emoji: vendor Twemoji SVGs into the app instead of loading from a CDN, so it works offline. Twemoji is CC-BY licensed, fine with attribution.
+* Tech stack: no Node, no npm, anywhere. TypeScript is fine in theory but not if it drags Node tooling in, so: plain JavaScript. Native ES modules in the browser need no bundler at all.
+
+Review notes (Claude, 2026-09-01):
+
+The biggest open decision: the editor core. Nothing above picks it, and it constrains almost everything else.
+* A plain textarea cannot do syntax highlighting or SVG emoji rendering.
+* A custom contenteditable editor is a very large amount of work.
+* CodeMirror 6 does highlighting, large files, and decorations (emoji) well. Its normal setup uses npm, but a prebuilt ESM bundle can be vendored once, with no Node on this machine. Decide this first.
+
+Risks:
+* Ctrl+N and Ctrl+W belong to the browser. A web page cannot intercept them, and an installed PWA window mostly cannot either. Sublime muscle memory will not transfer. Plan alternative shortcuts early (for example Alt+N / Alt+W).
+* Browser storage can be evicted. "Survives restart" is the most-loved feature, so protect it: use IndexedDB (not localStorage), call navigator.storage.persist(), and add an export/backup action. One cleared browser profile must not lose everything.
+* "Runs everywhere" conflicts with the File System Access API. Directory pickers work in desktop Chrome/Edge only, not in Firefox or mobile browsers. The scratchpad part works everywhere; "open directory" does not. Acceptable, but a known limit.
+* vLLM speaks the OpenAI protocol, so a plain streaming fetch works. The vLLM server may need CORS enabled for a browser client.
+
+Small notes:
+* Twemoji: Twitter abandoned it, but the jdecked/twemoji fork is maintained. CC-BY 4.0, attribution needed.
+* Age in the browser: look at typage, the official TypeScript implementation. It runs fully client-side, so a WASM port is not even necessary.
+* Czech spellcheck: Hunspell WASM plus the standard LibreOffice dictionaries.
+* Sync via last-write-wins: correct choice for one user. Version history covers the case where two offline devices edit the same file and one side loses.

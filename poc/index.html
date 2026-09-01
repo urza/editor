@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vrtti</title>
+<meta name="theme-color" content="#2E3238">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+
+<!-- Every bare specifier maps to one vendored file. One entry per package, no
+     versions in the specifier: that is what keeps a single @codemirror/state
+     instance alive and keeps `instanceof` checks working across packages. -->
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/state": "./vendor/@codemirror/state/index.js",
+    "@codemirror/view": "./vendor/@codemirror/view/index.js",
+    "@codemirror/language": "./vendor/@codemirror/language/index.js",
+    "@codemirror/commands": "./vendor/@codemirror/commands/index.js",
+    "@codemirror/search": "./vendor/@codemirror/search/index.js",
+    "@codemirror/autocomplete": "./vendor/@codemirror/autocomplete/index.js",
+    "@codemirror/lang-markdown": "./vendor/@codemirror/lang-markdown/index.js",
+    "@codemirror/lang-javascript": "./vendor/@codemirror/lang-javascript/index.js",
+    "@codemirror/lang-html": "./vendor/@codemirror/lang-html/index.js",
+    "@codemirror/lang-css": "./vendor/@codemirror/lang-css/index.js",
+    "@lezer/common": "./vendor/@lezer/common/index.js",
+    "@lezer/highlight": "./vendor/@lezer/highlight/index.js",
+    "@lezer/lr": "./vendor/@lezer/lr/index.js",
+    "@lezer/markdown": "./vendor/@lezer/markdown/index.js",
+    "@lezer/javascript": "./vendor/@lezer/javascript/index.js",
+    "@lezer/html": "./vendor/@lezer/html/index.js",
+    "@lezer/css": "./vendor/@lezer/css/index.js",
+    "@marijn/find-cluster-break": "./vendor/@marijn/find-cluster-break/index.js",
+    "crelt": "./vendor/crelt/index.js",
+    "style-mod": "./vendor/style-mod/index.js",
+    "w3c-keyname": "./vendor/w3c-keyname/index.js"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <h2 class="sidebar-heading">Open</h2>
+      <ul id="open-list" class="buffer-list"></ul>
+      <h2 class="sidebar-heading">Recent</h2>
+      <ul id="recent-list" class="buffer-list"></ul>
+    </aside>
+    <main id="editor-host"></main>
+  </div>
+  <footer id="statusbar">
+    <span id="status-title"></span>
+    <span id="status-save">saved</span>
+  </footer>
+  <script type="module" src="./js/main.js"></script>
+  <script>
+    // updateViaCache "none": update checks must bypass the HTTP cache for both
+    // sw.js and its importScripts'd precache list, or deploys go unnoticed.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" });
+    }
+  </script>
+</body>
+</html>

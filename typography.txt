@@ -1,0 +1,22 @@
+Font rendering notes (Claude, 2026-09-01)
+
+Browser text rendering is excellent in 2026, often better than a native app. Chrome and Firefox use HarfBuzz for shaping, plus DirectWrite on Windows and CoreText on macOS. That is the same or better machinery than Sublime uses. "Beautiful" is therefore mostly our choices, not the platform.
+
+Font choice matters most:
+* Vendor one good monospace font as a WOFF2 file inside the PWA. It works offline and looks identical on every device.
+* Strong open options: JetBrains Mono, Fira Code, IBM Plex Mono, Cascadia Code, Iosevka, Monaspace. All OFL licensed.
+* Bundling the font also fixes Czech diacritics, because we control glyph coverage instead of the OS fallback font. JetBrains Mono covers Czech fully.
+
+CSS that does the rest:
+* line-height: 1.5 to 1.6. Browser default is too tight for code.
+* font-variant-ligatures / font-feature-settings to turn ligatures (calt) on or off. Make it a user setting.
+* -webkit-font-smoothing: antialiased on macOS for dark themes. Light text on dark looks too bold without it.
+* font-size as a user setting, like Sublime's zoom.
+
+Two traps to avoid:
+* No CSS transforms, opacity layers, or will-change on the text container. They force grayscale antialiasing on Windows and text gets thin and blurry. Keep the editor text layer transform-free.
+* Avoid fractional scaling. Keep font sizes and line heights at values that land on whole pixels where possible.
+
+Dependency on the editor-core decision:
+* DOM-based editors (CodeMirror, Monaco, Ace, textarea) inherit all of this browser rendering for free.
+* A canvas-based editor draws its own text and usually looks worse. "Beautiful fonts" is one more argument for a DOM-based core.
