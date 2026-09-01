@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>vrtti crypto prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!--
+  The import map must come before any module load, and it must be inline.
+  Bare specifiers below match exactly what the vendored typage and noble files
+  import. Trailing-slash keys map a whole package subtree; @scure/base has no
+  subpaths, so it gets an exact key.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "age-encryption": "./vendor/age-encryption/index.js",
+    "@noble/hashes/": "./vendor/noble-hashes/",
+    "@noble/curves/": "./vendor/noble-curves/",
+    "@noble/ciphers/": "./vendor/noble-ciphers/",
+    "@noble/post-quantum/": "./vendor/noble-post-quantum/",
+    "@scure/base": "./vendor/scure-base/index.js"
+  }
+}
+</script>
+
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    max-width: 62rem; margin: 2rem auto; padding: 0 1rem;
+  }
+  h1 { font-size: 1.2rem; }
+  h2 { font-size: 1rem; margin-top: 2rem; border-bottom: 1px solid; padding-bottom: .3rem; }
+  section { margin-bottom: 1rem; }
+  textarea { width: 100%; min-height: 7rem; font: inherit; }
+  input[type=password], input[type=text] { font: inherit; padding: .25rem; min-width: 18rem; }
+  button { font: inherit; padding: .3rem .7rem; cursor: pointer; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .4rem 0; }
+  .log { white-space: pre-wrap; background: #8881; padding: .6rem; min-height: 3rem; }
+  .ok { color: #0a0; } .err { color: #c00; } .muted { opacity: .7; }
+  table { border-collapse: collapse; } td, th { padding: .2rem .8rem .2rem 0; text-align: left; }
+</style>
+
+<h1>vrtti crypto prototype &mdash; age via vendored typage</h1>
+<p class="muted">No bundler, no npm at runtime. Native ES modules plus an import map.</p>
+
+<section>
+  <h2>0. environment</h2>
+  <div class="log" id="env">probing...</div>
+</section>
+
+<section>
+  <h2>1. device setup</h2>
+  <p class="muted">Generates a device identity and a master recovery identity.
+    Wraps the device identity with a passphrase (scrypt) and stores it in localStorage.
+    The recovery secret is shown once and never stored.</p>
+  <div class="row">
+    <input type="password" id="setup-pass" placeholder="passphrase" value="correct horse battery staple">
+    <label>logN <input type="text" id="setup-logn" value="18" style="min-width:3rem"></label>
+    <button id="btn-setup">set up device</button>
+    <button id="btn-reset">reset device</button>
+  </div>
+  <div class="log" id="setup-out"></div>
+</section>
+
+<section>
+  <h2>2. unlock</h2>
+  <div class="row">
+    <input type="password" id="unlock-pass" placeholder="passphrase" value="correct horse battery staple">
+    <button id="btn-unlock">unlock</button>
+    <button id="btn-lock">lock</button>
+  </div>
+  <div class="log" id="unlock-out"></div>
+</section>
+
+<section>
+  <h2>3. encrypt a note</h2>
+  <div class="row">
+    <select id="preset">
+      <option value="all-devices">all devices + recovery</option>
+      <option value="this-device">this device + recovery</option>
+    </select>
+    <button id="btn-encrypt">encrypt</button>
+    <button id="btn-decrypt">decrypt with device identity</button>
+  </div>
+  <textarea id="plaintext">Milk, eggs, and the passphrase to the safe.</textarea>
+  <textarea id="ciphertext" placeholder="armored age ciphertext appears here"></textarea>
+  <div class="log" id="note-out"></div>
+</section>
+
+<section>
+  <h2>4. recovery fallback</h2>
+  <p class="muted">The device is locked or lost. Decrypt with the recovery identity alone.</p>
+  <div class="row">
+    <input type="text" id="recovery-key" placeholder="AGE-SECRET-KEY-1...">
+    <button id="btn-recover">decrypt with recovery key</button>
+  </div>
+  <div class="log" id="recover-out"></div>
+</section>
+
+<section>
+  <h2>5. benchmark</h2>
+  <div class="row">
+    <button id="btn-bench">run round-trip benchmark (3 recipients)</button>
+  </div>
+  <div class="log" id="bench-out"></div>
+</section>
+
+<script type="module" src="./js/demo.js"></script>
