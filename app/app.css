@@ -62,6 +62,35 @@ body {
   color: var(--st-sidebar-heading);
 }
 
+.sidebar-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 10px 4px;
+}
+
+.sidebar-heading-row .sidebar-heading { margin: 0; }
+
+/* Recent is a disclosure: closed buffers stay out of sight until expanded. */
+#recent-heading { cursor: pointer; }
+
+/* Small chrome buttons: sidebar "+" and statusbar "↻". */
+.icon-button {
+  border: 0;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.icon-button:hover { opacity: 1; }
+
+#status-update { color: var(--st-gutter-fg); font-size: 13px; }
+
 .buffer-list {
   list-style: none;
   margin: 0;

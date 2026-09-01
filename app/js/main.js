@@ -4,7 +4,7 @@
 // Frameworkless on purpose.
 
 import { deleteBuffer, openDb } from "./storage/idb.js";
-import { requestPersistence } from "./model/capabilities.js";
+import { checkForUpdate, requestPersistence } from "./model/capabilities.js";
 import { createDocStore } from "./model/docs.js";
 import { register, run } from "./commands/registry.js";
 import { mountEditor } from "./editor/editor.js";
@@ -45,6 +45,11 @@ async function start() {
     id: "buffer.reopen",
     title: "Reopen buffer",
     run: (id) => store.reopen(id),
+  });
+  register({
+    id: "app.update",
+    title: "Check for update",
+    run: (onStatus) => checkForUpdate(onStatus),
   });
 
   const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));

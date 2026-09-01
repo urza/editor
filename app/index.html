@@ -44,10 +44,13 @@
 <body>
   <div id="app">
     <aside id="sidebar">
-      <h2 class="sidebar-heading">Open</h2>
+      <div class="sidebar-heading-row">
+        <h2 class="sidebar-heading">Open</h2>
+        <button id="new-buffer" class="icon-button" type="button" title="New buffer (Alt+N)">+</button>
+      </div>
       <ul id="open-list" class="buffer-list"></ul>
-      <h2 class="sidebar-heading">Recent</h2>
-      <ul id="recent-list" class="buffer-list"></ul>
+      <h2 class="sidebar-heading" id="recent-heading" hidden></h2>
+      <ul id="recent-list" class="buffer-list" hidden></ul>
     </aside>
     <div id="resizer"></div>
     <main id="editor-host"></main>
@@ -56,6 +59,7 @@
     <span id="status-title"></span>
     <span id="status-save">saved</span>
     <span id="status-build"></span>
+    <button id="status-update" class="icon-button" type="button" title="Check for update">↻</button>
   </footer>
   <script type="module" src="./js/main.js"></script>
   <script>
