@@ -222,7 +222,71 @@ Server revision row:
 4. Sync opt-in for file-backed docs, then optional layers:
    spellcheck (Harper + Hunspell), LLM (vLLM), Twemoji.
 
-## 9. Decision log
+## 9. Sidebar organization (future, factored in now)
+
+The sidebar becomes a list of **sections**, each with a heading and rows.
+Planned sections, top to bottom: Favorites, Open (scratch buffers), one
+section per opened folder, Recent (collapsed disclosure, exists today).
+A future `model/sidebar.js` computes the sections from records plus settings;
+`ui/sidebar.js` only renders them. The Recent disclosure is the first section
+of this kind, so the pattern already exists in miniature.
+
+- **Manual order**: `order` is a fractional rank (float). Drag-drop assigns
+  the midpoint of the two neighbors, so one record changes per drop.
+  Renormalize all ranks in one pass when midpoints exhaust float precision.
+  On first use, existing records get `order = createdAt`. The rank applies to
+  scratch buffers; folder sections sort by filename instead.
+- **Star/favorite**: `starred: boolean` on the record. Starred docs show in
+  the Favorites section (and stay in their own section too).
+- **Age grouping**: a sidebar view mode, derived from `updatedAt` at render
+  time (Today, This week, This month, Older). Never stored per record;
+  toggling the mode must not write anything.
+- **Open folder**: a folder section can hold hundreds of rows. Rendering
+  stays plain replaceChildren until it measurably lags; virtualize only then.
+
+## 10. Twemoji plan (agreed 2026-09-01)
+
+Goal: render color emoji (Twemoji SVGs) in the editor instead of platform
+glyphs, fully offline, no CDN.
+
+- Assets: the full SVG set from the maintained jdecked/twemoji fork, pinned
+  version, vendored under `vendor/twemoji/svg/`. CC-BY 4.0; attribution goes
+  in VENDOR.md. Fetched via registry.npmjs.org or GitHub tarball, whichever
+  the sandbox network allows.
+- Rendering: a CodeMirror ViewPlugin with MatchDecorator. Emoji sequences
+  become replace decorations with an `<img>` widget pointing at the vendored
+  SVG. Own matcher built on Unicode property escapes (Extended_Pictographic,
+  ZWJ sequences, skin tones, flags, keycaps). Filename mapping follows the
+  twemoji rule: hyphen-joined lowercase hex codepoints, `fe0f` stripped when
+  the sequence has no ZWJ.
+- Fallback: on img error (missing or not-yet-cached asset), the widget swaps
+  to the plain text glyph. The document text itself is never modified.
+- Service worker: the ~3,700 SVGs are NOT precached. `sw.js` gains a
+  cache-on-first-use path for `vendor/twemoji/`; seen emojis work offline.
+- Always on for now; a toggle command can come later.
+
+## 11. Harper spellcheck plan (agreed 2026-09-01)
+
+Goal: offline English spelling and grammar checking with quick fixes,
+better than Sublime's. Czech comes later via Hunspell (section 8 item 4).
+
+- Engine: Harper via its WASM build, vendored from npm (`harper.js`, or the
+  lower-level `harper-wasm` if the wrapper assumes a bundler). WASM loads
+  from an explicit vendored URL, native ESM only. The WASM binary IS
+  precached, spellcheck must work offline.
+- Editor integration: vendor `@codemirror/lint`, pinned compatible with the
+  in-tree CodeMirror versions. A `linter()` source maps Harper lints to
+  diagnostics: spelling as "warning" with a dotted underline, style hints as
+  "info". Harper suggestions become diagnostic actions (one-click fixes).
+- Offsets: verify Harper span semantics against CodeMirror UTF-16 offsets
+  with an astral-plane test (emoji before a misspelling). Convert if needed.
+- Lazy: the engine loads on first lint (dynamic import), not at startup.
+- Toggle: command `spell.toggle`, persisted per device, default on, plus a
+  small statusbar indicator button. Runs on the main thread with a lint
+  debounce; a worker only if typing measurably lags.
+- Custom dictionary ("add word") comes later, with sync in mind.
+
+## 12. Decision log
 
 Decided (2026-09-01):
 
@@ -238,5 +302,11 @@ Decided (2026-09-01):
 - Server auth: single static bearer token over HTTPS.
 - Scratch-only sync first; file-backed docs get an opt-in sync flag later.
 - JSDoc types with `// @ts-check`, no TypeScript files, no build step.
+- Sidebar future (section 9): section-based sidebar, fractional `order` rank,
+  `starred` flag, age grouping derived at render time, never stored.
+- Twemoji per section 10: vendored SVGs, CM widget decorations,
+  runtime-cached (not precached), text fallback on missing asset.
+- Harper per section 11: vendored WASM (precached), @codemirror/lint
+  integration with quick fixes, lazy load, default on with toggle.
 
 Open: none.
