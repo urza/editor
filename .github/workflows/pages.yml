@@ -28,6 +28,15 @@ jobs:
       - name: Regenerate service worker precache manifest
         run: python3 app/tools/gen_sw.py
 
+      # The site is the app plus the crypto prototype as a sibling page. The
+      # prototype is deliberately outside app/, so it never enters the service
+      # worker precache; sw.js also exempts it from the app-shell fallback.
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          cp -r app/. _site/
+          cp -r crypto-proto _site/crypto-proto
+
       - uses: actions/configure-pages@v5
         with:
           # First run creates the Pages site; the workflow token has pages:write.
@@ -35,7 +44,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: app
+          path: _site
 
       - id: deployment
         uses: actions/deploy-pages@v4
