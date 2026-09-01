@@ -185,8 +185,38 @@ export function createEditorState(content, onDocChanged) {
   });
 }
 
-// One view, many states. Buffer switching is view.setState(state), which keeps
-// per-buffer undo history alive without a second DOM tree.
-export function createView(parent) {
-  return new EditorView({ parent });
+// Editor controller. One view, many states: buffer switching is
+// view.setState(state), which keeps per-buffer undo history alive without a
+// second DOM tree. States are built lazily on first activation.
+// The controller only listens to store events; its one write back into the
+// store is updateContent, the editor's legitimate output.
+export function mountEditor(host, store) {
+  const view = new EditorView({ parent: host });
+  const states = new Map(); // id -> EditorState
+
+  function stateFor(id) {
+    let state = states.get(id);
+    if (!state) {
+      const record = store.get(id);
+      state = createEditorState(record ? record.content : "", (content) =>
+        store.updateContent(id, content)
+      );
+      states.set(id, state);
+    }
+    return state;
+  }
+
+  store.events.addEventListener("active", (event) => {
+    const { id, previousId } = /** @type {CustomEvent} */ (event).detail;
+    // Park the live state before swapping, so undo history survives the switch.
+    if (previousId) states.set(previousId, view.state);
+    view.setState(stateFor(id));
+    view.focus();
+  });
+
+  store.events.addEventListener("evict", (event) => {
+    states.delete(/** @type {CustomEvent} */ (event).detail.id);
+  });
+
+  return { view, states };
 }

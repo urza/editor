@@ -26,7 +26,7 @@ jobs:
       # The site is already static; the only "build" is refreshing the service
       # worker precache list so every deploy busts the offline cache correctly.
       - name: Regenerate service worker precache manifest
-        run: python3 poc/tools/gen_sw.py
+        run: python3 app/tools/gen_sw.py
 
       - uses: actions/configure-pages@v5
         with:
@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: poc
+          path: app
 
       - id: deployment
         uses: actions/deploy-pages@v4

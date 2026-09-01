@@ -1,7 +1,18 @@
+// @ts-check
 // Raw IndexedDB. No wrapper library.
-// Buffer record: { id, content, closed, createdAt, updatedAt }.
 // Title is deliberately NOT stored: it is derived from the text on render, so
 // editing the first line renames the buffer with no extra write path.
+// Later phases bump DB_VERSION and add stores (handles, sync, settings) plus
+// record fields (kind, file, sync, enc, group, order); see architecture.md §7.
+
+/**
+ * @typedef {Object} BufferRecord
+ * @property {string} id
+ * @property {string} content  Opaque to this layer: plaintext today, may be age ciphertext later.
+ * @property {boolean} closed
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ */
 
 const DB_NAME = "vrtti";
 const DB_VERSION = 1;
@@ -61,6 +72,7 @@ export async function deleteBuffer(id) {
   });
 }
 
+/** @returns {BufferRecord} */
 export function newBufferRecord() {
   const now = Date.now();
   return {
@@ -70,16 +82,4 @@ export function newBufferRecord() {
     createdAt: now,
     updatedAt: now,
   };
-}
-
-export async function requestPersistence() {
-  if (!navigator.storage || !navigator.storage.persist) return false;
-  try {
-    const granted = await navigator.storage.persist();
-    console.log("[vrtti] persistent storage:", granted);
-    return granted;
-  } catch (err) {
-    console.log("[vrtti] persistent storage unavailable:", err);
-    return false;
-  }
 }

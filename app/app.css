@@ -117,8 +117,8 @@ body {
 #statusbar {
   flex: 0 0 auto;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 3px 10px;
   background: var(--st-ui-bg);
   color: var(--st-text-fg);
@@ -126,4 +126,13 @@ body {
   user-select: none;
 }
 
+/* flex: 1 pushes the save and build stamps to the right edge. */
+#status-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #status-save { color: var(--st-gutter-fg); }
+#status-build { color: var(--st-gutter-fg); }
