@@ -155,7 +155,10 @@ export function askPassphrase(opts = {}) {
 
 /**
  * Ask for one line of text.
- * @param {{title?: string, label?: string, value?: string, hint?: string}} [opts]
+ * @param {{title?: string, label?: string, value?: string, hint?: string,
+ *          allowEmpty?: boolean}} [opts]
+ *   `allowEmpty` lets "" through as an answer (the encrypt label: no name is a
+ *   valid, deliberate choice there). Everywhere else empty means "try again".
  * @returns {Promise<string | null>} null when the user cancels.
  */
 export function askText(opts = {}) {
@@ -175,7 +178,7 @@ export function askText(opts = {}) {
       /** @type {SubmitEvent} */ (event).submitter
     );
     if (submitter && submitter.value === "cancel") return;
-    if (!input.value.trim()) {
+    if (!input.value.trim() && !opts.allowEmpty) {
       event.preventDefault();
       error.textContent = "Enter a value.";
       error.hidden = false;

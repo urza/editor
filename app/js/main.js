@@ -321,7 +321,8 @@ async function start() {
         title: "Name for the encrypted document",
         label: "Plaintext name",
         value: record?.title || firstLineTitle(record?.content),
-        hint: "Shown in the sidebar and stored unencrypted, also on the sync server.",
+        hint: "Shown in the sidebar and stored unencrypted, also on the sync server. Leave it empty for no name.",
+        allowEmpty: true,
       });
       if (label === null) return false;
       await store.encrypt(target, /** @type {any} */ (preset), label);
