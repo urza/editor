@@ -14,6 +14,17 @@ import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 
 /**
+ * The keyring the Security section reports on, handed in by mountSettings.
+ *
+ * A module-level reference rather than a parameter threaded through every row:
+ * SECTIONS is a static list built at module load, which is what keeps a new
+ * setting a data change and not a render change. The rows below read this when
+ * they paint, so it is always set by then.
+ * @type {import("../crypto/keyring.js").KeyRing | null}
+ */
+let keyring = null;
+
+/**
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
@@ -96,6 +107,76 @@ const SECTIONS = [
         // Pointless once the grant exists, so the row disappears with it.
         visible: async () => !(await isPersisted()),
         act: () => run("storage.persist"),
+      },
+    ],
+  },
+  {
+    title: "Security",
+    items: [
+      {
+        type: "info",
+        key: "encryption",
+        label: "Encryption",
+        hint: "Per document, real age format. Unlock once per session.",
+        value: () => {
+          if (!keyring?.isSetUp) return "not set up";
+          if (!keyring.isUnlocked) return "locked";
+          // The two unlocked states are worth telling apart: with a CryptoKey
+          // the device secret never enters the JS heap at all (§5).
+          return keyring.identityKind === "cryptokey"
+            ? "unlocked (CryptoKey)"
+            : "unlocked (in memory)";
+        },
+      },
+      {
+        type: "info",
+        key: "device-name",
+        label: "This device",
+        visible: () => Boolean(keyring?.isSetUp),
+        value: () => keyring?.deviceName ?? "",
+      },
+      {
+        type: "info",
+        key: "device-key",
+        label: "Device key",
+        hint: "Public. Add it to another device to share encrypted documents.",
+        visible: () => Boolean(keyring?.isSetUp),
+        value: () => keyring?.deviceRecipient ?? "",
+      },
+      {
+        type: "info",
+        key: "recovery-key",
+        label: "Recovery key",
+        hint: "Public half of the offline master key. Every document is encrypted to it.",
+        visible: () => Boolean(keyring?.isSetUp),
+        value: () => (keyring?.recoveryRecipients ?? []).join(" "),
+      },
+      {
+        type: "action",
+        key: "crypto-setup",
+        label: "Set up encryption",
+        hint: "Generates a device key and a recovery key. The recovery key is shown once.",
+        button: "set up",
+        visible: () => !keyring?.isSetUp,
+        act: () => run("crypto.setup"),
+      },
+      {
+        type: "action",
+        key: "crypto-unlock",
+        label: "Unlock",
+        hint: "Decrypts the device key into memory for this session.",
+        button: "unlock",
+        visible: () => Boolean(keyring?.isSetUp) && !keyring?.isUnlocked,
+        act: () => run("crypto.unlock"),
+      },
+      {
+        type: "action",
+        key: "crypto-lock",
+        label: "Lock",
+        hint: "Drops the device key. Encrypted documents become unreadable until you unlock.",
+        button: "lock",
+        visible: () => Boolean(keyring?.isUnlocked),
+        act: () => run("crypto.lock"),
       },
     ],
   },
@@ -253,8 +334,11 @@ function makeRow(item, refresh) {
 /**
  * Mount the settings overlay. Returns the controller the settings.toggle
  * command dispatches into.
+ *
+ * @param {{keyring?: import("../crypto/keyring.js").KeyRing}} [deps]
  */
-export function mountSettings() {
+export function mountSettings(deps = {}) {
+  keyring = deps.keyring ?? null;
   const panel = /** @type {HTMLElement} */ (document.getElementById("settings-panel"));
 
   const head = document.createElement("div");
@@ -301,6 +385,12 @@ export function mountSettings() {
   // The statusbar spellcheck button stays clickable next to an open panel on a
   // PC, so the panel repaints whenever that state flips, whoever flipped it.
   spellEvents.addEventListener("change", () => {
+    if (!panel.hidden) refresh();
+  });
+
+  // Unlock and lock are also reachable from outside the panel (a locked doc
+  // asks on open), so the Security rows follow the keyring wherever it changed.
+  keyring?.addEventListener("change", () => {
     if (!panel.hidden) refresh();
   });
 

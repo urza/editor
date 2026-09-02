@@ -44,6 +44,9 @@ import { detectFromName, isLang } from "../editor/lang.js";
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 
 const ACTIVE_KEY = "vrtti.activeBuffer";
+// Fixed id, not a UUID: every device must arrive at the same record so sync
+// merges one keyring instead of forking one per device (architecture.md §13.3).
+export const KEYRING_ID = "keyring";
 const SAVE_DELAY = 300;
 // Second debounce, behind the IndexedDB one: a disk write is slower and more
 // fragile, and nothing is lost by batching a few more keystrokes into it.
@@ -99,16 +102,46 @@ export function createDocStore() {
     events.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
+  // The keyring record (architecture.md §13.3) is a buffer record so that it
+  // persists and syncs on the existing path, but it is not a document: it holds
+  // the device list, it has no text a user would ever edit, and it must never
+  // appear in the sidebar, in Recent, or in search. These two functions are the
+  // only way the UI reaches records, so filtering here hides it everywhere.
+  // Do not drop this filter to "simplify"; the sidebar would grow a row of raw
+  // JSON and closing it would corrupt the keyring.
+  /** @param {BufferRecord} record */
+  function isDocument(record) {
+    return record.kind !== "keyring";
+  }
+
   function openBuffers() {
     return [...buffers.values()]
-      .filter((b) => !b.closed)
+      .filter((b) => !b.closed && isDocument(b))
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
   function closedBuffers() {
     return [...buffers.values()]
-      .filter((b) => b.closed)
+      .filter((b) => b.closed && isDocument(b))
       .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * Write a record the user never opens: the keyring today. It goes into the
+   * Map and into IndexedDB like any other, but nothing activates it and no
+   * debounce owns it, because no editor is ever attached to it.
+   * @param {BufferRecord} record
+   */
+  async function putSystemRecord(record) {
+    buffers.set(record.id, record);
+    await putBuffer({ ...record });
+    emit("change");
+    return record;
+  }
+
+  /** The hidden keyring record, or undefined before setup. */
+  function keyringRecord() {
+    return buffers.get(KEYRING_ID);
   }
 
   /** @param {string} id */
@@ -624,6 +657,8 @@ export function createDocStore() {
     },
     openBuffers,
     closedBuffers,
+    putSystemRecord,
+    keyringRecord,
     load,
     start,
     create,
