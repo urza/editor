@@ -75,15 +75,25 @@ Implementation decisions (2026-09-01, step 2 build):
 
 ## 3. Sync
 
+Sync is optional. The app works fully offline with no server configured.
+The sync module stays inert until a server URL and token exist. It never
+blocks on the network and never shows a login wall.
+
 One flat document namespace for the single user. No per-device buckets.
+The namespace is shared; the membership is not (decided 2026-09-02).
+A doc enters the namespace only when a device attaches a server target to it
+(section 1). Doc ids are global UUIDs, so a doc can enter late without a rename.
 The device id is metadata on revisions, for history display only.
 
 Server model, Dropbox-like and thin:
 
 - Each document has a stable UUID, created with the buffer.
 - Each push creates a revision row: docId, revision number, content, deviceId,
-  timestamp, deleted flag. The table is append-only. "Current" is the newest revision.
-  This gives version history for free. Deletion is a tombstone revision.
+  timestamp, tombstone kind. The table is append-only. "Current" is the newest revision.
+  This gives version history for free.
+- Tombstones have two kinds. `deleted`: other devices remove their copy.
+  `detached`: the doc left sync; other devices keep their copy as a local doc.
+  "Stop syncing" is not "delete", and nothing is lost.
 - The client keeps a sync cursor and an outbox of dirty docIds in IndexedDB.
   It pulls changes since the cursor, then pushes.
   Triggers: app start, window focus, coming online, slow timer. Polling is enough.
@@ -101,9 +111,24 @@ Backend: ASP.NET Core minimal API plus SQLite. Endpoints:
 
 The server is content-agnostic: opaque content plus metadata. It never inspects text.
 
-Scope: scratch buffers sync first. File-backed and folder-backed docs stay
-device-local by default, with an opt-in "also sync this" flag later.
-The docId is global and the disk link is per-device, so the model supports this.
+### What syncs
+
+Nothing syncs unless the doc has a server target. Three ways set that flag:
+
+- Per doc: one toggle on the doc. This is the base operation and ships first.
+- Per folder: a toggle on the folder entry. New docs in the folder inherit it.
+  The server also stores the path relative to the folder root, or the other
+  device sees a flat pile and cannot rebuild the tree. The disk link stays
+  per device. Second phase.
+- Per device: a setting "new docs sync by default", plus a one-shot command
+  "sync all current docs". Both only set the per-doc flag in bulk.
+
+Defaults: off on desktop, on for phones (section 4). Most desktop docs are
+temporary scratch; they should not appear on the other devices.
+
+Sync and encryption stay orthogonal (section 5). But the server is untrusted,
+so the dialog that turns sync on for a plaintext doc offers encryption in the
+same step. Plaintext on the server is a choice, not an accident.
 
 ## 4. Phone
 
@@ -114,6 +139,9 @@ Android Chrome then gets the same features or more, never less.
 
 Buffers live in IndexedDB with `navigator.storage.persist()`.
 Sync doubles as the backup, so browser eviction is an inconvenience, not a disaster.
+Phones therefore default "new docs sync by default" to on (section 3), because
+no disk file backs them. A phone with no server configured still works fully;
+it shows a persistent "no backup" hint instead.
 
 ## 5. Encryption (age)
 
@@ -390,7 +418,11 @@ Decided (2026-09-01):
 - Crypto codec ships before sync goes live.
 - Primary phone is iPhone; Android must work too. iOS Safari sets the PWA baseline.
 - Server auth: single static bearer token over HTTPS.
-- Scratch-only sync first; file-backed docs get an opt-in sync flag later.
+- Sync is optional; the app is fully functional with no server configured.
+- Sync is per document, as a server target (decided 2026-09-02, replaces
+  "scratch-only sync first"). Default off on desktop, on for phones.
+  Folder and device switches set the flag in bulk; folder sync is a later phase.
+- Tombstones have two kinds, delete and detach.
 - JSDoc types with `// @ts-check`, no TypeScript files, no build step.
 - Sidebar future (section 9): section-based sidebar, fractional `order` rank,
   `starred` flag, age grouping derived at render time, never stored.
