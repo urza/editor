@@ -235,7 +235,25 @@ export function showSecret(opts) {
   actions.append(copy, button(opts.confirm ?? "I wrote it down", "done", true));
   dialog.addEventListener("cancel", (event) => event.preventDefault());
 
-  return openModal(dialog, () => undefined);
+  // Not openModal: Chrome's close watcher ignores the cancel preventDefault on
+  // a second Escape in a row (anti-abuse rule), so the dialog can still close
+  // without the confirm button. Reopening it until returnValue is "done" is
+  // the only way to keep the promise that the key was seen and acknowledged.
+  const returnFocus = document.activeElement;
+  document.body.appendChild(dialog);
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      if (dialog.returnValue !== "done") {
+        dialog.returnValue = "";
+        dialog.showModal();
+        return;
+      }
+      dialog.remove();
+      if (returnFocus instanceof HTMLElement) returnFocus.focus();
+      resolve();
+    });
+    dialog.showModal();
+  });
 }
 
 /**
