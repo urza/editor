@@ -279,22 +279,38 @@ Buffer record:
 ```
 {
   id, content, closed, createdAt, updatedAt,
-  kind: 'scratch' | 'file',
-  file?: { handleId, path, lastSyncedMtime },
-  sync?: { rev, baseRev, dirty, deleted },
-  enc?:  { v: 1, preset, label },   // preset id, never the recipient list (§5)
+  kind: 'scratch' | 'file' | 'keyring',
+  title?,                            // user label; the plaintext name of an encrypted doc
+  lang?, langSource?,
+  file?: { handleId, name, path, lastSyncAt },
+  sync?: { rev, dirty, tombstone?: 'deleted' | 'detached', purge?: true },
+  enc?:  { v: 1, preset: 'all-devices' | 'this-device' },  // never the recipient list (§5)
   group, order
 }
 ```
 
-The `enc` field is reserved in the first schema migration, before the feature ships.
-`group` and `order` serve manual sidebar ordering and grouping.
+Field notes (revised 2026-09-02, see section 13):
+
+- `title` is the one plaintext label. The sidebar rename (row menu) writes it,
+  and encryption reads it. An encrypted doc without a title gets one from its
+  first line at encrypt time, so a locked row still has a name.
+- `sync.rev` is the last server revision this record agreed with (0 = never
+  pushed). `sync.dirty` means local changes wait for a push. A tombstone is a
+  pending push of that kind. `purge` asks the push loop to delete older server
+  revisions after the next successful push (encrypt conversion, section 5).
+- `kind: 'keyring'` marks the one hidden record that carries the device list
+  (section 13.3). The sidebar never shows it.
+- `group` and `order` serve manual sidebar ordering and grouping (section 9).
 
 Server revision row:
 
 ```
-{ docId, rev, content, deviceId, timestamp, deleted }
+{ docId, rev, seq, kind: 'text' | 'deleted' | 'detached',
+  content, meta, deviceId, clientTime, serverTime }
 ```
+
+`seq` is the global append counter and the pull cursor. `meta` is an opaque
+JSON object the client owns: `{ title, lang, langSource, enc, kind }`.
 
 ## 8. Build order
 
@@ -433,4 +449,208 @@ Decided (2026-09-01):
 - Settings: one bottom-of-sidebar button opens an overlay panel over the
   editor (section 9). Declarative items, commands do the mutations.
 
+- Step 3 build plan (2026-09-02, section 13): the age vendor tree uses
+  rewritten relative imports, no import map, because workers ignore import
+  maps and unlock must run in a worker. The device list is a hidden synced
+  record of kind `keyring`, merged by union, never forked. Conflict copies
+  never sync by themselves. `.age` files from disk are read in both age
+  encodings and written back armored. Encrypting a file-backed doc, folder
+  sync, and device removal are later phases.
+
 Open: none.
+
+## 13. Step 3 build plan: crypto and sync (2026-09-02)
+
+This section turns sections 3, 5, and 7 into build units. Each unit is one
+agent brief, one review, one Playwright gate, one push. Units 1 and 3 have no
+shared files and run in parallel. Units 2 and 4 wait for the sidebar work
+(collapse and row menu) because they touch the same files.
+
+### 13.1 Vendoring typage (unit 1)
+
+Import maps apply to the window only. A dedicated worker ignores them, and
+the unlock step must run in a worker (section 5, prototype findings). So the
+age family is vendored with its bare specifiers rewritten to relative paths
+at vendor time, and the import map gets no entries for it.
+
+- New script `app/tools/vendor_age.py`, a port of `crypto-proto/vendor.sh`
+  with the same pins (age-encryption 0.3.1, @noble/hashes 2.0.1,
+  @noble/curves 2.0.1, @noble/ciphers 2.4.0, @noble/post-quantum 0.5.4,
+  @scure/base 2.4.0) and the same flat-tree reason in a comment.
+- Output under `app/vendor/<package>/`, same layout as the other vendored
+  packages: `app/vendor/@noble/hashes/sha2.js`, `app/vendor/@scure/base/index.js`,
+  `app/vendor/age-encryption/index.js` (typage's `dist/` flattened).
+- Rewrite rule, applied to every `import`/`export ... from` in the tree:
+  `@noble/hashes/sha2.js` becomes the relative path from the importing file
+  to `app/vendor/@noble/hashes/sha2.js`. An extensionless subpath such as
+  `@noble/hashes/sha2` gets `.js`. A package root (`@scure/base`,
+  `age-encryption`) maps to that package's `index.js`. After the rewrite no
+  bare specifier may remain in the tree; the script asserts it.
+- `app/tools/check_imports.py` already resolves relative imports and must
+  pass. `gen_sw.py` precaches everything under `app/vendor/` by default, so
+  all 67 files land in the precache with no edit.
+- Pins go into `versions.json` (merged, not overwritten) and `VENDOR.md`
+  (BSD-3-Clause for typage, MIT for noble and scure).
+
+### 13.2 Crypto modules (unit 1)
+
+Ports of `crypto-proto/js/age.js`, `codec.js`, `keyring.js` with these changes:
+
+- `app/js/crypto/age.js` imports `../../vendor/age-encryption/index.js` by
+  relative path. It is the only file that names typage.
+- `app/js/crypto/unlock.worker.js`, a module worker with two jobs:
+  `wrap { identity, passphrase, workFactor }` returns armored ciphertext, and
+  `unwrap { wrapped, passphrase }` returns the identity string. The caller
+  creates a fresh worker per job and terminates it when the job ends, so the
+  passphrase and the identity string die with the worker. If `Worker` is
+  missing or fails, the same functions run on the main thread.
+- `app/js/crypto/keyring.js` stores `StoredKeyring` in the IndexedDB
+  `settings` store under key `keyring`. Peer devices come from the keyring
+  record (13.3), not from localStorage. `recipientsFor(preset)` resolves
+  `this-device` to own + recovery and `all-devices` to every device in the
+  keyring record + recovery. Unlock imports the identity as a non-extractable
+  CryptoKey where WebCrypto has X25519 (Chrome and Safari 17+ do), else keeps
+  the string.
+- `app/js/model/codec.js`: `encode(text, enc, keyring)` and
+  `decode(content, enc, keyring)`. `enc` carries the preset only; the codec
+  resolves recipients through the keyring at encrypt time. `LockedError` is
+  the one signal for "locked" and for "this device is not a recipient".
+- IndexedDB v3 migration: new store `settings` (`keyPath: "key"`, records
+  `{ key, value }`) with `getSetting`, `putSetting`, `deleteSetting`. Typedefs
+  gain `enc`, `sync`, `title`, and the `keyring` kind (section 7).
+- Commands: `crypto.setup`, `crypto.unlock`, `crypto.lock`. Settings panel
+  gains the Security section: state row, device name, device key, recovery
+  key, setup/unlock/lock actions. `ui/dialog.js` provides the passphrase
+  prompt, the one-time recovery key display with a copy button and an
+  "I wrote it down" confirmation, and a preset chooser. Native `<dialog>`,
+  no library.
+- Setup on a device that already sees a keyring record (pulled by sync) reuses
+  its recovery recipients and adds itself. Setup with no keyring record
+  generates the recovery identity. Two devices set up before sync therefore
+  hold two recovery recipients; the merge keeps both, and every recipient
+  set includes all of them. Either paper key restores everything.
+
+### 13.3 Keyring record
+
+The device list is one hidden buffer record, `id: "keyring"`,
+`kind: "keyring"`, JSON content:
+
+```
+{ v: 1, devices: [{ id, name, recipient, addedAt }], recovery: [recipient] }
+```
+
+It syncs like any other record once sync is configured and the keyring is set
+up. It is the only record with a merge rule: on a pull conflict the store
+unions devices and recovery recipients instead of forking, and re-pushes when
+the union differs from the incoming version. Without sync the record is local
+and holds one device. The sidebar, Recent, and search filter it out by kind.
+
+### 13.4 Codec in the store (unit 2)
+
+- The record keeps ciphertext. The store holds decoded text for unlocked
+  encrypted docs in an in-memory map, cleared on lock. `updateContent`
+  compares against that map for encrypted docs.
+- Encoding happens in the persist step (the 300 ms debounce), not per
+  keystroke. `sync.dirty` is set in the same step, after the codec, never in
+  `updateContent`, so a push always reads the ciphertext that matches.
+- `store.textOf(id)` returns a string for plaintext docs and a Promise for
+  encrypted ones. The editor shows a locked placeholder state while decoding
+  and dispatches `crypto.unlock` on `LockedError`. After unlock the store
+  emits `unlock`; the editor re-activates the current doc.
+- `crypto.lock` clears the plaintext map and emits `lock`; the editor drops
+  the cached states of encrypted docs and shows the placeholder for the
+  active one.
+- Commands `doc.encrypt` (preset chooser, requires unlock, sets `title` from
+  the first line when absent, sets `enc`, re-encodes, sets `sync.purge` when
+  synced) and `doc.decrypt`. This round they apply to scratch docs only.
+  Encrypting a file-backed doc (rename to `.age` on disk) is a later unit.
+- `.age` files opened from disk: `readFile` gains a bytes path. Armored text
+  stays as is; binary age gets armored into the record. The doc gets
+  `enc: { v: 1, preset: "all-devices" }` and decodes on open. Writes go back
+  armored. The age CLI reads both encodings, so nothing is lost.
+- Sidebar rows of encrypted docs show a lock mark and the `title`.
+
+### 13.5 Server (unit 3)
+
+`server/Vrtti.Server`, ASP.NET Core minimal API on .NET 10, raw
+`Microsoft.Data.Sqlite`, no EF. `server/Vrtti.Server.Tests` with xunit and
+`WebApplicationFactory`. `server/Dockerfile`, `server/README.md`.
+
+Config by environment: `VRTTI_TOKEN` (required), `VRTTI_DB` (default
+`./data/vrtti.db`), `VRTTI_ORIGINS` (comma list, default
+`https://urza.github.io`). HTTPS is the reverse proxy's job.
+
+Schema, WAL mode:
+
+```
+revisions(seq INTEGER PRIMARY KEY AUTOINCREMENT, doc_id TEXT NOT NULL,
+          rev INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT, meta TEXT,
+          device_id TEXT NOT NULL, client_time INTEGER NOT NULL,
+          server_time INTEGER NOT NULL, UNIQUE(doc_id, rev))
+index revisions_doc(doc_id, seq)
+```
+
+Endpoints under `/api`, bearer token on all but health, constant-time compare,
+CORS allows the configured origins with the Authorization header:
+
+- `GET /health` -> `{ ok: true }`.
+- `GET /changes?since=<seq>&limit=<n, max 500>` -> `{ changes, next, more }`.
+  Returns the newest revision per doc among rows with `seq > since`, ordered
+  by seq. `next` is the largest seq returned. Paging by `next` is correct
+  because a doc whose newest row is beyond the page is still beyond `next`.
+- `POST /docs/{id}/revisions` body
+  `{ baseRev, kind, content, meta, deviceId, clientTime }` -> 201
+  `{ rev, seq }`. When `baseRev` is a number and differs from the current rev,
+  409 with `{ current }`. `baseRev: null` means "attach without a claim" and
+  always appends. One `BEGIN IMMEDIATE` transaction per push.
+- `GET /docs/{id}` -> current revision, 404 when unknown.
+- `GET /docs/{id}/revisions` -> metadata list, newest first, no content.
+- `GET /docs/{id}/revisions/{rev}` -> one full revision.
+- `DELETE /docs/{id}/revisions?below=<rev>` -> `{ purged }`.
+
+Purge only removes rows with lower seq than the newest, so no cursor moves
+backward. Body limit 10 MB. `meta` is stored as JSON text and returned as a
+JSON object.
+
+### 13.6 Sync client (unit 4)
+
+`app/js/sync/client.js`, inert until `sync.config` `{ url, token }` exists in
+the settings store. `sync.deviceId` is minted once. `sync.cursor` is the seq.
+
+- `syncNow()` is single-flight: pull, then push. A request during a run
+  queues one more run.
+- Triggers: after `store.start()`, `visibilitychange` to visible, `online`,
+  a 60 s timer, and a 2 s debounce after any store `change` that leaves a
+  dirty synced record.
+- Pull applies each change through `store.applyRemote(change)`:
+  - `rev <= sync.rev`: skip (own echo).
+  - local dirty: `forkConflict` first, then adopt. Conflict copies never get
+    a sync target by themselves.
+  - local record without `sync` (detached earlier): re-attach; fork the local
+    copy when its content differs from the incoming one.
+  - no local record: create a scratch record from the change, open, synced.
+  - `deleted`: fork when dirty, then delete locally. `detached`: drop `sync`.
+  - kind `keyring`: union merge (13.3).
+  - Adopting sets content, meta, `sync = { rev, dirty: false }`, `updatedAt`,
+    emits `replace` when the doc is live and `change` always, and triggers the
+    disk write-behind for file-backed docs.
+- Push walks records with `sync.dirty`. Body `baseRev: sync.rev` (null on
+  first attach). 201 sets `rev` and clears `dirty`; a tombstone push then
+  drops `sync`. 409 feeds `current` into `applyRemote`. After a push of a
+  record with `purge`, call the purge endpoint with `below: rev` and clear it.
+- age wraps a fresh file key per save, so ciphertext differs on every push
+  even when the text did not change. No "skip if unchanged" by bytes, ever.
+- Status events `{ state: 'off' | 'idle' | 'syncing' | 'error' | 'offline',
+  message, lastSyncAt }` drive a statusbar element; click runs `sync.now`.
+- Commands: `doc.sync.on`, `doc.sync.off` (pushes a `detached` tombstone),
+  `sync.now`, `sync.all` (attach every open doc), `doc.history`.
+- Settings Sync section: server URL and token as text rows (the panel gains a
+  `text` item kind, password style for the token), status row, "Test
+  connection", "New docs sync by default" (unset means the platform default:
+  on when `(pointer: coarse)` matches and the File System Access API is
+  absent), "Sync all current docs", "Sync now".
+- New docs get `sync` at creation when the default is on.
+- History: `doc.history` opens a dialog listing revisions (time, device, size,
+  kind); "open as copy" creates a scratch buffer from that revision, decoded
+  through the codec when encrypted.
+- The service worker must not touch cross-origin requests; verify in unit 4.
