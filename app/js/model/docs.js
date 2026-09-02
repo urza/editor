@@ -212,7 +212,15 @@ export function createDocStore({ keyring }) {
       encodeSkipped.delete(record.id);
       // A derived title follows the first line while the text is readable,
       // the way a plaintext row does; this is the last point that can see it.
-      if (record.titleAuto) record.title = firstLineTitle(text) || record.title;
+      if (record.titleAuto) {
+        const next = firstLineTitle(text) || record.title;
+        if (next !== record.title) {
+          record.title = next;
+          // The sidebar painted on the keystroke, before this ran; without
+          // this event the row shows the old name until the next keystroke.
+          emit("change");
+        }
+      }
     }
     // After the codec, never in updateContent: a push must always read the
     // ciphertext that matches the revision it claims (architecture.md §13.4).

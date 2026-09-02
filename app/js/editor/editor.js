@@ -221,8 +221,8 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste) 
   });
 }
 
-const LOCKED_TEXT = "Locked. Unlock to read this document.";
-const FOREIGN_TEXT = "Encrypted for another device. This device has no key for it.";
+const LOCKED_TEXT = "🔒 Locked. Unlock to read this document.";
+const FOREIGN_TEXT = "🔒 Encrypted for another device. This device has no key for it.";
 
 /**
  * What an encrypted document shows while its text is out of reach: locked, or
