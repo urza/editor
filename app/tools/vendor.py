@@ -108,8 +108,17 @@ def main():
             if dep not in seen:
                 queue.append(dep)
 
-    manifest = {"versions": versions, "entries": entries}
-    with open(os.path.join(ROOT, "tools", "versions.json"), "w") as fh:
+    # Merge into the existing manifest instead of replacing it. tools/
+    # vendor_age.py pins the age family in the same file, and a plain
+    # overwrite here would drop those pins without a word.
+    path = os.path.join(ROOT, "tools", "versions.json")
+    manifest = {"versions": {}, "entries": {}}
+    if os.path.isfile(path):
+        with open(path) as fh:
+            manifest = json.load(fh)
+    manifest.setdefault("versions", {}).update(versions)
+    manifest.setdefault("entries", {}).update(entries)
+    with open(path, "w") as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True)
     print("\n%d packages vendored." % len(versions))
 

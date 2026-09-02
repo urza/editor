@@ -626,7 +626,9 @@ body {
    property. Keep both rules together, like #open-actions. */
 .settings-row[hidden] { display: none; }
 
-.settings-label { flex: 1; }
+/* min-width: 0 lets the flex column shrink below its content width, or the
+   62-character age keys next to it push the row past a phone screen. */
+.settings-label { flex: 1; min-width: 0; }
 
 .settings-hint,
 .settings-note {
@@ -636,7 +638,7 @@ body {
   color: var(--st-gutter-fg);
 }
 
-.settings-value { color: var(--st-sidebar-label); }
+.settings-value { color: var(--st-sidebar-label); overflow-wrap: anywhere; }
 
 .settings-note a { color: #6699CC; }
 
@@ -675,6 +677,98 @@ body {
 }
 
 .settings-button:hover { background: var(--st-sidebar-selected); }
+
+/* Native <dialog> prompts (js/ui/dialog.js). Same palette and the same button
+   classes as the settings panel, because they are the same kind of chrome. */
+.vrtti-dialog {
+  min-width: 280px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 16px 18px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 4px;
+  background: var(--st-ui-bg);
+  color: var(--st-text-fg);
+  font: inherit;
+}
+
+/* The UA default is a light grey wash that reads as a bug on this chrome. */
+.vrtti-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+
+.dialog-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+}
+
+.dialog-body { display: flex; flex-direction: column; gap: 10px; }
+
+.dialog-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+
+.dialog-input {
+  padding: 5px 7px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font: inherit;
+}
+
+.dialog-input:focus { outline: 1px solid var(--st-caret); }
+
+.dialog-error { margin: 0; font-size: 11px; color: #EC5F67; }
+.dialog-error[hidden] { display: none; }
+
+/* The one-time recovery key. Monospace and wrapping, because the user reads it
+   off the screen to copy it onto paper; user-select is spelled out so a future
+   app-wide `user-select: none` on chrome cannot silently break that. */
+.dialog-secret {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-caret);
+  font-family: var(--st-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dialog-primary {
+  background: var(--st-selection);
+  color: var(--st-sidebar-heading);
+}
+
+.dialog-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dialog-option:hover { background: var(--st-sidebar-selected); }
+
+.dialog-busy { margin: 0; color: var(--st-sidebar-label); }
 
 /* Twemoji widgets (js/editor/emoji.js). Sized in em so they track the editor
    font. 1.2em is a hair taller than the glyphs around them, but the 1.4

@@ -13,6 +13,8 @@ import os
 import re
 import sys
 
+from jsscan import mask_comments
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Matches `import ... from "x"`, `import "x"`, `export ... from "x"`.
@@ -71,7 +73,10 @@ def main():
 
     for path in files:
         with open(path, encoding="utf-8") as fh:
-            text = fh.read()
+            # Comments are masked out, not scanned. The @noble packages carry
+            # runnable `@example` blocks in their JSDoc whose import statements
+            # sit at column 0 and name files the package never publishes.
+            text = mask_comments(fh.read())
         for spec in sorted(set(IMPORT_RE.findall(text))):
             total += 1
             resolved = resolve(spec, path, imports)

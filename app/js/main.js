@@ -3,18 +3,22 @@
 // UI, start. All behavior lives in the modules (architecture.md §6).
 // Frameworkless on purpose.
 
-import { deleteBuffer, openDb } from "./storage/idb.js";
+import { deleteBuffer, getSetting, openDb, putSetting } from "./storage/idb.js";
 import { openFilePicker } from "./storage/fsa.js";
 import {
   checkForUpdate,
   hasFileSystemAccess,
   requestPersistence,
 } from "./model/capabilities.js";
-import { createDocStore } from "./model/docs.js";
+import { createDocStore, KEYRING_ID } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { register, run } from "./commands/registry.js";
+import * as age from "./crypto/age.js";
+import { KeyRing, keyringContentFor, readKeyringContent } from "./crypto/keyring.js";
+import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { askPassphrase, askText, showBusy, showSecret } from "./ui/dialog.js";
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
@@ -22,12 +26,36 @@ import { mountShortcuts } from "./ui/shortcuts.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 
+/** Wrong passphrases the unlock prompt tolerates before it gives up. */
+const UNLOCK_ATTEMPTS = 3;
+
+/**
+ * A first guess at the device name, so the user usually just presses Enter.
+ * `(pointer: coarse)` is the same test the sync default uses for "is this a
+ * phone" (architecture.md §13.6).
+ */
+function defaultDeviceName() {
+  return window.matchMedia("(pointer: coarse)").matches ? "Phone" : "Desktop";
+}
+
 async function start() {
   requestPersistence();
   await openDb();
 
   const store = createDocStore();
   await store.load();
+
+  // After store.load(), because the keyring resolves "all devices" against the
+  // hidden keyring record the store just read (architecture.md §13.3).
+  const keyring = new KeyRing();
+  await keyring.load();
+
+  /** Point the keyring at the device list in the hidden record. */
+  function refreshPeers() {
+    const content = readKeyringContent(store.keyringRecord());
+    keyring.setPeers(content ? content.devices : []);
+  }
+  refreshPeers();
 
   // Built on every platform: without the File System Access API no directory
   // handle can be stored, so the store loads nothing and the sidebar draws no
@@ -121,6 +149,94 @@ async function start() {
     run: (onStatus) => checkForUpdate(onStatus),
   });
 
+  // Encryption (architecture.md §5, §13.2). No keyboard shortcuts: setup runs
+  // once in a lifetime and unlock is dispatched by whatever needs a key.
+  register({
+    id: "crypto.setup",
+    title: "Set up encryption",
+    run: async () => {
+      if (keyring.isSetUp) return false;
+      const deviceName = await askText({
+        title: "Set up encryption",
+        label: "Device name",
+        value: defaultDeviceName(),
+        hint: "Shown in the keyring so you can tell your devices apart.",
+      });
+      if (deviceName === null) return false;
+      const passphrase = await askPassphrase({
+        title: "Choose a passphrase",
+        confirm: true,
+      });
+      if (passphrase === null) return false;
+
+      const busy = showBusy("Generating keys…");
+      /** @type {string | null} */
+      let recoveryIdentity;
+      try {
+        // A keyring record pulled by sync would supply existingRecovery here.
+        // Nothing pulls yet (unit 4), so this device always mints its own.
+        ({ recoveryIdentity } = await keyring.setup(passphrase, { deviceName }));
+        const now = Date.now();
+        await store.putSystemRecord({
+          id: KEYRING_ID,
+          kind: "keyring",
+          content: JSON.stringify(keyringContentFor(keyring)),
+          closed: false,
+          createdAt: now,
+          updatedAt: now,
+        });
+        refreshPeers();
+      } finally {
+        busy.close();
+      }
+
+      if (recoveryIdentity) {
+        await showSecret({
+          title: "Recovery key",
+          text: recoveryIdentity,
+          note:
+            "Write this down and keep it offline. It is shown once and never " +
+            "stored. It restores every document, on any device, with the age " +
+            "command line tool alone.",
+        });
+      }
+      return true;
+    },
+  });
+  register({
+    id: "crypto.unlock",
+    title: "Unlock encryption",
+    // Resolves true when the identity is in memory afterwards, so a caller that
+    // hit a locked document can simply retry its own work.
+    run: async () => {
+      if (!keyring.isSetUp) return false;
+      if (keyring.isUnlocked) return true;
+      let message = "";
+      for (let attempt = 0; attempt < UNLOCK_ATTEMPTS; attempt++) {
+        const passphrase = await askPassphrase({ title: "Unlock", message });
+        if (passphrase === null) return false;
+        const busy = showBusy("Unlocking…");
+        try {
+          await keyring.unlock(passphrase);
+          return true;
+        } catch (err) {
+          // typage reports a wrong passphrase and a corrupt blob with the same
+          // error, and the user can only act on the first, so say that.
+          message = "Wrong passphrase. Try again.";
+          console.log("[vrtti] unlock failed", err);
+        } finally {
+          busy.close();
+        }
+      }
+      return false;
+    },
+  });
+  register({
+    id: "crypto.lock",
+    title: "Lock encryption",
+    run: () => keyring.lock(),
+  });
+
   // Desktop disk files (architecture.md §2). Registered only where the API
   // exists, so a Firefox or iOS build has no command that could ever run.
   if (hasFileSystemAccess) {
@@ -202,7 +318,7 @@ async function start() {
 
   // Mounted before its command, because the command dispatches into the
   // controller the mount returns. The sidebar button below dispatches the id.
-  const settings = mountSettings();
+  const settings = mountSettings({ keyring });
   register({
     id: "settings.toggle",
     title: "Settings",
@@ -234,6 +350,13 @@ async function start() {
     renameBuffer: (id, name) => run("buffer.rename", { id, name }),
     toggleSidebar: () => run("sidebar.toggle"),
     deleteBuffer,
+    // Crypto surface for the checks. The UI reaches all of this through
+    // commands and the settings panel; nothing here is an app code path.
+    keyring,
+    codec,
+    age,
+    keyringRecord: () => store.keyringRecord(),
+    settings: { get: getSetting, put: putSetting },
   };
 }
 

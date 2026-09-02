@@ -6,6 +6,12 @@
 // Desktop Chrome/Edge only. Gates the future storage/fsa.js module.
 export const hasFileSystemAccess = "showDirectoryPicker" in window;
 
+// Dedicated module workers. Unlock runs scrypt in one, because scrypt is
+// synchronous and would freeze the UI for ~650 ms on the main thread
+// (architecture.md §5). js/crypto/unlock.js still falls back to the main thread
+// where this is false, so the flag reports a lost property, not a lost feature.
+export const hasWorkers = typeof Worker !== "undefined";
+
 // Force a service worker update check, then reload when the new build takes
 // over. sw.js uses skipWaiting + clients.claim, so a found update activates on
 // its own; we only wait for the takeover (controllerchange), then reload so

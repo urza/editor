@@ -168,6 +168,78 @@ worker active and the network cut, linting still runs). This is the deliberate
 opposite of the Twemoji decision: one 15 MB file the feature cannot work
 without, against 4,000 small files most users never need.
 
+## age encryption (typage and the noble/scure family)
+
+Vendored on **2026-09-02** for per-document encryption (architecture.md §5 and
+§13.1). Fetched from `registry.npmjs.org` tarballs by
+`python3 tools/vendor_age.py`, which is the reproducible recipe and a port of
+`crypto-proto/vendor.sh`.
+
+| Package | Version | License | Placed at | Files | Bytes |
+|---|---|---|---|---|---|
+| `age-encryption` (typage) | **0.3.1** | BSD-3-Clause | `vendor/age-encryption/` | 9 | 56,826 |
+| `@noble/hashes` | **2.0.1** | MIT | `vendor/@noble/hashes/` | 19 | 167,689 |
+| `@noble/curves` | **2.0.1** | MIT | `vendor/@noble/curves/` | 21 | 340,663 |
+| `@noble/ciphers` | **2.4.0** | MIT | `vendor/@noble/ciphers/` | 10 | 208,660 |
+| `@noble/post-quantum` | **0.5.4** | MIT | `vendor/@noble/post-quantum/` | 7 | 92,586 |
+| `@scure/base` | **2.4.0** | MIT | `vendor/@scure/base/` | 1 | 49,993 |
+
+**67 JS files, 916,417 bytes (895 KiB).** Each package keeps its `LICENSE`.
+Every `*.d.ts`, `*.map` and `src/` directory is dropped. typage's `dist/` is
+flattened one level, so its entry is `vendor/age-encryption/index.js`.
+
+### The tree is rewritten to relative imports, and gets no import map entry
+
+This is the one vendored tree that is **not** byte-identical to the published
+packages. `tools/vendor_age.py` rewrites every bare specifier in it
+(`@noble/hashes/sha2.js`, `@scure/base`, …) to a relative path, 60 of them
+across 22 files. Nothing else is touched: quote style, spacing, and every
+comment survive, and `diff -r` against `crypto-proto/vendor/` shows import
+lines only.
+
+The reason is the unlock step. scrypt in `@noble/hashes` is synchronous and
+typage calls it synchronously, so unwrapping the device identity blocks its
+thread for ~650 ms (`crypto-proto/REPORT.md` Q4). That work therefore runs in a
+dedicated worker (`js/crypto/unlock.worker.js`), and **a dedicated worker
+ignores the page's import map**. A bare specifier that resolves in the window
+would fail in the worker. Rewriting at vendor time makes one tree that loads
+identically in both, so `index.html` deliberately has **no** import map entry
+for these six packages. Do not add one.
+
+`vendor_age.py` asserts the rewrite: after it runs, no bare specifier for the
+six packages may remain anywhere under the six directories, and it scans for
+dynamic `import()` of bare specifiers too (there are none today).
+
+### Versions are pinned, and "latest" is wrong here
+
+A flat vendor tree cannot nest a second copy of a package the way npm does.
+`@noble/post-quantum` 0.5.4 wants `@noble/curves` and `@noble/hashes` at
+`~2.0.0`; typage wants `^2.0.1`. **2.0.1 is the one version that satisfies
+both**, so hashes and curves are pinned there and not at the newer 2.4.0.
+Taking latest breaks nothing at load time and breaks ML-KEM silently at
+runtime. The reason is repeated in the script's own header.
+
+### Comments hold example imports, and both tools skip them
+
+The noble packages put runnable `@example` blocks in their JSDoc, at column 0.
+`@noble/hashes/index.js` "imports" nine sibling modules that way, and
+`@noble/curves/index.js` "imports" `abstract/utils.js`, a file the package does
+not publish. `tools/jsscan.py` masks comments for both `vendor_age.py` and
+`check_imports.py`, so those examples are neither rewritten nor counted.
+
+### Not from jsdelivr
+
+`https://cdn.jsdelivr.net/npm/age-encryption@0.3.1/+esm` returns a working
+22 KB bundle whose imports are absolute CDN paths. It fetches from the CDN at
+runtime, which breaks the offline requirement. Registry tarballs are smaller in
+transferred bytes and genuinely offline.
+
+### Precached in full
+
+`tools/gen_sw.py` excludes `vendor/twemoji/` only, so all 67 files are in
+`sw-precache.js`. Only 38 of them load in practice; the other 29 cost 419 KB of
+disk and zero requests, and a partial list would break after an upgrade.
+
 ## Notes on the closure
 
 - Start set: `@codemirror/state`, `@codemirror/view`, `@codemirror/language`,
@@ -185,8 +257,15 @@ without, against 4,000 small files most users never need.
   `exports`/`module` field of their `package.json`) is in the table above:
   `crelt` and `w3c-keyname` ship a root `index.js`, `style-mod` ships
   `src/style-mod.js`, `@marijn/find-cluster-break` ships `src/index.js`.
-- No vendored file contains a `sourceMappingURL` comment, so the browser makes
-  no follow-up requests for missing maps.
+- No CodeMirror or Harper file contains a `sourceMappingURL` comment, so the
+  browser makes no follow-up requests for missing maps. 47 files in the age tree
+  do carry one, as published, and the `.map` files themselves are not vendored.
+  A browser only asks for a source map while devtools is open with source maps
+  enabled, so this costs a 404 in that one case and nothing at runtime.
+- `tools/versions.json` is written by two scripts now, `vendor.py` for the
+  CodeMirror closure and `vendor_age.py` for the age family. Both merge into the
+  existing file. `vendor.py` used to overwrite it, which would have dropped the
+  age pins without a word.
 - `js/editor/spellcheck.js` reaches Harper through a dynamic `import("harper.js")`,
   so the engine is fetched on the first lint and not at startup.
   `tools/check_imports.py` counts that specifier as used but does not resolve
