@@ -24,12 +24,15 @@ dotnet test
 
 ## Run it in Docker
 
+Generate the token once and keep it; the app needs the same value.
+
 ```sh
+export VRTTI_TOKEN=$(openssl rand -hex 32); echo "$VRTTI_TOKEN"
 docker build -t vrtti-server server/
 docker run -d --name vrtti \
   -p 8080:8080 \
   -v vrtti-data:/data \
-  -e VRTTI_TOKEN=$(openssl rand -hex 32) \
+  -e VRTTI_TOKEN \
   -e VRTTI_ORIGINS=https://urza.github.io \
   vrtti-server
 ```
