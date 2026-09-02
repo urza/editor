@@ -9,6 +9,7 @@
 // private key.
 
 import { deleteSetting, getSetting, putSetting } from "../storage/idb.js";
+import { deviceId } from "../model/device.js";
 import * as age from "./age.js";
 import { unwrapInWorker, wrapInWorker } from "./unlock.js";
 
@@ -141,9 +142,10 @@ export class KeyRing extends EventTarget {
 
     this.stored = {
       v: 1,
-      // The sync client (architecture.md §13.6) needs a device id too; it
-      // should reuse this one rather than mint a second name for one device.
-      deviceId: crypto.randomUUID(),
+      // Not minted here: the sync client stamps every revision with the same
+      // id (architecture.md §13.6), so both read it from model/device.js. A
+      // second id for one device would be a phantom device in the keyring.
+      deviceId: await deviceId(),
       deviceName: opts.deviceName || "this device",
       deviceRecipient: device.recipient,
       wrappedIdentity: wrapped,
@@ -255,6 +257,37 @@ export function keyringContentFor(keyring) {
     ],
     recovery: [...stored.recoveryRecipients],
   };
+}
+
+/**
+ * Union two keyring contents (architecture.md §13.3). The keyring record is the
+ * one record that merges instead of forking: a fork would split the device list
+ * in two, and every device would then encrypt to half of the devices.
+ *
+ * The incoming (server) version leads, and anything the local copy knows and it
+ * does not is appended. Union by device id and by recipient string, so two
+ * devices that set up before they ever met keep both entries and both recovery
+ * keys (§13.2).
+ *
+ * @param {KeyringContent | null} local
+ * @param {KeyringContent | null} remote
+ * @returns {KeyringContent}
+ */
+export function mergeKeyringContent(local, remote) {
+  /** @type {KeyringDevice[]} */
+  const devices = [...(remote?.devices ?? [])];
+  const seen = new Set(devices.map((d) => d.id));
+  for (const device of local?.devices ?? []) {
+    if (device && device.id && !seen.has(device.id)) {
+      seen.add(device.id);
+      devices.push(device);
+    }
+  }
+  const recovery = [...(remote?.recovery ?? [])];
+  for (const recipient of local?.recovery ?? []) {
+    if (recipient && !recovery.includes(recipient)) recovery.push(recipient);
+  }
+  return { v: 1, devices, recovery };
 }
 
 /**

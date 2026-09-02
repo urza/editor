@@ -103,6 +103,9 @@
     <!-- No title and no state class here: ui/statusbar.js owns both, because
          the spellcheck state comes from localStorage, not from the markup. -->
     <button id="status-spell" class="icon-button" type="button">abc</button>
+    <!-- Sync state. Hidden here and shown by ui/statusbar.js only once a server
+         is configured: with no sync there is nothing to report. -->
+    <button id="status-sync" class="icon-button" type="button" hidden></button>
     <!-- Save to disk. Hidden here and shown by ui/statusbar.js for scratch
          buffers only, and only where the File System Access API exists. -->
     <button id="status-saveas" class="icon-button" type="button" title="Save to disk…" hidden>⤓</button>

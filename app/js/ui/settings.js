@@ -25,17 +25,30 @@ import { BUILD } from "../version.js";
 let keyring = null;
 
 /**
+ * The sync client the Sync section reports on. Same reason as `keyring` above.
+ * @type {ReturnType<import("../sync/client.js").createSyncClient> | null}
+ */
+let sync = null;
+
+/** Result of the last "Test connection" click, shown on that row. */
+let testResult = "";
+
+/**
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
- * @property {"toggle" | "info" | "action" | "note"} type
+ * @property {"toggle" | "text" | "info" | "action" | "note"} type
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a toggle, info or action row.
  * @property {string} [hint]   Small line under the label.
- * @property {() => boolean} [get]                       toggle: current state.
- * @property {() => void} [set]                          toggle: dispatch the flip.
- * @property {() => string | Promise<string>} [value]    info: right-hand text.
+ * @property {() => any} [get]        toggle: the state. text: the value.
+ * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text:
+ *                             dispatch the value the user typed.
+ * @property {boolean} [password]     text: hide what is typed.
+ * @property {string} [placeholder]   text: empty-field hint.
+ * @property {() => string | Promise<string>} [value]    info (and action):
+ *                             right-hand text.
  * @property {() => boolean | Promise<boolean>} [visible] Hide the row when false.
  * @property {string} [button]                           action: button label.
  * @property {() => any} [act]                           action: dispatch the action.
@@ -61,6 +74,18 @@ function formatBytes(bytes) {
     if (bytes >= size) return (bytes / size).toFixed(1) + " " + unit;
   }
   return bytes + " B";
+}
+
+/** One line for the sync status row: state, why, and when it last worked. */
+function syncStatusText() {
+  if (!sync) return "off";
+  const { state, message, lastSyncAt } = sync.status;
+  let text = state;
+  if (message) text += " (" + message + ")";
+  if (lastSyncAt) {
+    text += " · last sync " + new Date(lastSyncAt).toLocaleTimeString();
+  }
+  return text;
 }
 
 /** @type {Section[]} */
@@ -107,6 +132,77 @@ const SECTIONS = [
         // Pointless once the grant exists, so the row disappears with it.
         visible: async () => !(await isPersisted()),
         act: () => run("storage.persist"),
+      },
+    ],
+  },
+  {
+    title: "Sync",
+    items: [
+      {
+        type: "text",
+        key: "sync-url",
+        label: "Server URL",
+        hint: "Empty means no sync at all. The app never calls a server it was not given.",
+        placeholder: "https://sync.example.com",
+        get: () => sync?.config.url ?? "",
+        // Both fields dispatch the whole config: the client stores one row, and
+        // a half-written config would make it inert on the next reload.
+        set: (value) =>
+          run("sync.configure", { url: value, token: sync?.config.token ?? "" }),
+      },
+      {
+        type: "text",
+        key: "sync-token",
+        label: "Token",
+        hint: "The server's bearer token. It stays on this device.",
+        password: true,
+        get: () => sync?.config.token ?? "",
+        set: (value) =>
+          run("sync.configure", { url: sync?.config.url ?? "", token: value }),
+      },
+      {
+        type: "info",
+        key: "sync-status",
+        label: "Status",
+        value: () => syncStatusText(),
+      },
+      {
+        type: "action",
+        key: "sync-test",
+        label: "Test connection",
+        button: "test",
+        visible: () => Boolean(sync?.isConfigured),
+        value: () => testResult,
+        act: async () => {
+          testResult = "…";
+          const result = await (sync?.testConnection() ?? { ok: false });
+          testResult = result.ok ? "ok" : result.message ?? "failed";
+        },
+      },
+      {
+        type: "toggle",
+        key: "sync-default",
+        label: "New docs sync by default",
+        hint: "Unset follows the platform: on for a phone, off where there is a disk.",
+        get: () => Boolean(sync?.syncDefaultOn()),
+        set: () => run("sync.defaultToggle"),
+      },
+      {
+        type: "action",
+        key: "sync-all",
+        label: "Sync all current docs",
+        hint: "Attaches every open document. It sets the same per-document flag.",
+        button: "attach",
+        visible: () => Boolean(sync?.isConfigured),
+        act: () => run("sync.all"),
+      },
+      {
+        type: "action",
+        key: "sync-run",
+        label: "Sync now",
+        button: "sync",
+        visible: () => Boolean(sync?.isConfigured),
+        act: () => run("sync.now"),
       },
     ],
   },
@@ -281,14 +377,56 @@ function makeRow(item, refresh) {
       button.setAttribute("aria-pressed", String(on));
       button.textContent = on ? "on" : "off";
     };
-    button.addEventListener("click", () => {
-      if (item.set) item.set();
+    button.addEventListener("click", async () => {
+      // Awaited: a flip that writes a setting resolves after the write, and
+      // repainting before it lands would show the old state.
+      if (item.set) await item.set();
       paintOwn();
     });
     row.appendChild(button);
   }
 
-  if (item.type === "info") {
+  if (item.type === "text") {
+    const input = document.createElement("input");
+    input.className = "settings-input";
+    input.type = item.password ? "password" : "text";
+    input.spellcheck = false;
+    if (item.placeholder) input.placeholder = item.placeholder;
+
+    // What was last written through this row. It makes the commit idempotent,
+    // so Enter (which blurs) does not send the same value twice.
+    let committed = "";
+    paintOwn = () => {
+      // Never while the user is typing in it: a repaint arrives from every
+      // sync status event, and it would wipe a half-typed token.
+      if (document.activeElement === input) return;
+      committed = String((item.get ? item.get() : "") ?? "");
+      input.value = committed;
+    };
+
+    async function commit() {
+      if (!item.set || input.value === committed) return;
+      committed = input.value;
+      await item.set(committed);
+      // The value changed what other rows report (the status, the visibility
+      // of the sync actions), so the whole panel repaints.
+      refresh();
+    }
+
+    input.addEventListener("keydown", (event) => {
+      // The chord table listens on window, so Alt+W here would close a buffer
+      // while the user is typing a URL.
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur(); // the blur listener commits
+      }
+    });
+    input.addEventListener("blur", commit);
+    row.appendChild(input);
+  }
+
+  if (item.type === "info" || (item.type === "action" && item.value)) {
     const value = document.createElement("span");
     value.className = "settings-value";
     paintOwn = () => {
@@ -335,10 +473,12 @@ function makeRow(item, refresh) {
  * Mount the settings overlay. Returns the controller the settings.toggle
  * command dispatches into.
  *
- * @param {{keyring?: import("../crypto/keyring.js").KeyRing}} [deps]
+ * @param {{keyring?: import("../crypto/keyring.js").KeyRing,
+ *          sync?: ReturnType<import("../sync/client.js").createSyncClient>}} [deps]
  */
 export function mountSettings(deps = {}) {
   keyring = deps.keyring ?? null;
+  sync = deps.sync ?? null;
   const panel = /** @type {HTMLElement} */ (document.getElementById("settings-panel"));
 
   const head = document.createElement("div");
@@ -391,6 +531,13 @@ export function mountSettings(deps = {}) {
   // Unlock and lock are also reachable from outside the panel (a locked doc
   // asks on open), so the Security rows follow the keyring wherever it changed.
   keyring?.addEventListener("change", () => {
+    if (!panel.hidden) refresh();
+  });
+
+  // A sync run is the one thing here that changes on its own, on a timer and
+  // on the network. The status row would otherwise sit at whatever it said
+  // when the panel opened.
+  sync?.events.addEventListener("status", () => {
     if (!panel.hidden) refresh();
   });
 

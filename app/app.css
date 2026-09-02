@@ -299,6 +299,12 @@ body {
 #status-spell.off { opacity: 0.35; text-decoration: line-through; }
 #status-spell.off:hover { opacity: 0.6; }
 
+/* Sync indicator, same rules as the spellcheck one next to it: the label is
+   the state, and "off" (an error or offline) dims and strikes it. */
+#status-sync { color: var(--st-gutter-fg); font-size: 12px; }
+#status-sync.off { opacity: 0.35; text-decoration: line-through; }
+#status-sync.off:hover { opacity: 0.6; }
+
 .buffer-list {
   list-style: none;
   margin: 0;
@@ -680,6 +686,43 @@ body {
 }
 
 .settings-button:hover { background: var(--st-sidebar-selected); }
+
+/* Text row (the sync server and token). Same look as a dialog field, but it
+   sits on the row's baseline next to its label instead of under it. */
+.settings-input {
+  flex: 0 1 220px;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: 11px;
+}
+
+.settings-input:focus { outline: 1px solid var(--st-caret); }
+
+/* Revision history (js/ui/history.js). A plain list inside a dialog body. */
+.history-list {
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--st-selection-border);
+  font-size: 12px;
+}
+
+.history-when { flex: 0 0 auto; color: var(--st-foreground); }
+.history-meta { flex: 1; min-width: 0; font-size: 11px; color: var(--st-gutter-fg); }
 
 /* Native <dialog> prompts (js/ui/dialog.js). Same palette and the same button
    classes as the settings panel, because they are the same kind of chrome. */

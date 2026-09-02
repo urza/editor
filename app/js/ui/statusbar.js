@@ -8,14 +8,18 @@ import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
 
-/** @param {ReturnType<import("../model/docs.js").createDocStore>} store */
-export function mountStatusbar(store) {
+/**
+ * @param {ReturnType<import("../model/docs.js").createDocStore>} store
+ * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
+ */
+export function mountStatusbar(store, sync) {
   const statusTitle = /** @type {HTMLElement} */ (document.getElementById("status-title"));
   const statusSave = /** @type {HTMLElement} */ (document.getElementById("status-save"));
   const statusBuild = /** @type {HTMLElement} */ (document.getElementById("status-build"));
   const statusUpdate = /** @type {HTMLElement} */ (document.getElementById("status-update"));
   const statusSpell = /** @type {HTMLElement} */ (document.getElementById("status-spell"));
   const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
+  const statusSync = /** @type {HTMLElement} */ (document.getElementById("status-sync"));
 
   const builtAt = new Date(BUILD.builtAt);
   const stamp =
@@ -55,6 +59,45 @@ export function mountStatusbar(store) {
 
   if (hasFileSystemAccess) {
     statusSaveAs.addEventListener("click", () => run("file.saveAs"));
+  }
+
+  // ---- Sync indicator (architecture.md §13.6) ------------------------------
+
+  /** @type {Record<string, string>} */
+  const SYNC_LABEL = {
+    idle: "synced",
+    syncing: "syncing…",
+    error: "sync error",
+    offline: "offline",
+  };
+
+  /** @param {import("../sync/client.js").SyncStatus} status */
+  function renderSync(status) {
+    // No server configured means no element: an indicator for a feature the
+    // user never turned on is noise, and there is nothing it could report.
+    statusSync.hidden = status.state === "off";
+    if (statusSync.hidden) return;
+    statusSync.textContent = SYNC_LABEL[status.state] ?? status.state;
+    // "off" for the error and offline states, which dims and strikes the label
+    // the same way the spellcheck indicator says "not working right now".
+    statusSync.classList.toggle(
+      "off",
+      status.state === "error" || status.state === "offline"
+    );
+    const parts = [status.message ?? SYNC_LABEL[status.state] ?? status.state];
+    if (status.lastSyncAt) {
+      parts.push("last sync " + new Date(status.lastSyncAt).toLocaleTimeString());
+    }
+    parts.push("Click to sync now");
+    statusSync.title = parts.join(" · ");
+  }
+
+  if (sync) {
+    statusSync.addEventListener("click", () => run("sync.now"));
+    sync.events.addEventListener("status", (event) => {
+      renderSync(/** @type {CustomEvent} */ (event).detail);
+    });
+    renderSync(sync.status);
   }
 
   function renderTitle() {
