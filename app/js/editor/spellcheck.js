@@ -7,6 +7,7 @@
 // dispatches a user makes by clicking a suggestion button.
 
 import { EditorView, ViewPlugin } from "@codemirror/view";
+import { language } from "@codemirror/language";
 import { forceLinting, linter } from "@codemirror/lint";
 
 // Resolved against the document, which is index.html, not against this
@@ -45,6 +46,25 @@ const MAX_ACTIONS = 5;
 // Only a word that is not a word gets the red "warning" underline. Everything
 // else is an opinion about grammar or style and gets the quieter "info" one.
 const WARNING_KINDS = new Set(["Spelling", "Typo"]);
+
+// Harper parses its input as Markdown and has no mode for anything else, so a
+// JSON or JavaScript buffer would get every identifier underlined as a
+// misspelling. Those buffers get no diagnostics at all (architecture.md §9).
+//
+// The mode is read from the state's own `language` facet instead of a getter
+// the editor module sets. The facet already travels with each EditorState, so
+// a parked buffer and the live one are both right with no wiring, no shared
+// mutable variable, and no way for the two to disagree. `@codemirror/language`
+// is already in the tree, so this costs no new dependency.
+// A state with no language extension at all still gets spellcheck: plain text
+// is exactly what Harper is for.
+const MARKDOWN = "markdown";
+
+/** @param {EditorView} view */
+function isProse(view) {
+  const mode = view.state.facet(language);
+  return !mode || mode.name === MARKDOWN;
+}
 
 // SuggestionKind from harper.js, compared numerically so the enum is not
 // needed before the module loads. The third value, Replace = 0, is the common
@@ -227,6 +247,7 @@ function toDiagnostic(lint) {
 async function harperSource(view) {
   lintedGeneration = generation;
   if (!enabled) return [];
+  if (!isProse(view)) return [];
   if (view.state.doc.length > MAX_DOC_CHARS) return [];
 
   const local = engineOrLoad();
@@ -305,7 +326,12 @@ export function spellcheck() {
   return [
     linter(harperSource, {
       delay: LINT_DELAY,
-      needsRefresh: () => generation !== lintedGeneration,
+      // The second test catches a mode switch. A compartment reconfigure
+      // changes no text, so without it the underlines from the old mode would
+      // stay on screen until the user typed again.
+      needsRefresh: (update) =>
+        generation !== lintedGeneration ||
+        update.startState.facet(language) !== update.state.facet(language),
     }),
     trackViews,
     spellcheckTheme,

@@ -24,6 +24,11 @@
  * @property {number} updatedAt
  * @property {'scratch' | 'file'} [kind]  Absent means scratch (every v1 record).
  * @property {FileLink} [file]  Present exactly when kind is 'file'.
+ * @property {string} [lang]  Language mode id from js/editor/lang.js ("markdown",
+ *                            "json", …). Absent means nothing has decided one yet,
+ *                            so the editor detects it again on open.
+ * @property {'auto' | 'user'} [langSource]  Who decided `lang`. A 'user' choice is
+ *                            never overwritten by detection (architecture.md §9).
  */
 
 /**

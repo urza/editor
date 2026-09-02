@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "259eb38746d9",
+  "version": "a69b5e25ac86",
   "files": [
     "./",
     "./app.css",
@@ -10,6 +10,7 @@ self.__PRECACHE = {
     "./js/commands/registry.js",
     "./js/editor/editor.js",
     "./js/editor/emoji.js",
+    "./js/editor/lang.js",
     "./js/editor/spellcheck.js",
     "./js/main.js",
     "./js/model/capabilities.js",
@@ -29,6 +30,7 @@ self.__PRECACHE = {
     "./vendor/@codemirror/lang-css/index.js",
     "./vendor/@codemirror/lang-html/index.js",
     "./vendor/@codemirror/lang-javascript/index.js",
+    "./vendor/@codemirror/lang-json/index.js",
     "./vendor/@codemirror/lang-markdown/index.js",
     "./vendor/@codemirror/language/index.js",
     "./vendor/@codemirror/lint/index.js",
@@ -40,6 +42,7 @@ self.__PRECACHE = {
     "./vendor/@lezer/highlight/index.js",
     "./vendor/@lezer/html/index.js",
     "./vendor/@lezer/javascript/index.js",
+    "./vendor/@lezer/json/index.js",
     "./vendor/@lezer/lr/index.js",
     "./vendor/@lezer/markdown/index.js",
     "./vendor/@marijn/find-cluster-break/index.js",

@@ -9,6 +9,7 @@
 //   "evict"   { id }                           -> editor drops its cached state
 //   "save"    { status }                       -> statusbar save indicator
 //   "replace" { id, content }                  -> editor replaces a document wholesale
+//   "lang"    { id, lang }                     -> editor swaps the language mode
 //
 // Persistence: every mutation writes through to IndexedDB, content edits with
 // a debounce. This is the first stage of the write pipeline (architecture.md
@@ -34,6 +35,10 @@ import {
   saveFilePicker,
   writeFile,
 } from "../storage/fsa.js";
+// The one import from editor/ in this layer. Detection is a rule about a
+// record, not about a view, and it lives next to the mode table it names
+// (editor/lang.js explains why the two stay together).
+import { detectFromName, isLang } from "../editor/lang.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 
@@ -222,6 +227,29 @@ export function createDocStore() {
     persistSoon(id);
   }
 
+  /**
+   * Record the buffer's language mode (architecture.md §9). The only writer of
+   * `lang` and `langSource`.
+   *
+   * `langSource` is the whole conflict rule: a hand-picked syntax outranks
+   * every later automatic guess, and nothing else needs to remember that. The
+   * editor asks nothing before it sniffs; it just reports what it saw here.
+   *
+   * @param {string} id
+   * @param {string} lang Language id from editor/lang.js.
+   * @param {'auto' | 'user'} source Who decided.
+   */
+  async function setLang(id, lang, source) {
+    const record = buffers.get(id);
+    if (!record || !isLang(lang)) return;
+    if (source === "auto" && record.langSource === "user") return;
+    if (record.lang === lang && record.langSource === source) return;
+    record.lang = lang;
+    record.langSource = source;
+    await putBuffer({ ...record });
+    emit("lang", { id, lang });
+  }
+
   async function create() {
     const record = newBufferRecord();
     buffers.set(record.id, record);
@@ -292,6 +320,11 @@ export function createDocStore() {
     const record = newBufferRecord();
     record.content = content;
     await linkFile(record, handle);
+    // Set here rather than through setLang: the record is not in `buffers`
+    // yet, and nothing is listening for it. The first putBuffer below carries
+    // the language, so no extra write happens.
+    record.lang = detectFromName(handle.name);
+    record.langSource = "auto";
     // record.file exists here (linkFile just set it); the check is for ts-check.
     if (options.path && record.file) record.file.path = options.path;
     buffers.set(record.id, record);
@@ -318,6 +351,9 @@ export function createDocStore() {
     await writeFile(handle, record.content);
     await linkFile(record, handle);
     await putBuffer({ ...record });
+    // The buffer now has a file name, and a file name decides the language.
+    // "auto", so a syntax the user picked by hand survives the save.
+    await setLang(id, detectFromName(handle.name), "auto");
     if (id === activeId) emit("save", { status: "saved" });
     emit("change");
     return record;
@@ -521,6 +557,7 @@ export function createDocStore() {
     reopen,
     activate,
     updateContent,
+    setLang,
     createFromFile,
     saveAs,
     replaceFromDisk,

@@ -71,6 +71,18 @@ async function start() {
     },
   });
   register({
+    id: "syntax.set",
+    title: "Set syntax",
+    // The argument is a language id; editor/lang.js exports LANGUAGES, the
+    // list a future picker (command palette or settings row) would offer.
+    // There is no UI for it yet, so nothing but a test dispatches this today.
+    // Marked "user", which is what stops later pastes from re-detecting.
+    run: (lang) => {
+      const target = store.activeId;
+      if (target) return store.setLang(target, lang, "user");
+    },
+  });
+  register({
     id: "storage.persist",
     title: "Request persistent storage",
     // Also called once at startup. The command exists so the settings panel
@@ -183,8 +195,13 @@ async function start() {
   // @ts-ignore - deliberate global test hook
   window.vrtti = {
     buffers: store.buffers,
+    get activeId() {
+      return store.activeId;
+    },
     createBuffer: () => run("buffer.new"),
     closeBuffer: (id) => run("buffer.close", id),
+    activateBuffer: (id) => run("buffer.activate", id),
+    setSyntax: (lang) => run("syntax.set", lang),
     deleteBuffer,
   };
 }

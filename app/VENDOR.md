@@ -30,6 +30,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `@codemirror/lang-css` | 6.3.1 | `dist/index.js` | 15,969 |
 | `@codemirror/lang-html` | 6.4.12 | `dist/index.js` | 26,142 |
 | `@codemirror/lang-javascript` | 6.2.5 | `dist/index.js` | 20,788 |
+| `@codemirror/lang-json` | 6.0.2 | `dist/index.js` | 1,876 |
 | `@codemirror/lang-markdown` | 6.5.2 | `dist/index.js` | 21,741 |
 | `@codemirror/language` | 6.12.4 | `dist/index.js` | 102,129 |
 | `@codemirror/lint` | 6.9.7 | `dist/index.js` | 36,579 |
@@ -41,6 +42,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `@lezer/highlight` | 1.2.3 | `dist/index.js` | 29,915 |
 | `@lezer/html` | 1.3.13 | `dist/index.js` | 20,875 |
 | `@lezer/javascript` | 1.5.4 | `dist/index.js` | 80,756 |
+| `@lezer/json` | 1.0.3 | `dist/index.js` | 1,981 |
 | `@lezer/lr` | 1.4.10 | `dist/index.js` | 71,678 |
 | `@lezer/markdown` | 1.7.2 | `dist/index.js` | 86,937 |
 | `@marijn/find-cluster-break` | 1.0.4 | `src/index.js` | 4,270 |
@@ -48,7 +50,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `style-mod` | 4.1.3 | `src/style-mod.js` | 6,935 |
 | `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
 
-**22 packages, 22 files, 1,493,036 raw bytes (1.42 MiB).**
+**24 packages, 24 files, 1,496,893 raw bytes (1.43 MiB).**
 
 `@codemirror/lint` was added on **2026-09-01** for the Harper spellcheck
 (architecture.md §11), after the other 21. It was fetched by hand, at the same
@@ -57,6 +59,15 @@ re-pins every CodeMirror package to today's latest, which is a separate
 decision from adding one package. Its dependencies (`@codemirror/state`,
 `@codemirror/view` ≥ 6.42.0, `crelt`) were already in the tree and satisfy its
 ranges, so the closure did not grow.
+
+`@codemirror/lang-json` was added on **2026-09-02** for language
+auto-detection (architecture.md §9), by hand for the same reason. It is the
+one language pack the editor needed and did not already own: markdown,
+javascript, html and css were all in the tree. It pulls `@lezer/json`, which
+is the only new transitive package; `@lezer/json`'s own dependencies
+(`@lezer/common`, `@lezer/highlight`, `@lezer/lr`) were already vendored. Both
+files are tiny, because the grammar tables are the bulk of a language pack and
+JSON's grammar is small.
 
 ## Twemoji SVG assets
 
@@ -164,6 +175,9 @@ without, against 4,000 small files most users never need.
   `@codemirror/lang-javascript`.
 - `@codemirror/autocomplete`, `@codemirror/lang-html`, `@codemirror/lang-css`,
   `@lezer/*`, `crelt`, `style-mod` and `w3c-keyname` arrive transitively.
+- `@codemirror/lint` and `@codemirror/lang-json` were added later, by hand, and
+  are not in `START` in `tools/vendor.py`. A re-run of the script would drop
+  them; add them to `START` first, or fetch them again the same way.
 - `@marijn/find-cluster-break` is a dependency of `@codemirror/state` 6.7.2 that
   the plan's expected list did not name. It is required; the graph does not
   close without it.
@@ -189,9 +203,11 @@ Recorded here because this is the only durable document in the PoC.
    `@codemirror/state` 6.7.2 and the plan's expected package list predates it.
 3. **`tools/vendor.py` exists.** The plan names only `tools/check_imports.py`.
    The fetcher drives `curl` and makes the vendoring reproducible.
-4. **Fenced code resolves js, jsx, ts, tsx, html and css**, not js alone.
+4. **Fenced code resolves js, jsx, ts, tsx, html, css and json**, not js alone.
    `@codemirror/lang-html` and `@codemirror/lang-css` arrive transitively with
-   `@codemirror/lang-markdown`, so the extra fences cost zero bytes.
+   `@codemirror/lang-markdown`, so those fences cost zero bytes. `json` was
+   added with `@codemirror/lang-json` (see above), which the whole-document
+   mode needed anyway. The table lives in `js/editor/lang.js`.
 5. **`.cm-cursorLayer { animation: none }`.** Sublime's `caret_style` default is
    `"solid"`, so the caret must not blink. The plan's theme list omits this.
 6. **Bracket match and search panel colors.** Mariana sets

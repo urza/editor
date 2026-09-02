@@ -23,18 +23,16 @@ import {
   indentOnInput,
   syntaxHighlighting,
 } from "@codemirror/language";
-import { markdown } from "@codemirror/lang-markdown";
-import {
-  javascriptLanguage,
-  jsxLanguage,
-  tsxLanguage,
-  typescriptLanguage,
-} from "@codemirror/lang-javascript";
-import { htmlLanguage } from "@codemirror/lang-html";
-import { cssLanguage } from "@codemirror/lang-css";
 import { tags } from "@lezer/highlight";
 import { twemoji } from "./emoji.js";
 import { spellcheck } from "./spellcheck.js";
+import {
+  extensionForLang,
+  langCompartment,
+  langForRecord,
+  pasteDominates,
+  sniff,
+} from "./lang.js";
 
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
@@ -143,26 +141,13 @@ export const marianaHighlight = HighlightStyle.define([
   { tag: tags.invalid, color: "#F7F7F7", backgroundColor: "#EC5F66" },
 ]);
 
-// Fenced-code resolver. A plain function keeps @codemirror/language-data out:
-// that package would drag in every language CodeMirror ships.
-const FENCE_LANGUAGES = {
-  js: javascriptLanguage,
-  javascript: javascriptLanguage,
-  mjs: javascriptLanguage,
-  node: javascriptLanguage,
-  jsx: jsxLanguage,
-  ts: typescriptLanguage,
-  typescript: typescriptLanguage,
-  tsx: tsxLanguage,
-  html: htmlLanguage,
-  css: cssLanguage,
-};
-
-function resolveFenceLanguage(info) {
-  return FENCE_LANGUAGES[info.toLowerCase()] || null;
-}
-
-function baseExtensions(onDocChanged) {
+/**
+ * @param {string} lang Language id for the whole document (editor/lang.js).
+ * @param {(content: string) => void} [onDocChanged]
+ * @param {(content: string) => void} [onDominantPaste] Called after a paste
+ *   large enough to redefine what the buffer is. See pasteDominates.
+ */
+function baseExtensions(lang, onDocChanged, onDominantPaste) {
   return [
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -174,7 +159,10 @@ function baseExtensions(onDocChanged) {
     bracketMatching(),
     EditorView.lineWrapping,
     keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
-    markdown({ codeLanguages: resolveFenceLanguage }),
+    // The document language, in a compartment so "set syntax" and a paste can
+    // swap it with one dispatch instead of rebuilding the state and losing the
+    // undo history (architecture.md §9).
+    langCompartment.of(extensionForLang(lang)),
     // Color emoji as vendored SVGs. A view decoration only: the document text
     // keeps the original characters (architecture.md §10).
     twemoji(),
@@ -188,13 +176,42 @@ function baseExtensions(onDocChanged) {
         onDocChanged(update.state.doc.toString());
       }
     }),
+    // Language re-detection after a paste, and only after a paste: sniffing on
+    // every keystroke would recolor a note the moment its first line happens
+    // to parse as JSON (architecture.md §9).
+    EditorView.updateListener.of((update) => {
+      if (!onDominantPaste || !update.docChanged) return;
+      let inserted = 0;
+      let pasted = false;
+      for (const transaction of update.transactions) {
+        // The user event CodeMirror's own paste handler annotates. Programmatic
+        // dispatches carry no such annotation, so a reload from disk or an
+        // applied spelling fix can never trigger detection.
+        if (!transaction.isUserEvent("input.paste")) continue;
+        pasted = true;
+        transaction.changes.iterChanges((_fa, _ta, _fb, _tb, text) => {
+          inserted += text.length;
+        });
+      }
+      if (!pasted) return;
+      const before = update.startState.doc;
+      const blankBefore = before.length === 0 || !/\S/.test(before.toString());
+      if (!pasteDominates(inserted, update.state.doc.length, blankBefore)) return;
+      onDominantPaste(update.state.doc.toString());
+    }),
   ];
 }
 
-export function createEditorState(content, onDocChanged) {
+/**
+ * @param {string} content
+ * @param {string} lang Language id (editor/lang.js).
+ * @param {(content: string) => void} [onDocChanged]
+ * @param {(content: string) => void} [onDominantPaste]
+ */
+export function createEditorState(content, lang, onDocChanged, onDominantPaste) {
   return EditorState.create({
     doc: content || "",
-    extensions: baseExtensions(onDocChanged),
+    extensions: baseExtensions(lang, onDocChanged, onDominantPaste),
   });
 }
 
@@ -207,12 +224,35 @@ export function mountEditor(host, store) {
   const view = new EditorView({ parent: host });
   const states = new Map(); // id -> EditorState
 
+  /**
+   * A paste that redefines the buffer re-runs detection. The id is captured
+   * per state, not read from store.activeId: one state belongs to exactly one
+   * buffer for its whole life, so the capture cannot go stale, while
+   * store.activeId is momentarily the *next* buffer during a switch.
+   * @param {string} id @param {string} content
+   */
+  function detectAfterPaste(id, content) {
+    const record = store.get(id);
+    // A file-backed buffer is named by its extension and stays that way.
+    // Pasting JSON into a .js file does not make the file JSON.
+    if (!record || record.kind === "file") return;
+    // "auto" here: the store drops it when the user has set the syntax by hand.
+    store.setLang(id, sniff(content), "auto");
+  }
+
   function stateFor(id) {
     let state = states.get(id);
     if (!state) {
       const record = store.get(id);
-      state = createEditorState(record ? record.content : "", (content) =>
-        store.updateContent(id, content)
+      // Detection at open lives here, not in the store: the record keeps a
+      // language only once something decided one (a paste, a file name, the
+      // user). Sniffing an old record on open costs one JSON.parse and writes
+      // nothing, so loading a hundred buffers stays read-only.
+      state = createEditorState(
+        record ? record.content : "",
+        langForRecord(record),
+        (content) => store.updateContent(id, content),
+        (content) => detectAfterPaste(id, content)
       );
       states.set(id, state);
     }
@@ -229,6 +269,23 @@ export function mountEditor(host, store) {
 
   store.events.addEventListener("evict", (event) => {
     states.delete(/** @type {CustomEvent} */ (event).detail.id);
+  });
+
+  // The buffer's language changed (a paste, or the syntax command). The mode
+  // swaps through the compartment, so the text, the selection and the undo
+  // history all survive it.
+  store.events.addEventListener("lang", (event) => {
+    const { id, lang } = /** @type {CustomEvent} */ (event).detail;
+    const effects = langCompartment.reconfigure(extensionForLang(lang));
+    if (id === store.activeId) {
+      view.dispatch({ effects });
+      return;
+    }
+    // A parked buffer gets the same reconfiguration applied to its cached
+    // state. Without this it would keep the old mode until it is evicted,
+    // because stateFor only builds a state once.
+    const state = states.get(id);
+    if (state) states.set(id, state.update({ effects }).state);
   });
 
   // A file changed on disk and the store took the new text. The document is
