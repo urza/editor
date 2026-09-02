@@ -1106,7 +1106,10 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     }
 
     if (change.kind === "deleted") {
-      if (!record) return;
+      // A record without `sync` is a local document, whatever the server
+      // thinks: a copy kept after a detach must survive a later delete
+      // elsewhere. Same rule as the detached branch below.
+      if (!record || !record.sync) return;
       // Deleted elsewhere while this device still held unpushed text. The text
       // survives as a local copy; the record itself goes.
       if (record.sync?.dirty) await forkConflict(record);
