@@ -518,6 +518,14 @@ Decided (2026-09-01):
   never sync by themselves. `.age` files from disk are read in both age
   encodings and written back armored. Encrypting a file-backed doc, folder
   sync, and device removal are later phases.
+- Shipped 2026-09-02: units 1 to 4 of section 13 are on main. Review
+  decisions on the way: the plaintext label of an encrypted doc is asked for
+  at encrypt time (prefilled with the first line, may be empty), never
+  derived, because it is stored unencrypted on the server; a LockedError
+  while the keyring is unlocked is the courier case and never re-prompts;
+  a remote tombstone never removes a record without a sync target; a freshly
+  attached record (rev 0) ignores tombstones; one device id for keyring and
+  sync (model/device.js).
 
 Open: none.
 
