@@ -563,6 +563,10 @@ export function createDocStore({ keyring }) {
     delete record.enc;
     record.content = text;
     plain.delete(id);
+    // A title that encrypt() derived from the first line, and that the user
+    // never changed, goes too: the row follows the text again, as it did
+    // before. A title the user typed differs from the derived one and stays.
+    if (record.title && record.title === firstLineTitle(text)) delete record.title;
     if (record.sync) record.sync.dirty = true;
     await putBuffer({ ...record });
     emit("change");
