@@ -131,13 +131,54 @@ export function detectFromName(name) {
 // Enough characters to hold the longest prefix tested below.
 const SNIFF_PREFIX = 16;
 
+// A structural line of a JSON-family document: a quoted key, a bracket, or a
+// comment. The prose a user quotes braces around matches almost none of these.
+const JSON_ROW = /^\s*(?:"(?:[^"\\]|\\.)*"\s*:|[{}[\]]|\/\/|\/\*|\*)/;
+// Or a line that ends the way object/array rows end.
+const JSON_ROW_END = /[,{}[\]]\s*$/;
+// Look at this many lines at most; a document declares its shape early.
+const SHAPE_LINES = 40;
+// How many lines must look structural. High on purpose: recoloring prose the
+// user is reading is the failure mode this whole module avoids.
+const SHAPE_SHARE = 0.8;
+
+// A quoted key. Required somewhere in the text before the shape test may run:
+// a brace or bracket at line start also opens a checkbox note ("[ ] buy milk")
+// or a thought in braces, and those must never leave Markdown. Prose almost
+// never contains `"word":`, JSON-family text almost always does.
+const QUOTED_KEY = /"(?:[^"\\]|\\.)*"\s*:/;
+
 /**
- * Content sniffing for scratch buffers. Deliberately conservative: two shapes
+ * JSON-family shape without a successful parse: JSONC comments, trailing
+ * commas, an invisible non-breaking space, or a plain typo. Real pasted
+ * "JSON" is very often exactly this.
+ * @param {string} text Trimmed, starts with { or [.
+ * @returns {boolean}
+ */
+function looksJsonFamily(text) {
+  if (!QUOTED_KEY.test(text)) return false;
+  const lines = text
+    .split("\n")
+    .filter((line) => line.trim())
+    .slice(0, SHAPE_LINES);
+  if (!lines.length) return false;
+  const hits = lines.filter(
+    (line) => JSON_ROW.test(line) || JSON_ROW_END.test(line.trimEnd())
+  ).length;
+  return hits / lines.length >= SHAPE_SHARE;
+}
+
+/**
+ * Content sniffing for scratch buffers. Deliberately conservative: shapes
  * that cannot be mistaken for prose, and Markdown for everything else. A wrong
  * guess is worse than no guess, because it recolors text the user is reading.
  *
- * JSON.parse is the whole JSON test. A "looks like JSON" heuristic would claim
- * `{ some note in braces }`; the parser will not.
+ * Strict JSON gets the JSON mode. JSON-family text that fails the parse
+ * (comments, trailing commas, a typo) gets the JavaScript mode instead:
+ * lezer-javascript knows comments and recovers around errors, while the JSON
+ * mode would paint every comment as invalid, and Markdown turns indented rows
+ * into gray code blocks that read as a ghost selection (user report,
+ * 2026-09-02).
  *
  * @param {string} [content]
  * @returns {string} A language id.
@@ -152,8 +193,8 @@ export function sniff(content) {
       JSON.parse(text);
       return "json";
     } catch {
-      // Not JSON, or not JSON yet. Fall through: half-typed JSON stays
-      // Markdown until it parses, which is the conservative direction.
+      if (looksJsonFamily(text)) return "javascript";
+      // A brace around prose. Fall through to Markdown.
     }
   }
 
@@ -164,15 +205,17 @@ export function sniff(content) {
 }
 
 /**
- * The language of one buffer record, in priority order: a stored choice, then
- * the file name, then the text. Absent `lang` means "never detected", so an
- * old record and a fresh scratch buffer both take the sniffing path.
+ * The language of one buffer record. A user choice is pinned. Everything else
+ * re-derives at open: a file from its name, a scratch buffer from its text.
+ * A stored "auto" lang is only a cache for the live session, so improved
+ * detection rules reach old buffers on their next open instead of being
+ * frozen by a guess a previous build wrote.
  * @param {import("../storage/idb.js").BufferRecord} [record]
  * @returns {string} A language id.
  */
 export function langForRecord(record) {
   if (!record) return DEFAULT_LANG;
-  if (record.lang) return record.lang;
+  if (record.lang && record.langSource === "user") return record.lang;
   if (record.file) return detectFromName(record.file.name);
   return sniff(record.content);
 }
