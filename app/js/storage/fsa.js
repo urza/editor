@@ -63,6 +63,18 @@ export async function readFile(handle) {
   return { content: await file.text(), lastModified: file.lastModified };
 }
 
+/**
+ * The same file as bytes. `.age` files exist in two standard encodings, and
+ * the binary one is not text: decoding it as UTF-8 first would mangle it
+ * beyond repair, so the caller that may meet one reads it here instead
+ * (model/docs.js, architecture.md §13.4).
+ * @param {FileHandle} handle @returns {Promise<{bytes: Uint8Array, lastModified: number}>}
+ */
+export async function readFileBytes(handle) {
+  const file = await handle.getFile();
+  return { bytes: new Uint8Array(await file.arrayBuffer()), lastModified: file.lastModified };
+}
+
 /** @param {FileHandle} handle @param {string} content */
 export async function writeFile(handle, content) {
   const writable = await handle.createWritable();

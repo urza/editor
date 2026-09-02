@@ -24,6 +24,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import { run } from "../commands/registry.js";
 import { twemoji } from "./emoji.js";
 import { spellcheck } from "./spellcheck.js";
 import {
@@ -220,6 +221,32 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste) 
   });
 }
 
+const LOCKED_TEXT = "🔒 Locked. Unlock to read this document.";
+const FOREIGN_TEXT = "🔒 Encrypted for another device. This device has no key for it.";
+
+/**
+ * What an encrypted document shows while its text is out of reach: locked, or
+ * still decoding (architecture.md §5).
+ *
+ * It carries no update listener and no history on purpose. This state is not
+ * the document, so nothing typed into it may ever reach the store, and nothing
+ * here may ever be parked in the state cache.
+ */
+export function createLockedState(text = LOCKED_TEXT) {
+  return EditorState.create({
+    doc: text,
+    extensions: [
+      // Styled as a notice, not as a document: app.css dims .cm-locked.
+      EditorView.editorAttributes.of({ class: "cm-locked" }),
+      EditorView.editable.of(false),
+      EditorState.readOnly.of(true),
+      EditorView.lineWrapping,
+      syntaxHighlighting(marianaHighlight),
+      marianaTheme,
+    ],
+  });
+}
+
 // Editor controller. One view, many states: buffer switching is
 // view.setState(state), which keeps per-buffer undo history alive without a
 // second DOM tree. States are built lazily on first activation.
@@ -245,35 +272,167 @@ export function mountEditor(host, store) {
     store.setLang(id, sniff(content), "auto");
   }
 
+  // The buffer whose state is on screen as the locked placeholder, or null.
+  // Tracked because a placeholder must never be treated as a document: it is
+  // not parked into `states` and it is what the unlock event looks for.
+  /** @type {string | null} */
+  let placeholderId = null;
+  // The buffer a decode is running for, or null. It stops the two retry paths
+  // after an unlock (this module's own, and the store's "unlock" event) from
+  // starting a second decode of the same document.
+  /** @type {string | null} */
+  let decodingId = null;
+  // Bumped on every lock. A decode that was already in flight when the user
+  // locked must not cache the plaintext state it is about to resolve with.
+  let generation = 0;
+  // One unlock prompt per activation. Without it a cancelled prompt could be
+  // re-opened by the next event, which is a dialog loop.
+  let asking = false;
+
+  /** @param {string} id @param {string} text */
+  function realState(id, text) {
+    const record = store.get(id);
+    // Detection at open lives here, not in the store: the record keeps a
+    // language only once something decided one (a paste, a file name, the
+    // user). Sniffing an old record on open costs one JSON.parse and writes
+    // nothing, so loading a hundred buffers stays read-only.
+    //
+    // The copy with the decoded text is for encrypted docs: sniffing
+    // record.content would sniff ciphertext and always land on the default.
+    const forLang = record && record.enc ? { ...record, content: text } : record;
+    return createEditorState(
+      text,
+      langForRecord(forLang),
+      (content) => store.updateContent(id, content),
+      (content) => detectAfterPaste(id, content)
+    );
+  }
+
+  /**
+   * Ask for the passphrase, once, and put the document up when it arrives.
+   * A cancelled prompt leaves the placeholder standing; the user gets another
+   * prompt the next time they open the document, and never a loop.
+   * @param {string} id
+   */
+  function askUnlock(id) {
+    if (asking) return;
+    asking = true;
+    Promise.resolve(run("crypto.unlock"))
+      .catch(() => false)
+      .then((ok) => {
+        asking = false;
+        // The store's "unlock" event usually got here first; reactivate()
+        // then finds the decode already running and does nothing.
+        if (ok && id === store.activeId) reactivate(id);
+      });
+  }
+
+  /** @param {string} id Put a buffer on screen, placeholder or document. */
+  function reactivate(id) {
+    if (decodingId === id) return;
+    view.setState(stateFor(id));
+  }
+
   function stateFor(id) {
-    let state = states.get(id);
-    if (!state) {
-      const record = store.get(id);
-      // Detection at open lives here, not in the store: the record keeps a
-      // language only once something decided one (a paste, a file name, the
-      // user). Sniffing an old record on open costs one JSON.parse and writes
-      // nothing, so loading a hundred buffers stays read-only.
-      state = createEditorState(
-        record ? record.content : "",
-        langForRecord(record),
-        (content) => store.updateContent(id, content),
-        (content) => detectAfterPaste(id, content)
-      );
-      states.set(id, state);
+    const cached = states.get(id);
+    if (cached) {
+      placeholderId = null;
+      return cached;
     }
-    return state;
+    const text = store.textOf(id);
+    if (typeof text === "string") {
+      const state = realState(id, text);
+      states.set(id, state);
+      placeholderId = null;
+      return state;
+    }
+
+    // Encrypted and not decoded yet. The placeholder goes up now and the real
+    // state swaps in when the decode lands, so the switch never blocks.
+    placeholderId = id;
+    decodingId = id;
+    const gen = generation;
+    text.then(
+      (decoded) => {
+        if (decodingId === id) decodingId = null;
+        if (gen !== generation) return; // locked while this decode ran
+        const state = realState(id, decoded);
+        states.set(id, state);
+        // Only if the user is still looking at this document: they may have
+        // switched away while the decode ran.
+        if (id !== store.activeId || placeholderId !== id) return;
+        placeholderId = null;
+        view.setState(state);
+        view.focus();
+      },
+      (err) => {
+        if (decodingId === id) decodingId = null;
+        if (!err || err.name !== "LockedError") {
+          console.log("[vrtti] decode failed", id, err);
+          return;
+        }
+        // LockedError with the keyring already unlocked is the courier case
+        // (§5): this device holds the ciphertext for another device and no
+        // passphrase can open it. Asking would resolve true at once and
+        // re-run this decode forever, freezing the tab. Say so and stop.
+        if (store.isUnlocked) {
+          if (id === store.activeId && placeholderId === id) {
+            view.setState(createLockedState(FOREIGN_TEXT));
+          }
+          return;
+        }
+        askUnlock(id);
+      }
+    );
+    return createLockedState();
   }
 
   store.events.addEventListener("active", (event) => {
     const { id, previousId } = /** @type {CustomEvent} */ (event).detail;
-    // Park the live state before swapping, so undo history survives the switch.
-    if (previousId) states.set(previousId, view.state);
+    if (previousId === id) {
+      // The buffer on screen was clicked again. A document has nothing to do;
+      // a locked placeholder gets its unlock prompt back after a cancel.
+      if (placeholderId === id) reactivate(id);
+      return;
+    }
+    // Park the live state before swapping, so undo history survives the
+    // switch. Never the placeholder though: parking it would cache "Locked."
+    // as the document's text and show it even after an unlock.
+    if (previousId && previousId !== placeholderId) states.set(previousId, view.state);
     view.setState(stateFor(id));
     view.focus();
   });
 
+  // The keyring locked (architecture.md §5). Every decoded state goes, which
+  // takes its undo history with it, and the document on screen becomes the
+  // placeholder. Deliberately without stateFor(): a decode attempt here would
+  // fail and open an unlock prompt the moment the user asked to lock.
+  store.events.addEventListener("lock", (event) => {
+    const { ids } = /** @type {CustomEvent} */ (event).detail;
+    for (const id of ids) states.delete(id);
+    // Before the early return below: a decode of some other document may be in
+    // flight, and it must not cache its plaintext state now either.
+    generation++;
+    decodingId = null;
+    const active = store.activeId;
+    if (!active || !ids.includes(active)) return;
+    placeholderId = active;
+    view.setState(createLockedState());
+  });
+
+  // The identity is back. Only a document that is showing the placeholder has
+  // anything to do; every other state is still valid.
+  store.events.addEventListener("unlock", () => {
+    const active = store.activeId;
+    if (active && placeholderId === active) reactivate(active);
+  });
+
   store.events.addEventListener("evict", (event) => {
-    states.delete(/** @type {CustomEvent} */ (event).detail.id);
+    const { id } = /** @type {CustomEvent} */ (event).detail;
+    states.delete(id);
+    // A closed buffer's placeholder is gone with it; leaving the id here would
+    // make the next "active" skip parking a state that is a real document.
+    if (placeholderId === id) placeholderId = null;
   });
 
   // The buffer's language changed (a paste, or the syntax command). The mode
