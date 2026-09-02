@@ -80,7 +80,7 @@ const TITLE_MAX = 40;
  * stores that line as the doc's `title` while the plaintext is still readable.
  * @param {string} [text] @returns {string}
  */
-function firstLineTitle(text) {
+export function firstLineTitle(text) {
   for (const line of (text || "").split("\n")) {
     const trimmed = line.trim();
     if (trimmed) {
@@ -240,17 +240,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       }
       record.content = await codec.encode(text, record.enc, keyring);
       encodeSkipped.delete(record.id);
-      // A derived title follows the first line while the text is readable,
-      // the way a plaintext row does; this is the last point that can see it.
-      if (record.titleAuto) {
-        const next = firstLineTitle(text) || record.title;
-        if (next !== record.title) {
-          record.title = next;
-          // The sidebar painted on the keystroke, before this ran; without
-          // this event the row shows the old name until the next keystroke.
-          emit("change");
-        }
-      }
     }
     // After the codec, never in updateContent: a push must always read the
     // ciphertext that matches the revision it claims (architecture.md §13.4).
@@ -492,8 +481,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     if ((record.title || "") === next) return false;
     if (next) record.title = next;
     else delete record.title;
-    // A name the user typed (or cleared) is theirs; it stops following the text.
-    delete record.titleAuto;
     // The title is plaintext metadata on the wire (architecture.md §5), so a
     // rename is a push of its own; nothing else would ever carry it.
     markDirty(record);
@@ -593,9 +580,11 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
    * it to `.age` on disk, which is a later unit (architecture.md §13.4).
    *
    * @param {string} id @param {'all-devices' | 'this-device'} preset
+   * @param {string} [label] The plaintext name to store; "" clears the title,
+   *   undefined leaves it as it is.
    * @returns {Promise<BufferRecord | null>}
    */
-  async function encrypt(id, preset) {
+  async function encrypt(id, preset, label) {
     const record = buffers.get(id);
     if (!record || record.enc) return null;
     // The command asks for setup and unlock before it gets here; a throw is
@@ -604,14 +593,13 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     if (record.kind === "file") throw new Error("encrypt: files come in a later unit");
 
     const text = record.content;
-    // The last moment the first line is readable. Without a title the row
-    // would read "encrypted" forever, because nothing else can name it.
-    if (!record.title) {
-      const derived = firstLineTitle(text);
-      if (derived) {
-        record.title = derived;
-        record.titleAuto = true;
-      }
+    // The label is the one plaintext the server ever sees for this doc (§5),
+    // so it is never derived here behind the user's back: the command asks,
+    // prefilled with the first line, and the user decides what stays readable.
+    // No label at all leaves the row saying "encrypted".
+    if (label !== undefined) {
+      if (label) record.title = label;
+      else delete record.title;
     }
     plain.set(id, text);
     record.enc = codec.newEncMeta(preset);
@@ -638,12 +626,8 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     delete record.enc;
     record.content = text;
     plain.delete(id);
-    // A title that encrypt() derived goes too: the row follows the text again,
-    // as it did before. A title the user typed has no titleAuto and stays.
-    if (record.titleAuto) {
-      delete record.title;
-      delete record.titleAuto;
-    }
+    // The label stays: the user chose it at encrypt time, and "Use first line"
+    // in the row menu clears it whenever they want the row to follow the text.
     if (record.sync) record.sync.dirty = true;
     await putBuffer({ ...record });
     emit("change");
@@ -888,7 +872,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
    * so nothing goes in here that the content itself protects.
    * @typedef {Object} RecordMeta
    * @property {string} [title]
-   * @property {true} [titleAuto]
    * @property {string} [lang]
    * @property {'auto' | 'user'} [langSource]
    * @property {import("../storage/idb.js").EncMeta} [enc]
@@ -954,7 +937,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     /** @type {RecordMeta} */
     const meta = {};
     if (record.title !== undefined) meta.title = record.title;
-    if (record.titleAuto !== undefined) meta.titleAuto = record.titleAuto;
     if (record.lang !== undefined) meta.lang = record.lang;
     if (record.langSource !== undefined) meta.langSource = record.langSource;
     if (record.enc !== undefined) meta.enc = record.enc;
@@ -1012,8 +994,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
   function applyMeta(record, meta) {
     if (meta.title !== undefined) record.title = meta.title;
     else delete record.title;
-    if (meta.titleAuto !== undefined) record.titleAuto = meta.titleAuto;
-    else delete record.titleAuto;
     if (meta.lang !== undefined) record.lang = meta.lang;
     else delete record.lang;
     if (meta.langSource !== undefined) record.langSource = meta.langSource;

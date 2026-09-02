@@ -80,7 +80,8 @@ function formatBytes(bytes) {
 function syncStatusText() {
   if (!sync) return "off";
   const { state, message, lastSyncAt } = sync.status;
-  let text = state;
+  // Same words as the statusbar, so the two never disagree.
+  let text = state === "idle" ? "synced" : state;
   if (message) text += " (" + message + ")";
   if (lastSyncAt) {
     text += " · last sync " + new Date(lastSyncAt).toLocaleTimeString();

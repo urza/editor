@@ -228,7 +228,11 @@ export function mountSidebar(store, folders, sync) {
       const mark = document.createElement("span");
       mark.className = "buffer-mark";
       mark.textContent = "☁";
-      mark.title = record.sync.tombstone ? "Detaching…" : "Synced";
+      mark.title = record.sync.tombstone
+        ? "Detaching…"
+        : record.sync.rev === 0
+          ? "Attaching…"
+          : "Synced";
       li.appendChild(mark);
     }
 

@@ -47,9 +47,6 @@
  * @property {boolean} closed
  * @property {number} createdAt
  * @property {number} updatedAt
- * @property {true} [titleAuto]  `title` was derived from the first line by
- *                            encrypt(), not typed. It follows the text while
- *                            the doc is unlocked and goes away on decrypt.
  * @property {string} [title]  User label from the sidebar rename (architecture.md
  *                            §7). Wins over every derived title; absent means
  *                            "derive it", which is the state of every record

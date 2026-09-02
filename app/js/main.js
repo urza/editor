@@ -10,7 +10,7 @@ import {
   hasFileSystemAccess,
   requestPersistence,
 } from "./model/capabilities.js";
-import { createDocStore, KEYRING_ID } from "./model/docs.js";
+import { createDocStore, firstLineTitle, KEYRING_ID } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { register, run } from "./commands/registry.js";
 import { createSyncClient } from "./sync/client.js";
@@ -76,7 +76,10 @@ async function start() {
   /** Point the keyring at the device list in the hidden record. */
   function refreshPeers() {
     const content = readKeyringContent(store.keyringRecord());
-    keyring.setPeers(content ? content.devices : []);
+    // Peers are the OTHER devices; this one is already in every recipient set.
+    keyring.setPeers(
+      (content ? content.devices : []).filter((d) => d.id !== keyring.deviceId)
+    );
   }
   refreshPeers();
   // The record also changes when a pull merges another device into it, so the
@@ -310,7 +313,18 @@ async function start() {
         ],
       });
       if (!preset) return false;
-      await store.encrypt(target, /** @type {any} */ (preset));
+      // The label is plaintext everywhere, server included (architecture.md
+      // §5). Prefilled with the first line, so the user sees exactly what will
+      // stay readable and can change it before it leaves the device.
+      const record = store.get(target);
+      const label = await askText({
+        title: "Name for the encrypted document",
+        label: "Plaintext name",
+        value: record?.title || firstLineTitle(record?.content),
+        hint: "Shown in the sidebar and stored unencrypted, also on the sync server.",
+      });
+      if (label === null) return false;
+      await store.encrypt(target, /** @type {any} */ (preset), label);
       return true;
     },
   });
