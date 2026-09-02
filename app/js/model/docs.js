@@ -10,6 +10,8 @@
 //   "save"    { status }                       -> statusbar save indicator
 //   "replace" { id, content }                  -> editor replaces a document wholesale
 //   "lang"    { id, lang }                     -> editor swaps the language mode
+//   "lock"    { ids }                          -> editor drops those states, shows the placeholder
+//   "unlock"                                   -> editor re-activates a placeholder
 //
 // Persistence: every mutation writes through to IndexedDB, content edits with
 // a debounce. This is the first stage of the write pipeline (architecture.md
@@ -18,6 +20,12 @@
 // Disk is the source of truth for a file-backed buffer, IndexedDB its journal:
 // a denied permission or a vanished file costs the user nothing, because the
 // text is already durable before the disk write is even attempted.
+//
+// Encryption sits between the editor and the record (architecture.md §5,
+// §13.4): for a doc with `enc`, `record.content` is age ciphertext and the
+// plaintext lives only in the `plain` map below, for as long as the keyring is
+// unlocked. Everything under this file (IndexedDB, disk, sync) stays
+// byte-agnostic, which is what keeps encryption orthogonal to storage.
 
 import {
   deleteHandle,
@@ -33,9 +41,12 @@ import {
   lastModified,
   permissionState,
   readFile,
+  readFileBytes,
   saveFilePicker,
   writeFile,
 } from "../storage/fsa.js";
+import * as codec from "./codec.js";
+import * as age from "../crypto/age.js";
 // The one import from editor/ in this layer. Detection is a rule about a
 // record, not about a view, and it lives next to the mode table it names
 // (editor/lang.js explains why the two stay together).
@@ -56,6 +67,22 @@ const DISK_DELAY = 1000;
 const WATCH_INTERVAL = 30000;
 const TITLE_MAX = 40;
 
+/**
+ * The first non-blank line of a text, truncated to a row's width. The derived
+ * half of titleOf(), split out because encrypt() needs the same rule: it
+ * stores that line as the doc's `title` while the plaintext is still readable.
+ * @param {string} [text] @returns {string}
+ */
+function firstLineTitle(text) {
+  for (const line of (text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) {
+      return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
+    }
+  }
+  return "";
+}
+
 /** @param {BufferRecord} record @returns {string} */
 export function titleOf(record) {
   // A name the user typed wins over every derived one (architecture.md §7).
@@ -66,17 +93,30 @@ export function titleOf(record) {
   // first line would rename someone's file every time they edit line 1.
   if (record.kind === "file" && record.file) return record.file.name;
 
-  const lines = (record.content || "").split("\n");
-  for (const line of lines) {
-    const text = line.trim();
-    if (text) return text.length > TITLE_MAX ? text.slice(0, TITLE_MAX) : text;
-  }
-  return "untitled";
+  // Untitled and encrypted: `content` is ciphertext, so its first line is a
+  // row of base64. A doc encrypted in this app is given a title first, so this
+  // is the courier case (§5) and a `.age` file with no name of its own.
+  if (record.enc) return "encrypted";
+
+  return firstLineTitle(record.content) || "untitled";
 }
 
-export function createDocStore() {
+/**
+ * @param {{keyring: import("../crypto/keyring.js").KeyRing}} deps The keyring is
+ *   a dependency, not an import: the codec resolves recipients and identities
+ *   through it, and the store must follow its lock state (architecture.md §5).
+ */
+export function createDocStore({ keyring }) {
   /** @type {Map<string, BufferRecord>} */
   const buffers = new Map();
+  /**
+   * Plaintext of the encrypted docs that are readable right now. The record
+   * holds ciphertext; this map holds what the editor shows and what the next
+   * persist step encrypts. Cleared on lock, and never written anywhere: the
+   * whole point is that plaintext lives in memory only (architecture.md §5).
+   * @type {Map<string, string>}
+   */
+  const plain = new Map();
   /** @type {Map<string, number>} */
   const saveTimers = new Map();
   /** @type {Map<string, number>} */
@@ -93,6 +133,10 @@ export function createDocStore() {
   // instead of once per keystroke.
   /** @type {Set<string>} */
   const diskFailed = new Set();
+  // Buffers whose save was skipped because the keyring locked mid-debounce.
+  // Same "log once, not once per keystroke" reason as diskFailed.
+  /** @type {Set<string>} */
+  const encodeSkipped = new Set();
   const events = new EventTarget();
   /** @type {string | null} */
   let activeId = null;
@@ -144,6 +188,35 @@ export function createDocStore() {
     return buffers.get(KEYRING_ID);
   }
 
+  /**
+   * The codec stage of the write pipeline (architecture.md §1). It runs here,
+   * inside the debounce, and not per keystroke: age is fast, but encrypting
+   * every character would still be work nobody asked for.
+   *
+   * Returns false when the save must be skipped. That happens when the keyring
+   * locked between the keystroke and this step: writing then is impossible,
+   * and the text is still in the editor state until the lock event drops it.
+   * @param {BufferRecord} record @returns {Promise<boolean>}
+   */
+  async function encodeForRecord(record) {
+    if (record.enc) {
+      const text = plain.get(record.id);
+      if (text === undefined || !keyring.isUnlocked) {
+        if (!encodeSkipped.has(record.id)) {
+          encodeSkipped.add(record.id);
+          console.log("[vrtti] save skipped, locked while typing:", record.id);
+        }
+        return false;
+      }
+      record.content = await codec.encode(text, record.enc, keyring);
+      encodeSkipped.delete(record.id);
+    }
+    // After the codec, never in updateContent: a push must always read the
+    // ciphertext that matches the revision it claims (architecture.md §13.4).
+    if (record.sync) record.sync.dirty = true;
+    return true;
+  }
+
   /** @param {string} id */
   function persistSoon(id) {
     clearTimeout(saveTimers.get(id));
@@ -153,6 +226,12 @@ export function createDocStore() {
         saveTimers.delete(id);
         const record = buffers.get(id);
         if (!record) return;
+        if (!(await encodeForRecord(record))) {
+          // Say so, or the indicator hangs at "…": nothing more happens for
+          // this buffer until the keyring is unlocked again.
+          if (id === activeId && !saveTimers.has(id)) emit("save", { status: "locked" });
+          return;
+        }
         await putBuffer({ ...record });
         // Only claim "saved" if no newer keystroke started another debounce.
         if (id === activeId && !saveTimers.has(id)) {
@@ -214,6 +293,10 @@ export function createDocStore() {
       if (!(await ensurePermission(handle, "readwrite"))) {
         throw new Error("permission not granted");
       }
+      // record.content, always: this layer is byte-agnostic and an encrypted
+      // record already holds age ciphertext. A `.age` file opened as binary
+      // therefore comes back armored, which is still standard age and still
+      // opens with the CLI (architecture.md §13.4).
       await writeFile(handle, record.content);
       record.file.lastSyncAt = Date.now();
       needsPermission.delete(record.file.handleId);
@@ -250,15 +333,55 @@ export function createDocStore() {
     emit("save", { status: saveTimers.has(id) ? "…" : "saved" });
   }
 
+  /**
+   * The editor text of a buffer.
+   *
+   * A string for a plaintext doc and for an encrypted one whose text is
+   * already decoded; a Promise only when a decode really has to run. The split
+   * is deliberate: the plaintext path is every doc in the app, and awaiting it
+   * would show an empty editor for a frame on every buffer switch.
+   *
+   * The Promise rejects with LockedError when the keyring is locked or this
+   * device is not a recipient. The caller decides what to do about it; the
+   * editor shows the locked placeholder and asks for the passphrase.
+   *
+   * @param {string} id @returns {string | Promise<string>}
+   */
+  function textOf(id) {
+    const record = buffers.get(id);
+    if (!record) return "";
+    if (!record.enc) return record.content;
+    const cached = plain.get(id);
+    if (cached !== undefined) return cached;
+    return codec.decode(record.content, record.enc, keyring).then((text) => {
+      // Not if the user locked while this decode ran: lockAll() already
+      // cleared the map, and caching now would put plaintext back into it.
+      if (keyring.isUnlocked) plain.set(id, text);
+      return text;
+    });
+  }
+
   /** @param {string} id @param {string} content */
   function updateContent(id, content) {
     const record = buffers.get(id);
     if (!record) return;
-    // A replace (silent reload from disk) echoes straight back here through the
-    // editor's update listener. Without this guard that echo would bump
-    // updatedAt past lastSyncAt and make a just-synced buffer look dirty.
-    if (record.content === content) return;
-    record.content = content;
+    // For an encrypted doc the comparison is against the plaintext map, never
+    // against record.content: the record holds ciphertext, which differs from
+    // the text on every save anyway (age wraps a fresh file key each time).
+    if (record.enc) {
+      // No plaintext in memory means the doc is locked, and the state on
+      // screen is the read-only placeholder. Nothing arriving from there is
+      // this document's text, so it must never become its content.
+      if (!plain.has(id)) return;
+      if (plain.get(id) === content) return;
+      plain.set(id, content);
+    } else {
+      // A replace (silent reload from disk) echoes straight back here through
+      // the editor's update listener. Without this guard that echo would bump
+      // updatedAt past lastSyncAt and make a just-synced buffer look dirty.
+      if (record.content === content) return;
+      record.content = content;
+    }
     record.updatedAt = Date.now();
     if (id === activeId) emit("save", { status: "…" });
     emit("change");
@@ -366,7 +489,122 @@ export function createDocStore() {
     return record;
   }
 
+  // ---- Encryption (architecture.md §5, §13.4) ------------------------------
+
+  /**
+   * Forget every decoded text. Runs when the keyring locks, and it is the
+   * whole of "locking": the records keep their ciphertext, so nothing is lost
+   * and nothing else has to change.
+   */
+  function lockAll() {
+    plain.clear();
+    const ids = [...buffers.values()].filter((b) => b.enc).map((b) => b.id);
+    // The editor drops the cached states of these docs, which drops their undo
+    // history too. Accepted and necessary: an undo buffer is plaintext.
+    emit("lock", { ids });
+  }
+
+  // The store follows the keyring rather than the other way round: crypto.lock
+  // is a keyring command and knows nothing about documents.
+  let keyringUnlocked = keyring.isUnlocked;
+  keyring.addEventListener("change", () => {
+    if (keyringUnlocked === keyring.isUnlocked) return;
+    keyringUnlocked = keyring.isUnlocked;
+    if (keyringUnlocked) emit("unlock");
+    else lockAll();
+  });
+
+  /**
+   * Turn a plaintext doc into an encrypted one.
+   *
+   * Scratch docs only this round: encrypting a file-backed doc means renaming
+   * it to `.age` on disk, which is a later unit (architecture.md §13.4).
+   *
+   * @param {string} id @param {'all-devices' | 'this-device'} preset
+   * @returns {Promise<BufferRecord | null>}
+   */
+  async function encrypt(id, preset) {
+    const record = buffers.get(id);
+    if (!record || record.enc) return null;
+    // The command asks for setup and unlock before it gets here; a throw is
+    // for a caller that skipped that, and must not be swallowed.
+    if (!keyring.isUnlocked) throw new Error("encrypt: the keyring is locked");
+    if (record.kind === "file") throw new Error("encrypt: files come in a later unit");
+
+    const text = record.content;
+    // The last moment the first line is readable. Without a title the row
+    // would read "encrypted" forever, because nothing else can name it.
+    if (!record.title) {
+      const derived = firstLineTitle(text);
+      if (derived) record.title = derived;
+    }
+    plain.set(id, text);
+    record.enc = codec.newEncMeta(preset);
+    // Immediately, not through persistSoon: the plaintext must not sit in
+    // IndexedDB for another 300 ms once the user asked for this.
+    record.content = await codec.encode(text, record.enc, keyring);
+    if (record.sync) {
+      // The server still holds the plaintext history of this doc, and old
+      // plaintext revisions defeat the whole conversion (architecture.md §5).
+      record.sync.purge = true;
+      record.sync.dirty = true;
+    }
+    await putBuffer({ ...record });
+    emit("change");
+    return record;
+  }
+
+  /** @param {string} id @returns {Promise<BufferRecord | null>} */
+  async function decrypt(id) {
+    const record = buffers.get(id);
+    if (!record || !record.enc) return null;
+    if (!keyring.isUnlocked) throw new Error("decrypt: the keyring is locked");
+    const text = await textOf(id);
+    delete record.enc;
+    record.content = text;
+    plain.delete(id);
+    if (record.sync) record.sync.dirty = true;
+    await putBuffer({ ...record });
+    emit("change");
+    return record;
+  }
+
   // ---- Disk files (architecture.md §2) ------------------------------------
+
+  /**
+   * Read a disk file the way a record wants it (architecture.md §13.4).
+   *
+   * A `.age` file is standard age ciphertext in one of two encodings. Armored
+   * text goes into the record as it is; a binary file is armored here, because
+   * a record's content is a string all the way down (IndexedDB, sync, the
+   * editor). Both encodings are age, and the age CLI reads either, so nothing
+   * is lost by picking one. A `.age` file that is neither is just a file with
+   * a confusing name, and stays plaintext.
+   *
+   * Every read of a file into a record goes through this, not readFile: the
+   * one that forgets it would open a note full of base64.
+   *
+   * @param {any} handle @param {string} name
+   * @returns {Promise<{content: string, lastModified: number, enc?: import("../storage/idb.js").EncMeta}>}
+   */
+  async function readFileForRecord(handle, name) {
+    if (!/\.age$/i.test(name)) return readFile(handle);
+    const { bytes, lastModified } = await readFileBytes(handle);
+    // Lossy for binary input, and that is fine: it is only read to test for
+    // the armor header, which is ASCII.
+    const text = new TextDecoder().decode(bytes);
+    if (age.isArmored(text)) {
+      return { content: text, lastModified, enc: { v: 1, preset: "all-devices" } };
+    }
+    if (age.isAgeFile(bytes)) {
+      return {
+        content: age.armor.encode(bytes),
+        lastModified,
+        enc: { v: 1, preset: "all-devices" },
+      };
+    }
+    return { content: text, lastModified };
+  }
 
   /** @param {any} handle @returns {Promise<BufferRecord | null>} */
   async function bufferForHandle(handle) {
@@ -423,9 +661,10 @@ export function createDocStore() {
       else activate(existing.id);
       return existing;
     }
-    const { content } = await readFile(handle);
+    const { content, enc } = await readFileForRecord(handle, handle.name);
     const record = newBufferRecord();
     record.content = content;
+    if (enc) record.enc = enc;
     await linkFile(record, handle);
     // Set here rather than through setLang: the record is not in `buffers`
     // yet, and nothing is listening for it. The first putBuffer below carries
@@ -475,12 +714,30 @@ export function createDocStore() {
     const record = buffers.get(id);
     const handle = handleFor(record);
     if (!record || !record.file || !handle) return;
-    const { content } = await readFile(handle);
+    const { content, enc } = await readFileForRecord(handle, record.file.name);
     record.content = content;
+    // The file decides: a `.age` file that was replaced by plain text on disk
+    // stops being encrypted, and the other way round.
+    if (enc) record.enc = enc;
+    else delete record.enc;
+    // The old decoded text belongs to the old ciphertext.
+    plain.delete(id);
     record.updatedAt = Date.now();
     record.file.lastSyncAt = record.updatedAt;
     await putBuffer({ ...record });
-    emit("replace", { id, content });
+
+    if (record.enc) {
+      // "replace" carries editor text, so the new ciphertext has to be decoded
+      // before it can be announced. Locked, or not addressed to this device:
+      // the editor drops its state and shows the placeholder instead.
+      try {
+        emit("replace", { id, content: await textOf(id) });
+      } catch (err) {
+        emit("lock", { ids: [id] });
+      }
+    } else {
+      emit("replace", { id, content });
+    }
     emit("change");
   }
 
@@ -491,13 +748,23 @@ export function createDocStore() {
    */
   async function forkConflict(record) {
     const fork = newBufferRecord();
-    fork.content =
-      "conflict copy of " +
-      (record.file ? record.file.name : titleOf(record)) +
-      " (" +
-      new Date().toISOString() +
-      ")\n\n" +
-      record.content;
+    if (record.enc) {
+      // Ciphertext, copied byte for byte. The usual "conflict copy of …"
+      // prefix would corrupt the age file and make the copy undecryptable, so
+      // the note goes into the title, which is plaintext by design (§7).
+      // Works without any key: a courier device forks conflicts too (§5).
+      fork.content = record.content;
+      fork.enc = { ...record.enc };
+      fork.title = "conflict copy of " + titleOf(record);
+    } else {
+      fork.content =
+        "conflict copy of " +
+        (record.file ? record.file.name : titleOf(record)) +
+        " (" +
+        new Date().toISOString() +
+        ")\n\n" +
+        record.content;
+    }
     buffers.set(fork.id, fork);
     await putBuffer(fork);
     // Not activated on purpose: an edit made in another program must never
@@ -530,7 +797,10 @@ export function createDocStore() {
       if (diskTimers.has(record.id)) continue;
       try {
         if ((await lastModified(handle)) <= record.file.lastSyncAt) continue;
-        const { content } = await readFile(handle);
+        const { content } = await readFileForRecord(handle, record.file.name);
+        // Two encryptions of the same text give different bytes, so this
+        // shortcut simply never fires for a `.age` file. Correct, only slower:
+        // a touched `.age` file takes the replace path instead.
         if (content === record.content) {
           // Same bytes: a touch, or a clock that runs ahead of ours. Move the
           // stamp so this file stops re-triggering on every poll.
@@ -665,7 +935,14 @@ export function createDocStore() {
     close,
     reopen,
     activate,
+    textOf,
     updateContent,
+    encrypt,
+    decrypt,
+    lockAll,
+    // Exported for the sync client (architecture.md §13.6): a pull that meets
+    // a dirty local record forks it before it adopts the incoming one.
+    forkConflict,
     setLang,
     setTitle,
     canRenameFile,

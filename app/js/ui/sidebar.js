@@ -125,9 +125,11 @@ export function mountSidebar(store, folders) {
   }
 
   /**
-   * The row menu (architecture.md §9). Sync and encryption are listed and
-   * disabled: both engines ship later, and a toggle that claims to encrypt a
-   * file while nothing encrypts it would be the one lie this app cannot tell.
+   * The row menu (architecture.md §9). Sync is listed and disabled: the engine
+   * ships later, and a toggle that claims to sync a file while nothing syncs
+   * it would be the one lie this app cannot tell. Encrypt is live for scratch
+   * buffers; a file-backed doc means renaming it to `.age` on disk, which is
+   * a later unit (architecture.md §13.4).
    *
    * @param {BufferRecord} record
    * @returns {import("./menu.js").MenuItem[]}
@@ -159,12 +161,21 @@ export function mountSidebar(store, folders) {
       disabled: true,
       hint: "Available when sync ships.",
     });
-    items.push({
-      label: "Encrypt",
-      checked: false,
-      disabled: true,
-      hint: "Available when encryption ships.",
-    });
+    items.push(
+      record.kind === "file"
+        ? {
+            label: "Encrypt",
+            checked: Boolean(record.enc),
+            disabled: true,
+            hint: "Files: later",
+          }
+        : {
+            label: "Encrypt",
+            checked: Boolean(record.enc),
+            // One item, both directions: the check mark says which way it goes.
+            act: () => run(record.enc ? "doc.decrypt" : "doc.encrypt", record.id),
+          }
+    );
     items.push({ separator: true });
     items.push(
       record.closed
@@ -191,6 +202,16 @@ export function mountSidebar(store, folders) {
       mark.className = "buffer-mark";
       mark.textContent = "⛁";
       mark.title = "On disk: " + (record.file.path || record.file.name);
+      li.appendChild(mark);
+    }
+
+    // Encrypted rows are marked too, and keep their stored `title`: the first
+    // line of an encrypted doc is ciphertext and can never name it (§5).
+    if (record.enc) {
+      const mark = document.createElement("span");
+      mark.className = "buffer-mark";
+      mark.textContent = "🔒";
+      mark.title = "Encrypted";
       li.appendChild(mark);
     }
 

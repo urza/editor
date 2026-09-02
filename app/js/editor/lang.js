@@ -122,7 +122,12 @@ const BY_EXTENSION = {
  * @returns {string} A language id; DEFAULT_LANG for an unknown extension.
  */
 export function detectFromName(name) {
-  const text = name || "";
+  // `.age` is an envelope, not a language: `notes.md.age` is Markdown once it
+  // is open (architecture.md §13.4). Stripped here rather than at the one call
+  // site, because langForRecord() below re-derives the language from
+  // `file.name` on every activation and would otherwise disagree with the
+  // record the store wrote.
+  const text = (name || "").replace(/\.age$/i, "");
   const dot = text.lastIndexOf(".");
   if (dot < 1) return DEFAULT_LANG; // no extension, or a dotfile like ".env"
   return BY_EXTENSION[text.slice(dot + 1).toLowerCase()] || DEFAULT_LANG;

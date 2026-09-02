@@ -18,7 +18,7 @@ import { KeyRing, keyringContentFor, readKeyringContent } from "./crypto/keyring
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { isEnabled, setEnabled } from "./editor/spellcheck.js";
-import { askPassphrase, askText, showBusy, showSecret } from "./ui/dialog.js";
+import { askPassphrase, askText, choose, showBusy, showSecret } from "./ui/dialog.js";
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
@@ -42,14 +42,17 @@ async function start() {
   requestPersistence();
   await openDb();
 
-  const store = createDocStore();
-  await store.load();
-
-  // After store.load(), because the keyring resolves "all devices" against the
-  // hidden keyring record the store just read (architecture.md §13.3).
+  // Before the store: the store takes the keyring as a dependency, because the
+  // codec stage of its write pipeline encrypts and decrypts through it, and it
+  // follows the keyring's lock state (architecture.md §5, §13.4).
   const keyring = new KeyRing();
   await keyring.load();
 
+  const store = createDocStore({ keyring });
+  await store.load();
+
+  // Peers are read after store.load(), because the keyring resolves "all
+  // devices" against the hidden keyring record the store just read (§13.3).
   /** Point the keyring at the device list in the hidden record. */
   function refreshPeers() {
     const content = readKeyringContent(store.keyringRecord());
@@ -237,6 +240,53 @@ async function start() {
     run: () => keyring.lock(),
   });
 
+  // Per-document encryption (architecture.md §13.4). The commands own the
+  // prompts; the store owns the records and refuses to work while locked.
+  register({
+    id: "doc.encrypt",
+    title: "Encrypt document",
+    // No arg means the active buffer, like buffer.close.
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      // The first encryption is also the moment encryption gets set up. Both
+      // steps return false when the user walks away from their dialog.
+      if (!keyring.isSetUp && !(await run("crypto.setup"))) return false;
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const preset = await choose({
+        title: "Encrypt to",
+        options: [
+          {
+            id: "all-devices",
+            label: "All my devices",
+            hint: "Every device in the keyring, plus the recovery key.",
+          },
+          {
+            id: "this-device",
+            label: "This device only",
+            hint: "Plus the recovery key.",
+          },
+        ],
+      });
+      if (!preset) return false;
+      await store.encrypt(target, /** @type {any} */ (preset));
+      return true;
+    },
+  });
+  register({
+    id: "doc.decrypt",
+    title: "Decrypt document",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      // Decrypting needs the key as much as reading does: the plaintext comes
+      // out of the ciphertext, and nothing else holds it.
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      await store.decrypt(target);
+      return true;
+    },
+  });
+
   // Desktop disk files (architecture.md §2). Registered only where the API
   // exists, so a Firefox or iOS build has no command that could ever run.
   if (hasFileSystemAccess) {
@@ -356,6 +406,10 @@ async function start() {
     codec,
     age,
     keyringRecord: () => store.keyringRecord(),
+    textOf: (id) => store.textOf(id),
+    encrypt: (id, preset) => store.encrypt(id, preset),
+    decrypt: (id) => store.decrypt(id),
+    forkConflict: (id) => store.forkConflict(store.get(id)),
     settings: { get: getSetting, put: putSetting },
   };
 }
