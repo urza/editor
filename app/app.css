@@ -556,6 +556,9 @@ body {
 }
 
 #editor-host .cm-editor { height: 100%; }
+/* The locked placeholder (editor.js createLockedState) is a notice, not text. */
+#editor-host .cm-locked .cm-content { color: var(--st-sidebar-label); font-style: italic; }
+#editor-host .cm-locked .cm-gutters { visibility: hidden; }
 
 /* Settings overlay (js/ui/settings.js, architecture.md §9). Covers the editor
    area only, so the sidebar stays usable on a PC. z-index because the

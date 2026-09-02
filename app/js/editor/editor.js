@@ -222,6 +222,7 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste) 
 }
 
 const LOCKED_TEXT = "Locked. Unlock to read this document.";
+const FOREIGN_TEXT = "Encrypted for another device. This device has no key for it.";
 
 /**
  * What an encrypted document shows while its text is out of reach: locked, or
@@ -231,10 +232,12 @@ const LOCKED_TEXT = "Locked. Unlock to read this document.";
  * the document, so nothing typed into it may ever reach the store, and nothing
  * here may ever be parked in the state cache.
  */
-export function createLockedState() {
+export function createLockedState(text = LOCKED_TEXT) {
   return EditorState.create({
-    doc: LOCKED_TEXT,
+    doc: text,
     extensions: [
+      // Styled as a notice, not as a document: app.css dims .cm-locked.
+      EditorView.editorAttributes.of({ class: "cm-locked" }),
       EditorView.editable.of(false),
       EditorState.readOnly.of(true),
       EditorView.lineWrapping,
@@ -364,8 +367,21 @@ export function mountEditor(host, store) {
       },
       (err) => {
         if (decodingId === id) decodingId = null;
-        if (err && err.name === "LockedError") askUnlock(id);
-        else console.log("[vrtti] decode failed", id, err);
+        if (!err || err.name !== "LockedError") {
+          console.log("[vrtti] decode failed", id, err);
+          return;
+        }
+        // LockedError with the keyring already unlocked is the courier case
+        // (§5): this device holds the ciphertext for another device and no
+        // passphrase can open it. Asking would resolve true at once and
+        // re-run this decode forever, freezing the tab. Say so and stop.
+        if (store.isUnlocked) {
+          if (id === store.activeId && placeholderId === id) {
+            view.setState(createLockedState(FOREIGN_TEXT));
+          }
+          return;
+        }
+        askUnlock(id);
       }
     );
     return createLockedState();
@@ -373,6 +389,12 @@ export function mountEditor(host, store) {
 
   store.events.addEventListener("active", (event) => {
     const { id, previousId } = /** @type {CustomEvent} */ (event).detail;
+    if (previousId === id) {
+      // The buffer on screen was clicked again. A document has nothing to do;
+      // a locked placeholder gets its unlock prompt back after a cancel.
+      if (placeholderId === id) reactivate(id);
+      return;
+    }
     // Park the live state before swapping, so undo history survives the
     // switch. Never the placeholder though: parking it would cache "Locked."
     // as the document's text and show it even after an unlock.

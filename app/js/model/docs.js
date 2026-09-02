@@ -210,6 +210,9 @@ export function createDocStore({ keyring }) {
       }
       record.content = await codec.encode(text, record.enc, keyring);
       encodeSkipped.delete(record.id);
+      // A derived title follows the first line while the text is readable,
+      // the way a plaintext row does; this is the last point that can see it.
+      if (record.titleAuto) record.title = firstLineTitle(text) || record.title;
     }
     // After the codec, never in updateContent: a push must always read the
     // ciphertext that matches the revision it claims (architecture.md §13.4).
@@ -322,7 +325,14 @@ export function createDocStore({ keyring }) {
 
   /** @param {string} id */
   function activate(id) {
-    if (!buffers.has(id) || id === activeId) return;
+    if (!buffers.has(id)) return;
+    if (id === activeId) {
+      // Re-activating the buffer on screen is a no-op for a document, but it
+      // is how a locked row asks for the unlock prompt again after a cancel.
+      // previousId === id tells the editor "same buffer", so it parks nothing.
+      emit("active", { id, previousId: id });
+      return;
+    }
     const previousId = activeId;
     activeId = id;
     localStorage.setItem(ACTIVE_KEY, id);
@@ -428,6 +438,8 @@ export function createDocStore({ keyring }) {
     if ((record.title || "") === next) return false;
     if (next) record.title = next;
     else delete record.title;
+    // A name the user typed (or cleared) is theirs; it stops following the text.
+    delete record.titleAuto;
     await putBuffer({ ...record });
     emit("change");
     return true;
@@ -536,7 +548,10 @@ export function createDocStore({ keyring }) {
     // would read "encrypted" forever, because nothing else can name it.
     if (!record.title) {
       const derived = firstLineTitle(text);
-      if (derived) record.title = derived;
+      if (derived) {
+        record.title = derived;
+        record.titleAuto = true;
+      }
     }
     plain.set(id, text);
     record.enc = codec.newEncMeta(preset);
@@ -563,10 +578,12 @@ export function createDocStore({ keyring }) {
     delete record.enc;
     record.content = text;
     plain.delete(id);
-    // A title that encrypt() derived from the first line, and that the user
-    // never changed, goes too: the row follows the text again, as it did
-    // before. A title the user typed differs from the derived one and stays.
-    if (record.title && record.title === firstLineTitle(text)) delete record.title;
+    // A title that encrypt() derived goes too: the row follows the text again,
+    // as it did before. A title the user typed has no titleAuto and stays.
+    if (record.titleAuto) {
+      delete record.title;
+      delete record.titleAuto;
+    }
     if (record.sync) record.sync.dirty = true;
     await putBuffer({ ...record });
     emit("change");
@@ -941,6 +958,11 @@ export function createDocStore({ keyring }) {
     activate,
     textOf,
     updateContent,
+    // For the editor's locked placeholder: a LockedError while the keyring is
+    // unlocked means this device is not a recipient, and no prompt can help.
+    get isUnlocked() {
+      return keyring.isUnlocked;
+    },
     encrypt,
     decrypt,
     lockAll,
