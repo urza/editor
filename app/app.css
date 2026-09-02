@@ -626,7 +626,9 @@ body {
    property. Keep both rules together, like #open-actions. */
 .settings-row[hidden] { display: none; }
 
-.settings-label { flex: 1; }
+/* min-width: 0 lets the flex column shrink below its content width, or the
+   62-character age keys next to it push the row past a phone screen. */
+.settings-label { flex: 1; min-width: 0; }
 
 .settings-hint,
 .settings-note {
@@ -636,7 +638,7 @@ body {
   color: var(--st-gutter-fg);
 }
 
-.settings-value { color: var(--st-sidebar-label); }
+.settings-value { color: var(--st-sidebar-label); overflow-wrap: anywhere; }
 
 .settings-note a { color: #6699CC; }
 

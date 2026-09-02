@@ -400,6 +400,10 @@ export function mountSettings(deps = {}) {
   /** @param {KeyboardEvent} event */
   function onKeydown(event) {
     if (event.key !== "Escape") return;
+    // A modal <dialog> (ui/dialog.js) owns Escape while it is open. This
+    // capture listener would otherwise run first, close the panel behind the
+    // prompt, and swallow the browser's own cancel of the dialog.
+    if (document.querySelector("dialog[open]")) return;
     // Capture phase: CodeMirror binds Escape too, and this way the panel wins
     // wherever the focus happens to be.
     event.preventDefault();
