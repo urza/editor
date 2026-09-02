@@ -20,6 +20,7 @@ import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
 import { mountResizer } from "./ui/resizer.js";
+import { mountShell } from "./ui/shell.js";
 
 async function start() {
   requestPersistence();
@@ -59,6 +60,31 @@ async function start() {
     id: "buffer.reopen",
     title: "Reopen buffer",
     run: (id) => store.reopen(id),
+  });
+  register({
+    id: "buffer.rename",
+    title: "Rename buffer",
+    // Two renames behind one id: a scratch buffer gets a stored label, a
+    // file-backed one gets a new name on disk. The caller says what it wants
+    // renamed, never how; the record decides which path that is.
+    // An empty name clears a label and puts the first line back in charge.
+    run: async ({ id, name = "" } = {}) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !target) return false;
+      if (record.kind !== "file") return store.setTitle(target, name);
+      try {
+        if (!(await store.renameFile(target, name))) return false;
+      } catch (err) {
+        // A taken name is the common case here, and the row keeps the old one.
+        console.log("[vrtti] rename failed", name, err);
+        return false;
+      }
+      // An open folder section still lists the old name. Re-listing costs one
+      // directory read per open folder, and only a real rename pays it.
+      for (const folderId of [...folders.folders.keys()]) await folders.refresh(folderId);
+      return true;
+    },
   });
   register({
     id: "spell.toggle",
@@ -183,6 +209,9 @@ async function start() {
     run: () => settings.toggle(),
   });
 
+  // Before the sidebar: its rows dispatch sidebar.autoclose, and before
+  // mountShortcuts, which snapshots the chord table once.
+  mountShell();
   mountSidebar(store, folders);
   mountStatusbar(store);
   mountShortcuts();
@@ -202,6 +231,8 @@ async function start() {
     closeBuffer: (id) => run("buffer.close", id),
     activateBuffer: (id) => run("buffer.activate", id),
     setSyntax: (lang) => run("syntax.set", lang),
+    renameBuffer: (id, name) => run("buffer.rename", { id, name }),
+    toggleSidebar: () => run("sidebar.toggle"),
     deleteBuffer,
   };
 }

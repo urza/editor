@@ -54,6 +54,13 @@ body {
   background: var(--st-sidebar-bg);
   color: var(--st-sidebar-label);
   user-select: none;
+  /* Both collapse states animate the box, never its contents: width when the
+     sidebar is docked, transform when it is a drawer (ui/shell.js). */
+  transition: width 0.12s ease, flex-basis 0.12s ease, transform 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar { transition: none; }
 }
 
 #sidebar-scroll {
@@ -100,17 +107,23 @@ body {
 /* Recent is a disclosure: closed buffers stay out of sight until expanded. */
 #recent-heading { cursor: pointer; }
 
-/* The primary action. Big on purpose (user decision, 2026-09-01): without
-   Ctrl+N, creating a buffer needs a fast, fat click target. Full sidebar
-   width, about two buffer-row heights. */
-#new-buffer {
-  display: block;
+/* Header row: the collapse toggle and the primary action side by side. The
+   8px top is what #sidebar's padding used to give the "+", before the scroller
+   took that padding over. */
+#sidebar-top {
   flex: 0 0 auto;
-  width: calc(100% - 16px);
-  height: 48px;
-  /* The 8px top is what #sidebar's padding used to give it, before the
-     scroller took that padding over. */
+  display: flex;
+  gap: 6px;
   margin: 8px 8px 6px;
+}
+
+/* The primary action. Big on purpose (user decision, 2026-09-01): without
+   Ctrl+N, creating a buffer needs a fast, fat click target. Takes the rest of
+   the header row, about two buffer-row heights tall. */
+#new-buffer {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
@@ -124,6 +137,109 @@ body {
 #new-buffer:hover {
   background: var(--st-sidebar-selected);
   color: var(--st-sidebar-heading);
+}
+
+/* The two hamburgers (ui/shell.js): one in the sidebar header, one floating
+   over the editor once the sidebar is gone. Same look, so the control reads as
+   one control in both states. */
+#sidebar-toggle,
+#sidebar-open {
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+#sidebar-toggle:hover,
+#sidebar-open:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+#sidebar-toggle {
+  flex: 0 0 32px;
+  height: 48px;
+}
+
+/* Floats in the strip #editor-host reserves for it whenever it is on screen
+   (the padding rules below). Without that strip it would sit on the line
+   numbers, and a button over the text is a button in the way. z-index keeps it
+   under the settings overlay (10), which covers the whole pane. */
+#sidebar-open {
+  position: absolute;
+  left: 2px;
+  top: 4px;
+  z-index: 5;
+  display: none;
+  width: 26px;
+  height: 26px;
+  opacity: 0.5;
+}
+
+/* Scrim behind the drawer. Hidden here, shown by the narrow query below: a
+   docked sidebar takes nothing away from the editor and needs no scrim. */
+#sidebar-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* Collapse, wide screens: the sidebar gives its width back to the editor.
+   Inside a min-width query on purpose, or these rules would fight the drawer
+   width below. The state classes come from ui/shell.js; with neither class
+   present (the first paint, before the mount) the sidebar is open, which is
+   the wide default. */
+@media (min-width: 701px) {
+  #app.sidebar-closed #sidebar {
+    width: 0;
+    flex-basis: 0;
+    overflow: hidden;
+  }
+
+  #app.sidebar-closed #resizer { display: none; }
+  #app.sidebar-closed #sidebar-open { display: block; }
+
+  /* The strip the floating button lives in. Reserved, not overlaid: the
+     button would otherwise cover the first line numbers. */
+  #app.sidebar-closed #editor-host { padding-left: 30px; }
+}
+
+/* Phone: the sidebar becomes a drawer over the editor. A 220px column on a
+   360px screen would leave no editor, so it must not push the layout. Closed
+   is the default here, which is again what the first paint shows. */
+@media (max-width: 700px) {
+  #sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 20;
+    /* Overrides the docked width and the resizer's --sidebar-width: a drag
+       handle makes no sense on a drawer, and a stored PC width could cover
+       the whole phone screen. */
+    width: min(80vw, 280px);
+    flex-basis: auto;
+    transform: translateX(-100%);
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.4);
+  }
+
+  #app.sidebar-open #sidebar { transform: none; }
+  #app.sidebar-open #sidebar-scrim { display: block; }
+  #resizer { display: none; }
+  #sidebar-open { display: block; }
+  #app.sidebar-open #sidebar-open { display: none; }
+
+  /* Reserved whether the drawer is open or not, so opening it never reflows
+     the text underneath. */
+  #editor-host { padding-left: 30px; }
 }
 
 /* Disk entry points, one slim row under the big "+". Quiet on purpose: opening
@@ -291,7 +407,21 @@ body {
   white-space: nowrap;
 }
 
+/* Rename box, in place of .buffer-title while a rename runs (ui/sidebar.js). */
+.buffer-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 2px;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: 13px;
+}
+
 .buffer-close,
+.buffer-more,
 .folder-close {
   flex: 0 0 auto;
   width: 16px;
@@ -306,9 +436,98 @@ body {
 }
 
 .buffer-row:hover .buffer-close,
+.buffer-row:hover .buffer-more,
 .buffer-row.active .buffer-close,
+.buffer-row.active .buffer-more,
 .folder-head:hover .folder-close { opacity: 0.7; }
-.buffer-close:hover { opacity: 1; }
+.buffer-close:hover,
+.buffer-more:hover { opacity: 1; }
+
+/* The row menu button is a touch device's only way to reach rename, sync and
+   encryption, and a finger has no hover, so it never hides there. The × goes
+   the other way: the menu carries Close, and two small targets side by side on
+   a phone are two chances to close the wrong buffer. */
+@media (hover: none) {
+  .buffer-more { opacity: 0.7; }
+  .buffer-close { display: none; }
+}
+
+/* Row menu (ui/menu.js). Fixed, body-level, above the drawer (20) and its
+   scrim (15), because it is opened from inside the drawer on a phone. */
+.menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 170px;
+  max-width: 260px;
+  padding: 4px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 4px;
+  background: var(--st-ui-bg);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: var(--st-sidebar-label);
+  font-size: 12px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* :focus, not only :hover: arrow keys move the focus and nothing else would
+   show where it went. */
+.menu-item:hover:not(:disabled),
+.menu-item:focus {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  outline: none;
+}
+
+.menu-item:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Empty on a plain item, so every label starts at the same x. */
+.menu-check {
+  flex: 0 0 10px;
+  color: var(--st-caret);
+  line-height: 1.4;
+}
+
+.menu-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-label {
+  display: block;
+  line-height: 1.4;
+}
+
+.menu-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--st-gutter-fg);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--st-sidebar-bg);
+}
 /* Scoped to .folder-head, not a bare .folder-close:hover: the rule above is
    two classes deep, so an unscoped one would lose to it and the × would stay
    dim under the pointer. */

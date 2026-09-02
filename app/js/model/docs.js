@@ -23,6 +23,7 @@ import {
   deleteHandle,
   getAllBuffers,
   getAllHandles,
+  getHandle,
   newBufferRecord,
   putBuffer,
   putHandle,
@@ -54,6 +55,10 @@ const TITLE_MAX = 40;
 
 /** @param {BufferRecord} record @returns {string} */
 export function titleOf(record) {
+  // A name the user typed wins over every derived one (architecture.md §7).
+  // It is also the label an encrypted doc keeps when its text is unreadable.
+  if (record.title) return record.title;
+
   // A file-backed buffer is named by its file. Deriving the title from the
   // first line would rename someone's file every time they edit line 1.
   if (record.kind === "file" && record.file) return record.file.name;
@@ -248,6 +253,75 @@ export function createDocStore() {
     record.langSource = source;
     await putBuffer({ ...record });
     emit("lang", { id, lang });
+  }
+
+  /**
+   * Set or clear the user label of a buffer (architecture.md §7, §9). An empty
+   * name clears it, which puts a scratch buffer back on its first line.
+   *
+   * updatedAt deliberately stays where it is: it is the dirty-vs-disk test
+   * against file.lastSyncAt, and a label writes no text. Bumping it would make
+   * a just-saved buffer look edited and fork a conflict copy out of nothing.
+   *
+   * @param {string} id @param {string} title @returns {Promise<boolean>}
+   */
+  async function setTitle(id, title) {
+    const record = buffers.get(id);
+    if (!record) return false;
+    const next = title.trim();
+    if ((record.title || "") === next) return false;
+    if (next) record.title = next;
+    else delete record.title;
+    await putBuffer({ ...record });
+    emit("change");
+    return true;
+  }
+
+  /**
+   * Can this buffer's file be renamed where it sits? FileSystemFileHandle.move
+   * is Chromium only. Nothing else can rename a picked file, so the UI asks
+   * here before it offers a rename that could not work.
+   * @param {BufferRecord} record
+   */
+  function canRenameFile(record) {
+    const handle = handleFor(record);
+    return Boolean(handle && typeof handle.move === "function");
+  }
+
+  /**
+   * Rename the file on disk, then follow it in the record. Rejects from
+   * handle.move() reach the caller: a taken name is worth reporting, and this
+   * only ever runs from a click.
+   * @param {string} id @param {string} name @returns {Promise<boolean>}
+   */
+  async function renameFile(id, name) {
+    const record = buffers.get(id);
+    const handle = handleFor(record);
+    if (!record || !record.file || !handle || !canRenameFile(record)) return false;
+    const next = name.trim();
+    if (!next || next === record.file.name) return false;
+    // move() with a separator in the name would move the file to another
+    // directory. A rename box must never do that.
+    if (/[\\/]/.test(next)) return false;
+    if (!(await ensurePermission(handle, "readwrite"))) return false;
+
+    const previous = record.file.name;
+    await handle.move(next);
+    record.file.name = next;
+    // path is display only, and its last segment is the file name.
+    if (record.file.path) {
+      record.file.path = record.file.path.slice(0, -previous.length) + next;
+    }
+    // The handle record carries the name for the stores that never load a
+    // buffer; keep it in step, and keep addedAt as it was.
+    const stored = await getHandle(record.file.handleId);
+    if (stored) await putHandle({ ...stored, name: next });
+    await putBuffer({ ...record });
+    // A new extension is a new language. "auto", so a syntax the user picked
+    // by hand survives the rename.
+    await setLang(id, detectFromName(next), "auto");
+    emit("change");
+    return true;
   }
 
   async function create() {
@@ -558,6 +632,9 @@ export function createDocStore() {
     activate,
     updateContent,
     setLang,
+    setTitle,
+    canRenameFile,
+    renameFile,
     createFromFile,
     saveAs,
     replaceFromDisk,

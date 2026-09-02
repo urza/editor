@@ -10,6 +10,7 @@
 import { titleOf } from "../model/docs.js";
 import { hasFileSystemAccess } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
+import { openMenu } from "./menu.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
@@ -26,14 +27,22 @@ export function mountSidebar(store, folders) {
   );
 
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
-  newButton.addEventListener("click", () => run("buffer.new"));
+  newButton.addEventListener("click", () => {
+    run("buffer.new");
+    run("sidebar.autoclose");
+  });
 
   // Pinned outside the scroller by app.css, so a long buffer list never hides
   // it (architecture.md §9). The panel itself is ui/settings.js.
   const settingsButton = /** @type {HTMLElement} */ (
     document.getElementById("sidebar-settings")
   );
-  settingsButton.addEventListener("click", () => run("settings.toggle"));
+  settingsButton.addEventListener("click", () => {
+    // The drawer sits above the settings panel on a phone, so it must go
+    // first, or the panel opens behind it.
+    run("sidebar.autoclose");
+    run("settings.toggle");
+  });
 
   // The disk row stays hidden markup where the API is missing, so the commands
   // it dispatches (registered only on the same condition) always exist.
@@ -58,10 +67,120 @@ export function mountSidebar(store, folders) {
     render();
   });
 
+  // ---- Rename (architecture.md §9) -----------------------------------------
+
+  // The id being renamed, or null. render() stands down while it is set: a
+  // redraw during a rename would delete the input the user is typing in, and
+  // the lists redraw on every keystroke in the editor.
+  /** @type {string | null} */
+  let renamingId = null;
+
+  /** @param {BufferRecord} record */
+  function startRename(record) {
+    // The row is looked up here, not held from the click: a redraw between
+    // opening the menu and picking Rename would leave a detached element, and
+    // the input would go into a row nobody can see.
+    const li = document.querySelector('.buffer-row[data-id="' + record.id + '"]');
+    const titleEl = li ? li.querySelector(".buffer-title") : null;
+    if (renamingId || !(titleEl instanceof HTMLElement)) return;
+    renamingId = record.id;
+
+    const input = document.createElement("input");
+    input.className = "buffer-rename";
+    input.type = "text";
+    input.value = titleOf(record);
+    input.spellcheck = false;
+    titleEl.replaceWith(input);
+    input.focus();
+    // Select the name without its extension: a rename almost never means to
+    // change the file type.
+    const dot = input.value.lastIndexOf(".");
+    input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+
+    let done = false;
+    /** @param {boolean} commit */
+    function finish(commit) {
+      if (done) return;
+      done = true;
+      renamingId = null;
+      const name = input.value;
+      // Redraw first: the row must come back from the record whatever happens
+      // next, including a rename the store refuses.
+      render();
+      if (commit) run("buffer.rename", { id: record.id, name });
+    }
+
+    input.addEventListener("keydown", (event) => {
+      // The chord table listens on window, so Alt+W here would close the
+      // buffer while its new name is still being typed.
+      event.stopPropagation();
+      if (event.key === "Enter") finish(true);
+      if (event.key === "Escape") finish(false);
+    });
+    // Committing on blur, like a file manager: clicking away is a decision,
+    // not a cancel.
+    input.addEventListener("blur", () => finish(true));
+    // The row itself activates a buffer on click. Editing its name must not.
+    input.addEventListener("click", (event) => event.stopPropagation());
+  }
+
+  /**
+   * The row menu (architecture.md §9). Sync and encryption are listed and
+   * disabled: both engines ship later, and a toggle that claims to encrypt a
+   * file while nothing encrypts it would be the one lie this app cannot tell.
+   *
+   * @param {BufferRecord} record
+   * @returns {import("./menu.js").MenuItem[]}
+   */
+  function rowMenu(record) {
+    /** @type {import("./menu.js").MenuItem[]} */
+    const items = [];
+
+    if (record.kind === "file" && record.file) {
+      // No item at all where the browser cannot rename a file in place: an
+      // entry that silently does nothing is worse than a missing one.
+      if (store.canRenameFile(record)) {
+        items.push({ label: "Rename file…", act: () => startRename(record) });
+      }
+    } else {
+      items.push({ label: "Rename…", act: () => startRename(record) });
+      if (record.title) {
+        items.push({
+          label: "Use first line",
+          act: () => run("buffer.rename", { id: record.id, name: "" }),
+        });
+      }
+    }
+
+    items.push({ separator: true });
+    items.push({
+      label: "Sync",
+      checked: false,
+      disabled: true,
+      hint: "Available when sync ships.",
+    });
+    items.push({
+      label: "Encrypt",
+      checked: false,
+      disabled: true,
+      hint: "Available when encryption ships.",
+    });
+    items.push({ separator: true });
+    items.push(
+      record.closed
+        ? { label: "Reopen", act: () => run("buffer.reopen", record.id) }
+        : { label: "Close", act: () => run("buffer.close", record.id) }
+    );
+    return items;
+  }
+
   /** @param {BufferRecord} record @param {{closable: boolean}} opts */
   function makeRow(record, { closable }) {
     const li = document.createElement("li");
     li.className = "buffer-row";
+    // The rename box finds its row by this id, after the menu that asked for
+    // it is already gone.
+    li.dataset.id = record.id;
     if (record.id === store.activeId) li.classList.add("active");
 
     // A file-backed row is marked, never labelled: the file name is already
@@ -95,6 +214,19 @@ export function mountSidebar(store, folders) {
       li.appendChild(warn);
     }
 
+    const more = document.createElement("button");
+    more.className = "buffer-more";
+    more.type = "button";
+    more.textContent = "⋯";
+    more.title = "More";
+    more.setAttribute("aria-haspopup", "menu");
+    more.addEventListener("click", (event) => {
+      // Without this the row would also activate the buffer behind the menu.
+      event.stopPropagation();
+      openMenu(more, rowMenu(record));
+    });
+    li.appendChild(more);
+
     if (closable) {
       const close = document.createElement("button");
       close.className = "buffer-close";
@@ -111,6 +243,9 @@ export function mountSidebar(store, folders) {
     li.addEventListener("click", () => {
       if (record.closed) run("buffer.reopen", record.id);
       else run("buffer.activate", record.id);
+      // On a phone the sidebar is a drawer over the editor, so it has to get
+      // out of the way of the document it just opened. A no-op on a PC.
+      run("sidebar.autoclose");
     });
     return li;
   }
@@ -158,6 +293,7 @@ export function mountSidebar(store, folders) {
         // and opens everything; guessing which files "count" would be wrong
         // more often than useful.
         run("folder.openFile", { handle: entry.handle, path: entry.path });
+        run("sidebar.autoclose");
         return;
       }
       if (expanded.has(key)) expanded.delete(key);
@@ -245,6 +381,11 @@ export function mountSidebar(store, folders) {
   }
 
   function render() {
+    // A rename input lives inside one of these rows, and every keystroke in
+    // the editor emits "change". Redrawing now would delete the box the user
+    // is typing in; startRename() calls render() itself when it is done.
+    if (renamingId) return;
+
     openList.replaceChildren(
       ...store.openBuffers().map((b) => makeRow(b, { closable: true }))
     );

@@ -345,6 +345,57 @@ of this kind, so the pattern already exists in miniature.
 - **Open folder**: a folder section can hold hundreds of rows. Rendering
   stays plain replaceChildren until it measurably lags; virtualize only then.
 
+### Sidebar collapse (agreed 2026-09-02, shipped)
+
+`ui/shell.js` owns one piece of state, "is the sidebar showing", and two
+layouts read it. The breakpoint is 700px, the one the settings panel uses.
+
+- Wide: the sidebar stays docked. Collapsed means zero width, and the editor
+  takes the space back. The resizer hides with it.
+- Narrow: the sidebar is a drawer over the editor, with a scrim behind it.
+  A 220px column on a 360px screen leaves no editor, so it must not push.
+  The drawer closes itself when a row opens a document, when "+" makes one,
+  and before the settings panel opens (the panel is below it in z-order).
+- Two hamburger buttons, one look: `#sidebar-toggle` in the sidebar header,
+  `#sidebar-open` floating in a 30px strip the editor reserves while it shows.
+  The strip is reserved, not overlaid, or the button covers the line numbers.
+- Command `sidebar.toggle` (Alt+B) and `sidebar.autoclose`, which is the
+  drawer rule above and a no-op on a PC.
+- The default is open when wide, closed when narrow. Only a wide-screen
+  toggle persists (`vrtti.sidebarOpen`): a phone must start on the editor,
+  never behind a drawer it left open yesterday.
+- The CSS defaults match those defaults with no state class present, so the
+  first paint is already right and the mount causes no flash.
+- A collapsed sidebar is `inert`, so Tab cannot reach rows nobody can see.
+
+### Row menu (agreed 2026-09-02, shipped)
+
+Each buffer row carries a "⋯" button, the claude.ai pattern. `ui/menu.js` is
+the popup: one menu at a time, rendered into `document.body` at fixed
+coordinates, because `#sidebar-scroll` would clip a menu built inside a row.
+Escape, an outside click, a scroll, or a resize closes it; arrows walk it.
+
+Items: Rename, "Use first line" on a renamed scratch buffer, Sync, Encrypt,
+then Close or Reopen. Sync and Encrypt are listed and **disabled** until
+sections 3 and 5 ship. A toggle that says "encrypted" while nothing encrypts
+would be the one lie this app cannot afford; an empty menu slot is honest.
+
+Rename is inline, in the row. Enter commits, Escape cancels, blur commits.
+The list stops redrawing while a rename runs, or a keystroke in the editor
+would delete the input box.
+
+- Scratch buffer: writes `title` (section 7). Empty clears it, and the first
+  line takes over again. `titleOf()` prefers `title` over everything.
+- File buffer: renames the file on disk with `FileSystemFileHandle.move()`,
+  Chromium only. Elsewhere the item is absent, never disabled: a rename that
+  cannot touch the disk would leave the sidebar and the file disagreeing.
+  The record follows the file (`file.name`, `file.path`, the handle record),
+  the language is re-detected from the new extension as "auto", and every
+  open folder section re-lists.
+- Touch: "⋯" never hides where there is no hover, and the row's "×" hides
+  instead. The menu carries Close, and two small targets side by side on a
+  phone are two chances to close the wrong buffer.
+
 ### Language auto-detection (agreed 2026-09-01)
 
 Paste JSON, see JSON colors; paste markdown, see markdown. Rules:
@@ -438,6 +489,15 @@ Decided (2026-09-01):
 - Sync is per document, as a server target (decided 2026-09-02, replaces
   "scratch-only sync first"). Default off on desktop, on for phones.
   Folder and device switches set the flag in bulk; folder sync is a later phase.
+- Sidebar collapse: one state, two layouts (docked and drawer), 700px
+  breakpoint. The stored preference is a wide-screen one; a phone always
+  starts on the editor (decided 2026-09-02).
+- Row menu on every buffer row. Sync and encryption appear there disabled
+  until their engines ship, rather than as flags nothing acts on
+  (decided 2026-09-02).
+- Rename writes `title` for a scratch buffer and moves the real file for a
+  file-backed one. Where the browser cannot move a file, the app offers no
+  rename at all (decided 2026-09-02).
 - Tombstones have two kinds, delete and detach.
 - JSDoc types with `// @ts-check`, no TypeScript files, no build step.
 - Sidebar future (section 9): section-based sidebar, fractional `order` rank,

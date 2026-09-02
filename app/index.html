@@ -52,7 +52,13 @@
            middle, settings pinned at the bottom (architecture.md §9). The "+"
            stays outside the scroller on purpose, so neither the app's main
            action nor settings can scroll out of reach. -->
-      <button id="new-buffer" type="button" title="New buffer (Alt+N)">+</button>
+      <div id="sidebar-top">
+        <!-- Collapses the sidebar. The twin of this button, #sidebar-open,
+             takes over once the sidebar is gone (ui/shell.js). -->
+        <button id="sidebar-toggle" type="button" title="Hide sidebar (Alt+B)"
+                aria-controls="sidebar" aria-expanded="true">☰</button>
+        <button id="new-buffer" type="button" title="New buffer (Alt+N)">+</button>
+      </div>
       <!-- Everything that can grow lives here. The scroll and the sidebar
            padding belong on this div, not on #sidebar, or the pinned buttons
            would scroll away with the lists. -->
@@ -75,7 +81,14 @@
       <button id="sidebar-settings" type="button" title="Settings">⚙ settings</button>
     </aside>
     <div id="resizer"></div>
+    <!-- Dims the editor behind an open drawer, and closes it on a tap. Shown
+         by app.css on narrow screens only; a docked sidebar needs no scrim. -->
+    <div id="sidebar-scrim"></div>
     <main id="editor-host">
+      <!-- The way back when the sidebar is collapsed. Floats over the top-left
+           corner of the editor; app.css shows it only in that state. -->
+      <button id="sidebar-open" type="button" title="Show sidebar (Alt+B)"
+              aria-controls="sidebar" aria-expanded="false">☰</button>
       <!-- Overlay over the editor, filled by ui/settings.js from its item list.
            It sits inside #editor-host so it covers exactly the editor area and
            leaves the sidebar usable; the narrow media query in app.css switches

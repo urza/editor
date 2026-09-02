@@ -1,9 +1,10 @@
 // @ts-check
 // Raw IndexedDB. No wrapper library.
-// No title is stored for a scratch buffer: it is derived from the text on
+// A title is derived, not stored: a scratch buffer takes it from the text on
 // render, so editing the first line renames the buffer with no extra write
-// path. A file-backed buffer is the exception, and not a violation of that
-// rule: `file.name` is the name of the file on disk, not a cached title.
+// path. A file-backed buffer takes it from `file.name`, the name of the file
+// on disk, not a cached title. The one stored title is `title`, and it exists
+// only when the user typed one in the sidebar rename box.
 // Later phases bump DB_VERSION and add stores (sync, settings) plus record
 // fields (sync, enc, group, order); see architecture.md §7.
 
@@ -22,6 +23,10 @@
  * @property {boolean} closed
  * @property {number} createdAt
  * @property {number} updatedAt
+ * @property {string} [title]  User label from the sidebar rename (architecture.md
+ *                            §7). Wins over every derived title; absent means
+ *                            "derive it", which is the state of every record
+ *                            nobody renamed. Optional, so no migration.
  * @property {'scratch' | 'file'} [kind]  Absent means scratch (every v1 record).
  * @property {FileLink} [file]  Present exactly when kind is 'file'.
  * @property {string} [lang]  Language mode id from js/editor/lang.js ("markdown",
