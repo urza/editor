@@ -12,6 +12,7 @@
 //   "lang"    { id, lang }                     -> editor swaps the language mode
 //   "lock"    { ids }                          -> editor drops those states, shows the placeholder
 //   "unlock"                                   -> editor re-activates a placeholder
+//   "system"  { id }                            -> the hidden keyring record was written
 //
 // Persistence: every mutation writes through to IndexedDB, content edits with
 // a debounce. This is the first stage of the write pipeline (architecture.md
@@ -28,6 +29,7 @@
 // byte-agnostic, which is what keeps encryption orthogonal to storage.
 
 import {
+  deleteBuffer,
   deleteHandle,
   getAllBuffers,
   getAllHandles,
@@ -46,7 +48,12 @@ import {
   writeFile,
 } from "../storage/fsa.js";
 import * as codec from "./codec.js";
+import { deviceId } from "./device.js";
 import * as age from "../crypto/age.js";
+// The keyring record's merge rule lives with the keyring, not here: it is a
+// fact about device lists (architecture.md §13.3). This file only knows which
+// record it applies to.
+import { mergeKeyringContent, readKeyringContent } from "../crypto/keyring.js";
 // The one import from editor/ in this layer. Detection is a rule about a
 // record, not about a view, and it lives next to the mode table it names
 // (editor/lang.js explains why the two stay together).
@@ -73,7 +80,7 @@ const TITLE_MAX = 40;
  * stores that line as the doc's `title` while the plaintext is still readable.
  * @param {string} [text] @returns {string}
  */
-function firstLineTitle(text) {
+export function firstLineTitle(text) {
   for (const line of (text || "").split("\n")) {
     const trimmed = line.trim();
     if (trimmed) {
@@ -102,11 +109,16 @@ export function titleOf(record) {
 }
 
 /**
- * @param {{keyring: import("../crypto/keyring.js").KeyRing}} deps The keyring is
- *   a dependency, not an import: the codec resolves recipients and identities
- *   through it, and the store must follow its lock state (architecture.md §5).
+ * @param {{keyring: import("../crypto/keyring.js").KeyRing,
+ *          syncDefault?: () => boolean}} deps
+ *   The keyring is a dependency, not an import: the codec resolves recipients
+ *   and identities through it, and the store must follow its lock state
+ *   (architecture.md §5). `syncDefault` answers "does a new document get a
+ *   server target?" (§3, §13.6). A function, not a flag: the answer depends on
+ *   a setting and on whether a server is configured at all, and both can change
+ *   while the app runs.
  */
-export function createDocStore({ keyring }) {
+export function createDocStore({ keyring, syncDefault = () => false }) {
   /** @type {Map<string, BufferRecord>} */
   const buffers = new Map();
   /**
@@ -171,6 +183,20 @@ export function createDocStore({ keyring }) {
   }
 
   /**
+   * Mark a record for the next push. A no-op for a local-only record, which is
+   * why every writer can call it without asking whether sync is on.
+   *
+   * Content edits do NOT go through here: they are marked after the codec, in
+   * encodeForRecord, so a push always reads the ciphertext that matches the
+   * revision it claims (architecture.md §13.4). This is for the metadata
+   * writers, whose value is already in the record when they call it.
+   * @param {BufferRecord} record
+   */
+  function markDirty(record) {
+    if (record.sync) record.sync.dirty = true;
+  }
+
+  /**
    * Write a record the user never opens: the keyring today. It goes into the
    * Map and into IndexedDB like any other, but nothing activates it and no
    * debounce owns it, because no editor is ever attached to it.
@@ -179,6 +205,10 @@ export function createDocStore({ keyring }) {
   async function putSystemRecord(record) {
     buffers.set(record.id, record);
     await putBuffer({ ...record });
+    // The keyring resolves "all my devices" against this record, so whoever
+    // holds the keyring has to re-read it whenever it is written, here or by a
+    // pull. One event for both paths (architecture.md §13.3).
+    if (record.kind === "keyring") emit("system", { id: record.id });
     emit("change");
     return record;
   }
@@ -210,17 +240,6 @@ export function createDocStore({ keyring }) {
       }
       record.content = await codec.encode(text, record.enc, keyring);
       encodeSkipped.delete(record.id);
-      // A derived title follows the first line while the text is readable,
-      // the way a plaintext row does; this is the last point that can see it.
-      if (record.titleAuto) {
-        const next = firstLineTitle(text) || record.title;
-        if (next !== record.title) {
-          record.title = next;
-          // The sidebar painted on the keystroke, before this ran; without
-          // this event the row shows the old name until the next keystroke.
-          emit("change");
-        }
-      }
     }
     // After the codec, never in updateContent: a push must always read the
     // ciphertext that matches the revision it claims (architecture.md §13.4).
@@ -379,6 +398,18 @@ export function createDocStore({ keyring }) {
     });
   }
 
+  /**
+   * Decode ciphertext that is not (yet) a record: an old revision the history
+   * dialog fetched (architecture.md §13.6). It goes through this rather than
+   * through codec.decode directly, so the keyring stays a dependency of the
+   * store and not of a UI module.
+   * @param {string} content @param {import("../storage/idb.js").EncMeta} enc
+   * @returns {Promise<string>}
+   */
+  function decodeContent(content, enc) {
+    return codec.decode(content, enc, keyring);
+  }
+
   /** @param {string} id @param {string} content */
   function updateContent(id, content) {
     const record = buffers.get(id);
@@ -425,6 +456,10 @@ export function createDocStore({ keyring }) {
     if (record.lang === lang && record.langSource === source) return;
     record.lang = lang;
     record.langSource = source;
+    // Only a hand-picked syntax travels: an "auto" guess is re-derived from the
+    // text on every device anyway, and pushing it would make every paste a
+    // revision.
+    if (source === "user") markDirty(record);
     await putBuffer({ ...record });
     emit("lang", { id, lang });
   }
@@ -446,8 +481,9 @@ export function createDocStore({ keyring }) {
     if ((record.title || "") === next) return false;
     if (next) record.title = next;
     else delete record.title;
-    // A name the user typed (or cleared) is theirs; it stops following the text.
-    delete record.titleAuto;
+    // The title is plaintext metadata on the wire (architecture.md §5), so a
+    // rename is a push of its own; nothing else would ever carry it.
+    markDirty(record);
     await putBuffer({ ...record });
     emit("change");
     return true;
@@ -502,6 +538,9 @@ export function createDocStore({ keyring }) {
 
   async function create() {
     const record = newBufferRecord();
+    // rev 0 means "never pushed", and dirty gets it into the first push, which
+    // attaches it with baseRev null (architecture.md §13.6).
+    if (syncDefault()) record.sync = { rev: 0, dirty: true };
     buffers.set(record.id, record);
     await putBuffer(record);
     activate(record.id);
@@ -541,9 +580,11 @@ export function createDocStore({ keyring }) {
    * it to `.age` on disk, which is a later unit (architecture.md §13.4).
    *
    * @param {string} id @param {'all-devices' | 'this-device'} preset
+   * @param {string} [label] The plaintext name to store; "" clears the title,
+   *   undefined leaves it as it is.
    * @returns {Promise<BufferRecord | null>}
    */
-  async function encrypt(id, preset) {
+  async function encrypt(id, preset, label) {
     const record = buffers.get(id);
     if (!record || record.enc) return null;
     // The command asks for setup and unlock before it gets here; a throw is
@@ -552,14 +593,13 @@ export function createDocStore({ keyring }) {
     if (record.kind === "file") throw new Error("encrypt: files come in a later unit");
 
     const text = record.content;
-    // The last moment the first line is readable. Without a title the row
-    // would read "encrypted" forever, because nothing else can name it.
-    if (!record.title) {
-      const derived = firstLineTitle(text);
-      if (derived) {
-        record.title = derived;
-        record.titleAuto = true;
-      }
+    // The label is the one plaintext the server ever sees for this doc (§5),
+    // so it is never derived here behind the user's back: the command asks,
+    // prefilled with the first line, and the user decides what stays readable.
+    // No label at all leaves the row saying "encrypted".
+    if (label !== undefined) {
+      if (label) record.title = label;
+      else delete record.title;
     }
     plain.set(id, text);
     record.enc = codec.newEncMeta(preset);
@@ -586,12 +626,8 @@ export function createDocStore({ keyring }) {
     delete record.enc;
     record.content = text;
     plain.delete(id);
-    // A title that encrypt() derived goes too: the row follows the text again,
-    // as it did before. A title the user typed has no titleAuto and stays.
-    if (record.titleAuto) {
-      delete record.title;
-      delete record.titleAuto;
-    }
+    // The label stays: the user chose it at encrypt time, and "Use first line"
+    // in the row menu clears it whenever they want the row to follow the text.
     if (record.sync) record.sync.dirty = true;
     await putBuffer({ ...record });
     emit("change");
@@ -754,20 +790,28 @@ export function createDocStore({ keyring }) {
     record.updatedAt = Date.now();
     record.file.lastSyncAt = record.updatedAt;
     await putBuffer({ ...record });
-
-    if (record.enc) {
-      // "replace" carries editor text, so the new ciphertext has to be decoded
-      // before it can be announced. Locked, or not addressed to this device:
-      // the editor drops its state and shows the placeholder instead.
-      try {
-        emit("replace", { id, content: await textOf(id) });
-      } catch (err) {
-        emit("lock", { ids: [id] });
-      }
-    } else {
-      emit("replace", { id, content });
-    }
+    await announceReplace(record);
     emit("change");
+  }
+
+  /**
+   * Tell the editor that a record's text was replaced under it, by the disk
+   * poll or by a pull. Shared by both, because the rule is the same and it is
+   * easy to get wrong: "replace" carries EDITOR text, so new ciphertext has to
+   * be decoded first, and a record this device cannot read has to become a
+   * locked placeholder instead of an empty document.
+   * @param {BufferRecord} record
+   */
+  async function announceReplace(record) {
+    if (!record.enc) {
+      emit("replace", { id: record.id, content: record.content });
+      return;
+    }
+    try {
+      emit("replace", { id: record.id, content: await textOf(record.id) });
+    } catch (err) {
+      emit("lock", { ids: [record.id] });
+    }
   }
 
   /**
@@ -800,6 +844,336 @@ export function createDocStore({ keyring }) {
     // move the caret out of what the user is typing in.
     emit("change");
     return fork;
+  }
+
+  // ---- Sync (architecture.md §3, §13.6) ------------------------------------
+  //
+  // The store owns the whole conflict policy; the sync client only moves rows
+  // over the wire and calls in here. That split is what makes the rules
+  // testable without a server, and what keeps "when do we fork?" in one file.
+
+  /**
+   * One revision row as the server returns it (architecture.md §7, §13.5).
+   * @typedef {Object} Change
+   * @property {string} docId
+   * @property {number} rev
+   * @property {number} seq
+   * @property {'text' | 'deleted' | 'detached'} kind
+   * @property {string | null} [content]
+   * @property {RecordMeta | null} [meta]
+   * @property {string} deviceId
+   * @property {number} clientTime
+   * @property {number} serverTime
+   */
+
+  /**
+   * The metadata that travels with a revision. Small on purpose: the server
+   * reads none of it, but it stores all of it in the clear (architecture.md §5),
+   * so nothing goes in here that the content itself protects.
+   * @typedef {Object} RecordMeta
+   * @property {string} [title]
+   * @property {string} [lang]
+   * @property {'auto' | 'user'} [langSource]
+   * @property {import("../storage/idb.js").EncMeta} [enc]
+   * @property {'scratch' | 'keyring'} [kind]
+   */
+
+  /**
+   * Attach or detach a server target (architecture.md §3 "What syncs").
+   *
+   * Detaching does not remove `sync`: the other devices have to be told, and
+   * that is a push like any other. The record loses its `sync` only after that
+   * push lands, in clearSync().
+   *
+   * @param {string} id @param {boolean} on
+   */
+  async function setSync(id, on) {
+    const record = buffers.get(id);
+    if (!record) return null;
+    if (on) {
+      // An already attached record is left alone: overwriting its rev with 0
+      // would make the next push claim a revision the server passed long ago.
+      if (!record.sync) record.sync = { rev: 0, dirty: true };
+      else if (record.sync.tombstone) {
+        // Turned off and on again before the tombstone was pushed. The last
+        // click wins, so the pending detach is dropped instead of being sent
+        // and then undone by a second attach.
+        delete record.sync.tombstone;
+        record.sync.dirty = true;
+      }
+    } else {
+      if (!record.sync) return null;
+      record.sync.tombstone = "detached";
+      record.sync.dirty = true;
+    }
+    await putBuffer({ ...record });
+    emit("change");
+    return record;
+  }
+
+  /** The tombstone push landed: this record is a local one again. @param {string} id */
+  async function clearSync(id) {
+    const record = buffers.get(id);
+    if (!record || !record.sync) return;
+    delete record.sync;
+    await putBuffer({ ...record });
+    emit("change");
+  }
+
+  /** The purge call landed; the old plaintext revisions are gone. @param {string} id */
+  async function clearPurge(id) {
+    const record = buffers.get(id);
+    if (!record || !record.sync) return;
+    delete record.sync.purge;
+    await putBuffer({ ...record });
+  }
+
+  /**
+   * The body of one push (architecture.md §13.5).
+   * @param {BufferRecord} record
+   */
+  async function pushPayload(record) {
+    const tombstone = record.sync?.tombstone;
+    /** @type {RecordMeta} */
+    const meta = {};
+    if (record.title !== undefined) meta.title = record.title;
+    if (record.lang !== undefined) meta.lang = record.lang;
+    if (record.langSource !== undefined) meta.langSource = record.langSource;
+    if (record.enc !== undefined) meta.enc = record.enc;
+    // A file-backed doc travels as a scratch doc, always: the disk link is per
+    // device (architecture.md §3), and the other device has no such file. Do
+    // not "fix" this by sending kind 'file'; it would arrive as a broken link.
+    meta.kind = record.kind === "keyring" ? "keyring" : "scratch";
+    return {
+      // null is "attach without a claim". rev 0 is not a revision the server
+      // ever had, so claiming it would 409 for ever on the very first push.
+      baseRev: record.sync && record.sync.rev !== 0 ? record.sync.rev : null,
+      kind: tombstone ?? "text",
+      content: tombstone ? null : record.content,
+      meta,
+      deviceId: await deviceId(),
+      clientTime: record.updatedAt,
+    };
+  }
+
+  /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
+  function dirtyRecords() {
+    return [...buffers.values()]
+      .filter((b) => b.sync?.dirty)
+      // The keyring goes first: a document encrypted to a device the other end
+      // has never heard of is unreadable there, and the device list is what
+      // teaches it about that device (architecture.md §13.3).
+      .sort((a, b) => Number(b.kind === "keyring") - Number(a.kind === "keyring"));
+  }
+
+  /**
+   * A push of this record was accepted as `rev`.
+   *
+   * @param {string} id @param {number} rev
+   * @param {number} [sentUpdatedAt] The record's updatedAt as it went out. The
+   *   user can type while the request is in flight, and then the server holds
+   *   an old text; comparing it here is what keeps that record dirty.
+   */
+  async function afterPush(id, rev, sentUpdatedAt) {
+    const record = buffers.get(id);
+    if (!record || !record.sync) return;
+    // A tombstone push is the last thing this record ever says to the server.
+    if (record.sync.tombstone) return clearSync(id);
+    record.sync.rev = rev;
+    record.sync.dirty =
+      sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt;
+    await putBuffer({ ...record });
+    emit("change");
+  }
+
+  /**
+   * Copy the pulled metadata onto a record. Absent means absent: a title
+   * cleared on the other device has to be cleared here, not kept.
+   * @param {BufferRecord} record @param {RecordMeta} meta
+   */
+  function applyMeta(record, meta) {
+    if (meta.title !== undefined) record.title = meta.title;
+    else delete record.title;
+    if (meta.lang !== undefined) record.lang = meta.lang;
+    else delete record.lang;
+    if (meta.langSource !== undefined) record.langSource = meta.langSource;
+    else delete record.langSource;
+    if (meta.enc !== undefined) record.enc = meta.enc;
+    else delete record.enc;
+    // `kind` is deliberately not copied: it is per device. A doc that is
+    // file-backed here stays file-backed, and one that arrived as scratch
+    // stays scratch even if the other device has it on disk.
+  }
+
+  /**
+   * Take the incoming version as current.
+   * @param {BufferRecord} record @param {Change} change
+   */
+  async function adoptRemote(record, change) {
+    record.content = change.content ?? "";
+    applyMeta(record, change.meta || {});
+    record.sync = { rev: change.rev, dirty: false };
+    record.updatedAt = Date.now();
+    // The decoded text belongs to the ciphertext this just replaced.
+    plain.delete(record.id);
+    await putBuffer({ ...record });
+    await announceReplace(record);
+    emit("change");
+    // A file-backed record mirrors the pull to its own file, the same
+    // write-behind a keystroke would take. A no-op for every other record.
+    diskSoon(record.id);
+  }
+
+  /**
+   * The keyring record is the one record that merges instead of forking
+   * (architecture.md §13.3): a fork would split the device list in two, and
+   * each device would then encrypt to half of the devices.
+   * @param {BufferRecord | undefined} record @param {Change} change
+   */
+  async function applyRemoteKeyring(record, change) {
+    const remote = readKeyringContent({ content: change.content ?? "" });
+    const merged = mergeKeyringContent(readKeyringContent(record), remote);
+    const now = Date.now();
+    const next = record ?? {
+      id: KEYRING_ID,
+      kind: /** @type {'keyring'} */ ("keyring"),
+      content: "",
+      closed: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    next.content = JSON.stringify(merged);
+    next.updatedAt = now;
+    // Dirty exactly when the union added something the server does not have,
+    // so the other devices learn about this one. Comparing the lengths is
+    // enough: the merge only ever appends to the incoming list.
+    next.sync = {
+      rev: change.rev,
+      dirty:
+        merged.devices.length !== (remote?.devices.length ?? 0) ||
+        merged.recovery.length !== (remote?.recovery.length ?? 0),
+    };
+    await putSystemRecord(next);
+  }
+
+  /**
+   * Apply one pulled change (architecture.md §13.6). The sync client feeds
+   * these in seq order and decides nothing itself.
+   * @param {Change} change
+   */
+  async function applyRemote(change) {
+    if (!change || !change.docId) return;
+    const id = change.docId;
+    const record = buffers.get(id);
+    // Our own echo, or a row already applied. rev is per document and only
+    // grows, so this one test covers both.
+    if (record && record.sync && change.rev <= record.sync.rev) return;
+
+    const meta = change.meta || {};
+    if (id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring") {
+      return applyRemoteKeyring(record, change);
+    }
+
+    // A tombstone never applies to a record that was just attached by hand
+    // (rev 0 = never pushed). The user's "Sync" click happened after that row
+    // was written, so the row is either this device's own detach echoing back
+    // or another device's delete from before the click. Applying it would make
+    // the click silently undo itself, and the push right behind this pull puts
+    // a text revision on top of the tombstone anyway.
+    const freshAttach = Boolean(record && record.sync && record.sync.rev === 0);
+    if ((change.kind === "deleted" || change.kind === "detached") && freshAttach) {
+      return;
+    }
+
+    if (change.kind === "deleted") {
+      // A record without `sync` is a local document, whatever the server
+      // thinks: a copy kept after a detach must survive a later delete
+      // elsewhere. Same rule as the detached branch below.
+      if (!record || !record.sync) return;
+      // Deleted elsewhere while this device still held unpushed text. The text
+      // survives as a local copy; the record itself goes.
+      if (record.sync?.dirty) await forkConflict(record);
+      buffers.delete(id);
+      plain.delete(id);
+      await deleteBuffer(id);
+      emit("evict", { id });
+      if (id === activeId) {
+        // Null first, so the next activate() parks nothing into a record that
+        // no longer exists (same rule as close()).
+        activeId = null;
+        const next = openBuffers()[0];
+        if (next) activate(next.id);
+        else await create();
+      }
+      emit("change");
+      return;
+    }
+
+    if (change.kind === "detached") {
+      if (!record || !record.sync) return;
+      // "Stop syncing" is not "delete" (architecture.md §3): the text stays,
+      // as a local document.
+      delete record.sync;
+      await putBuffer({ ...record });
+      emit("change");
+      return;
+    }
+
+    if (!record) {
+      /** @type {BufferRecord} */
+      const created = {
+        id,
+        content: change.content ?? "",
+        closed: false,
+        createdAt: Date.now(),
+        // The other device's clock: it is what the row's age should show, and
+        // this device never saw the document before now.
+        updatedAt: change.clientTime || Date.now(),
+        sync: { rev: change.rev, dirty: false },
+      };
+      applyMeta(created, meta);
+      buffers.set(id, created);
+      await putBuffer({ ...created });
+      emit("change");
+      return;
+    }
+
+    if (record.sync) {
+      // The incoming version wins and the local text forks. Nothing is lost
+      // and nothing prompts (architecture.md §3).
+      if (record.sync.dirty) await forkConflict(record);
+    } else if (record.content !== change.content) {
+      // Detached here, then edited on either side. Re-attaching must not drop
+      // the local text; equal content needs no fork, which is what makes a
+      // detach and re-attach round trip quietly.
+      await forkConflict(record);
+    }
+    await adoptRemote(record, change);
+  }
+
+  /**
+   * A scratch buffer built from text the user did not type: the history
+   * dialog's "open as copy" (architecture.md §13.6).
+   *
+   * Deliberately without `sync`, like a conflict copy: an old revision opened
+   * as a copy must never push itself back over the current one.
+   *
+   * @param {{content: string, title?: string, lang?: string,
+   *          langSource?: 'auto' | 'user',
+   *          enc?: import("../storage/idb.js").EncMeta}} fields
+   */
+  async function createFrom(fields) {
+    const record = newBufferRecord();
+    record.content = fields.content;
+    if (fields.title) record.title = fields.title;
+    if (fields.lang) record.lang = fields.lang;
+    if (fields.langSource) record.langSource = fields.langSource;
+    if (fields.enc) record.enc = fields.enc;
+    buffers.set(record.id, record);
+    await putBuffer({ ...record });
+    activate(record.id);
+    emit("change");
+    return record;
   }
 
   // Compare disk against every open file buffer. Timestamps only, no hashing.
@@ -965,6 +1339,7 @@ export function createDocStore({ keyring }) {
     reopen,
     activate,
     textOf,
+    decodeContent,
     updateContent,
     // For the editor's locked placeholder: a LockedError while the keyring is
     // unlocked means this device is not a recipient, and no prompt can help.
@@ -977,6 +1352,16 @@ export function createDocStore({ keyring }) {
     // Exported for the sync client (architecture.md §13.6): a pull that meets
     // a dirty local record forks it before it adopts the incoming one.
     forkConflict,
+    // The sync surface (architecture.md §13.6). The client owns the network
+    // and the schedule; every one of these owns a rule about records.
+    setSync,
+    clearSync,
+    clearPurge,
+    applyRemote,
+    pushPayload,
+    dirtyRecords,
+    afterPush,
+    createFrom,
     setLang,
     setTitle,
     canRenameFile,

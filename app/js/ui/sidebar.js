@@ -18,8 +18,9 @@ import { openMenu } from "./menu.js";
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
  * @param {ReturnType<import("../model/folders.js").createFolderStore>} folders
+ * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
  */
-export function mountSidebar(store, folders) {
+export function mountSidebar(store, folders, sync) {
   const openList = /** @type {HTMLElement} */ (document.getElementById("open-list"));
   const recentList = /** @type {HTMLElement} */ (document.getElementById("recent-list"));
   const folderSections = /** @type {HTMLElement} */ (
@@ -125,9 +126,9 @@ export function mountSidebar(store, folders) {
   }
 
   /**
-   * The row menu (architecture.md §9). Sync is listed and disabled: the engine
-   * ships later, and a toggle that claims to sync a file while nothing syncs
-   * it would be the one lie this app cannot tell. Encrypt is live for scratch
+   * The row menu (architecture.md §9). Sync is a per-document server target
+   * (§3); with no server configured the item is disabled and says where to set
+   * one, rather than claiming to sync into nothing. Encrypt is live for scratch
    * buffers; a file-backed doc means renaming it to `.age` on disk, which is
    * a later unit (architecture.md §13.4).
    *
@@ -155,12 +156,27 @@ export function mountSidebar(store, folders) {
     }
 
     items.push({ separator: true });
-    items.push({
-      label: "Sync",
-      checked: false,
-      disabled: true,
-      hint: "Available when sync ships.",
-    });
+    items.push(
+      sync?.isConfigured
+        ? {
+            label: "Sync",
+            // One item, both directions, like Encrypt below.
+            checked: Boolean(record.sync),
+            act: () =>
+              run(record.sync ? "doc.sync.off" : "doc.sync.on", record.id),
+          }
+        : {
+            label: "Sync",
+            checked: false,
+            disabled: true,
+            hint: "Set a server in settings",
+          }
+    );
+    // History is the server's, so it only exists for a document the server
+    // knows about.
+    if (record.sync && sync?.isConfigured) {
+      items.push({ label: "History…", act: () => run("doc.history", record.id) });
+    }
     items.push(
       record.kind === "file"
         ? {
@@ -202,6 +218,21 @@ export function mountSidebar(store, folders) {
       mark.className = "buffer-mark";
       mark.textContent = "⛁";
       mark.title = "On disk: " + (record.file.path || record.file.name);
+      li.appendChild(mark);
+    }
+
+    // A synced row is marked the same way a file-backed one is: the mark says
+    // "this text also lives somewhere else". A pending detach keeps the mark
+    // until the tombstone is pushed, because until then it is still up there.
+    if (record.sync) {
+      const mark = document.createElement("span");
+      mark.className = "buffer-mark";
+      mark.textContent = "☁";
+      mark.title = record.sync.tombstone
+        ? "Detaching…"
+        : record.sync.rev === 0
+          ? "Attaching…"
+          : "Synced";
       li.appendChild(mark);
     }
 

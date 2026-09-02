@@ -10,11 +10,17 @@ import {
   hasFileSystemAccess,
   requestPersistence,
 } from "./model/capabilities.js";
-import { createDocStore, KEYRING_ID } from "./model/docs.js";
+import { createDocStore, firstLineTitle, KEYRING_ID } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { register, run } from "./commands/registry.js";
+import { createSyncClient } from "./sync/client.js";
 import * as age from "./crypto/age.js";
-import { KeyRing, keyringContentFor, readKeyringContent } from "./crypto/keyring.js";
+import {
+  KeyRing,
+  keyringContentFor,
+  mergeKeyringContent,
+  readKeyringContent,
+} from "./crypto/keyring.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { isEnabled, setEnabled } from "./editor/spellcheck.js";
@@ -25,6 +31,7 @@ import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
+import { showHistory } from "./ui/history.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
 const UNLOCK_ATTEMPTS = 3;
@@ -48,17 +55,36 @@ async function start() {
   const keyring = new KeyRing();
   await keyring.load();
 
-  const store = createDocStore({ keyring });
+  // Declared here and assigned below: the store asks the sync client whether a
+  // new document gets a server target, and the client needs the store. Only
+  // store.create() calls that function, long after both objects exist.
+  /** @type {ReturnType<typeof createSyncClient> | undefined} */
+  let sync;
+  const store = createDocStore({
+    keyring,
+    syncDefault: () => Boolean(sync && sync.syncDefaultOn()),
+  });
   await store.load();
+
+  sync = createSyncClient({ store, keyring });
+  // Before store.start(): the first buffer of a fresh install is created there,
+  // and whether it syncs depends on the setting this reads.
+  await sync.load();
 
   // Peers are read after store.load(), because the keyring resolves "all
   // devices" against the hidden keyring record the store just read (§13.3).
   /** Point the keyring at the device list in the hidden record. */
   function refreshPeers() {
     const content = readKeyringContent(store.keyringRecord());
-    keyring.setPeers(content ? content.devices : []);
+    // Peers are the OTHER devices; this one is already in every recipient set.
+    keyring.setPeers(
+      (content ? content.devices : []).filter((d) => d.id !== keyring.deviceId)
+    );
   }
   refreshPeers();
+  // The record also changes when a pull merges another device into it, so the
+  // peers follow the record itself and not the one command that writes it.
+  store.events.addEventListener("system", refreshPeers);
 
   // Built on every platform: without the File System Access API no directory
   // handle can be stored, so the store loads nothing and the sidebar draws no
@@ -176,19 +202,37 @@ async function start() {
       /** @type {string | null} */
       let recoveryIdentity;
       try {
-        // A keyring record pulled by sync would supply existingRecovery here.
-        // Nothing pulls yet (unit 4), so this device always mints its own.
-        ({ recoveryIdentity } = await keyring.setup(passphrase, { deviceName }));
+        // A keyring record already here came from the server: this device is
+        // joining a keyring that exists. It adopts the recovery recipients and
+        // mints no second paper key, so setup() returns null and the recovery
+        // dialog below is skipped (architecture.md §13.2, §13.3).
+        const previous = store.keyringRecord();
+        const existing = readKeyringContent(previous);
+        ({ recoveryIdentity } = await keyring.setup(passphrase, {
+          deviceName,
+          existingRecovery: existing ? existing.recovery : undefined,
+        }));
         const now = Date.now();
-        await store.putSystemRecord({
+        /** @type {import("./storage/idb.js").BufferRecord} */
+        const record = {
           id: KEYRING_ID,
           kind: "keyring",
-          content: JSON.stringify(keyringContentFor(keyring)),
           closed: false,
           createdAt: now,
+          ...previous,
+          // Union, never replace: the pulled list already names the other
+          // devices, and dropping them would leave them out of every future
+          // "all my devices" recipient set (architecture.md §13.3).
+          content: JSON.stringify(
+            mergeKeyringContent(existing, keyringContentFor(keyring))
+          ),
           updatedAt: now,
-        });
-        refreshPeers();
+        };
+        // The other devices have to learn about this one. Harmless with no
+        // server configured: the flag simply waits for one.
+        if (record.sync) record.sync = { ...record.sync, dirty: true };
+        // Emits "system", which refreshes the peers.
+        await store.putSystemRecord(record);
       } finally {
         busy.close();
       }
@@ -269,7 +313,19 @@ async function start() {
         ],
       });
       if (!preset) return false;
-      await store.encrypt(target, /** @type {any} */ (preset));
+      // The label is plaintext everywhere, server included (architecture.md
+      // §5). Prefilled with the first line, so the user sees exactly what will
+      // stay readable and can change it before it leaves the device.
+      const record = store.get(target);
+      const label = await askText({
+        title: "Name for the encrypted document",
+        label: "Plaintext name",
+        value: record?.title || firstLineTitle(record?.content),
+        hint: "Shown in the sidebar and stored unencrypted, also on the sync server. Leave it empty for no name.",
+        allowEmpty: true,
+      });
+      if (label === null) return false;
+      await store.encrypt(target, /** @type {any} */ (preset), label);
       return true;
     },
   });
@@ -283,6 +339,82 @@ async function start() {
       // out of the ciphertext, and nothing else holds it.
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
       await store.decrypt(target);
+      return true;
+    },
+  });
+
+  // Sync (architecture.md §3, §13.6). Registered on every platform: sync is a
+  // server target, and every platform can hold one. The client stays inert
+  // until a URL and a token exist, so each of these is a no-op until then.
+  register({
+    id: "sync.configure",
+    title: "Set the sync server",
+    // The settings rows dispatch this instead of calling the client, so the
+    // panel keeps its rule: an item never writes state itself.
+    run: (next) => sync.configure(next ?? {}),
+  });
+  register({
+    id: "doc.sync.on",
+    title: "Sync this document",
+    // No arg means the active buffer, like buffer.close.
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      if (!sync.isConfigured) {
+        // A log, not a dialog: the row menu already carries the hint that says
+        // where a server is set, and this path is only reachable around it.
+        console.log("[vrtti] sync: no server configured");
+        return false;
+      }
+      await store.setSync(target, true);
+      return true;
+    },
+  });
+  register({
+    id: "doc.sync.off",
+    title: "Stop syncing this document",
+    // The record keeps its text and pushes a `detached` tombstone, so the
+    // other devices keep their copies too (architecture.md §3).
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      await store.setSync(target, false);
+      return true;
+    },
+  });
+  register({
+    id: "sync.now",
+    title: "Sync now",
+    run: () => sync.syncNow(),
+  });
+  register({
+    id: "sync.all",
+    title: "Sync all current documents",
+    // The bulk switch of architecture.md §3: it only sets the per-document
+    // flag, one document at a time. There is no second kind of sync target.
+    run: async () => {
+      if (!sync.isConfigured) return false;
+      for (const record of store.openBuffers()) {
+        if (!record.sync) await store.setSync(record.id, true);
+      }
+      return true;
+    },
+  });
+  register({
+    id: "sync.defaultToggle",
+    title: "New documents sync by default",
+    // Stores an explicit boolean, which is what takes this device off the
+    // platform default for good (architecture.md §13.6).
+    run: () => sync.toggleSyncDefault(),
+  });
+  register({
+    id: "doc.history",
+    title: "Document history…",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !sync.isConfigured) return false;
+      await showHistory({ record, client: sync, store });
       return true;
     },
   });
@@ -368,7 +500,7 @@ async function start() {
 
   // Mounted before its command, because the command dispatches into the
   // controller the mount returns. The sidebar button below dispatches the id.
-  const settings = mountSettings({ keyring });
+  const settings = mountSettings({ keyring, sync });
   register({
     id: "settings.toggle",
     title: "Settings",
@@ -378,13 +510,16 @@ async function start() {
   // Before the sidebar: its rows dispatch sidebar.autoclose, and before
   // mountShortcuts, which snapshots the chord table once.
   mountShell();
-  mountSidebar(store, folders);
-  mountStatusbar(store);
+  mountSidebar(store, folders, sync);
+  mountStatusbar(store, sync);
   mountShortcuts();
   mountResizer();
 
   await store.start();
   folders.start();
+  // Last: its first run pulls, and a pull emits "replace" and "active" into UI
+  // that has to be mounted already.
+  sync.start();
 
   // Exposed for the Playwright checks; the UI itself never calls these.
   // @ts-ignore - deliberate global test hook
@@ -410,6 +545,11 @@ async function start() {
     encrypt: (id, preset) => store.encrypt(id, preset),
     decrypt: (id) => store.decrypt(id),
     forkConflict: (id) => store.forkConflict(store.get(id)),
+    // Sync surface for the checks (architecture.md §13.6). The app itself
+    // reaches all of this through commands and the settings panel.
+    sync,
+    applyRemote: (change) => store.applyRemote(change),
+    dirtyRecords: () => store.dirtyRecords(),
     settings: { get: getSetting, put: putSetting },
   };
 }

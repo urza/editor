@@ -40,6 +40,10 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+  // Both early returns hand the request straight to the network, and both are
+  // load-bearing for sync (architecture.md §13.6): the API lives on another
+  // origin, its pushes are POST and DELETE, and a cached /api/changes page
+  // would replay the same rows for ever. Never widen this handler to them.
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
