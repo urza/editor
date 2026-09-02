@@ -5,3 +5,8 @@ __pycache__/
 # Kept out of the public repo until the user decides otherwise: publishing
 # memories is irreversible (git history), while adding them later is trivial.
 .claude-memory/
+
+# .NET build output and the local sync-server database (server/, unit 3).
+server/**/bin/
+server/**/obj/
+server/**/data/

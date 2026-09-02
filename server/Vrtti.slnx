@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Vrtti.Server.Tests/Vrtti.Server.Tests.csproj" />
+  <Project Path="Vrtti.Server/Vrtti.Server.csproj" />
+</Solution>
