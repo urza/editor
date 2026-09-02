@@ -72,9 +72,14 @@ export const marianaTheme = EditorView.theme(
     // Sublime's caret_style default is "solid", not blinking.
     ".cm-cursorLayer": { animation: "none" },
 
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+    // drawSelection() paints the selection as its own layer and hides the
+    // native ::selection with !important, so only .cm-selectionBackground
+    // matters here. The focused selector must spell out this full child path:
+    // CodeMirror's base dark theme uses exactly that path, and any shorter
+    // selector loses to it on specificity, which left the built-in #233 teal
+    // visible instead of Mariana's selection (user report, 2026-09-02).
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground":
       { backgroundColor: SELECTION },
-    ".cm-selectionBackground": { backgroundColor: SELECTION },
 
     ".cm-gutters": {
       backgroundColor: BACKGROUND,
