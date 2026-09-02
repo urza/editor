@@ -292,8 +292,10 @@ Buffer record:
 Field notes (revised 2026-09-02, see section 13):
 
 - `title` is the one plaintext label. The sidebar rename (row menu) writes it,
-  and encryption reads it. An encrypted doc without a title gets one from its
-  first line at encrypt time, so a locked row still has a name.
+  and encryption reads it. Encrypting asks the user for it (prefilled with the
+  first line), because the label is stored unencrypted, on the server too. It
+  is never derived behind the user's back; an empty label leaves the row
+  reading "encrypted".
 - `sync.rev` is the last server revision this record agreed with (0 = never
   pushed). `sync.dirty` means local changes wait for a push. A tombstone is a
   pending push of that kind. `purge` asks the push loop to delete older server
@@ -620,9 +622,9 @@ and holds one device. The sidebar, Recent, and search filter it out by kind.
 - `crypto.lock` clears the plaintext map and emits `lock`; the editor drops
   the cached states of encrypted docs and shows the placeholder for the
   active one.
-- Commands `doc.encrypt` (preset chooser, requires unlock, sets `title` from
-  the first line when absent, sets `enc`, re-encodes, sets `sync.purge` when
-  synced) and `doc.decrypt`. This round they apply to scratch docs only.
+- Commands `doc.encrypt` (preset chooser, requires unlock, asks for the
+  plaintext label prefilled with the first line, sets `enc`, re-encodes, sets
+  `sync.purge` when synced) and `doc.decrypt` (keeps the label). This round they apply to scratch docs only.
   Encrypting a file-backed doc (rename to `.age` on disk) is a later unit.
 - `.age` files opened from disk: `readFile` gains a bytes path. Armored text
   stays as is; binary age gets armored into the record. The doc gets
