@@ -23,7 +23,8 @@ import {
 } from "./crypto/keyring.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
-import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { detectLanguage, segments } from "./editor/textlang.js";
 import { askPassphrase, askText, choose, showBusy, showSecret } from "./ui/dialog.js";
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
@@ -551,6 +552,9 @@ async function start() {
     applyRemote: (change) => store.applyRemote(change),
     dirtyRecords: () => store.dirtyRecords(),
     settings: { get: getSetting, put: putSetting },
+    // Spellcheck surface for the checks (architecture.md §11): the language
+    // the last pass found, and the detector itself for table-driven cases.
+    spell: { languages: detectedLanguages, detect: detectLanguage, segments },
   };
 }
 

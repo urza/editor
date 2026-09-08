@@ -1,7 +1,14 @@
 // @ts-check
-// Offline English spellcheck (architecture.md §11). Harper runs as a vendored
-// WebAssembly module and its findings become CodeMirror diagnostics: a dotted
-// underline, a hover tooltip, and one-click fixes.
+// Offline spellcheck (architecture.md §11): English through Harper, Czech
+// through Hunspell, both vendored WebAssembly modules. Findings become
+// CodeMirror diagnostics: a dotted underline, a hover tooltip, and one-click
+// fixes.
+//
+// Which engine sees which text is decided per paragraph by textlang.js. The
+// English paragraphs go to Harper with the Czech ones blanked out, so Harper
+// keeps document context and offsets stay untouched; the Czech paragraphs are
+// tokenized here and each word is asked of Hunspell. A document without a
+// Czech paragraph never loads the Czech dictionary at all.
 //
 // Nothing here touches the document by itself. The only writes are the
 // dispatches a user makes by clicking a suggestion button.
@@ -9,6 +16,8 @@
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { language } from "@codemirror/language";
 import { forceLinting, linter } from "@codemirror/lint";
+import * as hunspell from "./hunspell.js";
+import { languagesOf, segments } from "./textlang.js";
 
 // Resolved against the document, which is index.html, not against this
 // module: Harper fetches the binary with a plain fetch(), which resolves
@@ -83,9 +92,19 @@ let engineBroken = false;
 
 let enabled = readEnabled();
 
-// Fires "change" on every flip of `enabled`. The state lives in this module,
-// so the notification does too: the statusbar indicator and the settings panel
-// both render from it, and neither has to know which one flipped it.
+// The languages found in the document of the last lint pass, most frequent
+// first. Empty while off, for code buffers, and before the first pass.
+/** @type {import("./textlang.js").Lang[]} */
+let detected = [];
+
+// Whether this module already asked hunspell.js to load. One request is
+// enough: the load promise is shared, and its completion repaints once.
+let czechRequested = false;
+
+// Fires "change" on every flip of `enabled` and on every change of the
+// detected languages. The state lives in this module, so the notification
+// does too: the statusbar indicator and the settings panel both render from
+// it, and neither has to know which one flipped it.
 export const events = new EventTarget();
 
 // The lint plugin only re-runs when the document changes. Neither the toggle
@@ -126,6 +145,21 @@ export function isEnabled() {
 }
 
 /**
+ * The languages the last pass found in the active document.
+ * @returns {import("./textlang.js").Lang[]}
+ */
+export function detectedLanguages() {
+  return detected;
+}
+
+/** @param {import("./textlang.js").Lang[]} langs */
+function setDetected(langs) {
+  if (langs.join() === detected.join()) return;
+  detected = langs;
+  events.dispatchEvent(new Event("change"));
+}
+
+/**
  * Turn spellcheck on or off and repaint the open editors at once.
  * @param {boolean} on
  */
@@ -146,7 +180,7 @@ export function setEnabled(on) {
  * is ready, so the first lint passes cost nothing and app startup pays nothing.
  * @returns {any}
  */
-function engineOrLoad() {
+function harperOrLoad() {
   if (engine || engineBroken) return engine;
   if (!loading) {
     // Bare specifier, resolved by the import map like every other dependency.
@@ -240,23 +274,173 @@ function toDiagnostic(lint) {
 }
 
 /**
+ * Blank out the given ranges with spaces, one per character, so the result
+ * has the same length and the same line breaks as the input. Harper then
+ * lints the English paragraphs in place and every span it reports is already
+ * a document offset.
+ * @param {string} text
+ * @param {readonly { from: number, to: number }[]} ranges
+ */
+function blank(text, ranges) {
+  let out = "";
+  let at = 0;
+  for (const r of ranges) {
+    out += text.slice(at, r.from) + text.slice(r.from, r.to).replace(/[^\n]/g, " ");
+    at = r.to;
+  }
+  return out + text.slice(at);
+}
+
+/**
+ * @param {{ from: number, to: number }} d
+ * @param {readonly { from: number, to: number }[]} ranges
+ */
+function overlaps(d, ranges) {
+  return ranges.some((r) => d.from < r.to && d.to > r.from);
+}
+
+// A word for the Czech pass: letters, with inner hyphens and apostrophes kept
+// so "česko-anglický" and "don't" are one token each. Hunspell splits at
+// hyphens itself (the default BREAK rule).
+const WORD = /[\p{L}\p{M}]+(?:[-'’][\p{L}\p{M}]+)*/gu;
+
+// Inside a paragraph, the parts that are not prose: inline code, URLs, email
+// addresses, link destinations and HTML tags. Harper's Markdown parser skips
+// these on its own; the Czech pass blanks them before tokenizing. Each match
+// is replaced one space per character so offsets stay put.
+const NOT_PROSE = [
+  /`[^`\n]*`/g,
+  /https?:\/\/\S+|www\.\S+/g,
+  /\S+@\S+\.\S+/g,
+  /\]\([^)\n]*\)/g,
+  /<[^>\n]+>/g,
+];
+
+/** @param {string} text */
+function proseOnly(text) {
+  for (const re of NOT_PROSE) text = text.replace(re, (m) => " ".repeat(m.length));
+  return text;
+}
+
+/**
+ * Words the Czech pass leaves alone: acronyms (all caps, "USB"), tokens glued
+ * to digits ("5km" yields "km"), and anything outside the Latin script.
+ * @param {string} word
+ * @param {string} before  The character before the word, "" at a boundary.
+ * @param {string} after   The character after it.
+ */
+function skipWord(word, before, after) {
+  if (word.length > 1 && word === word.toUpperCase()) return true;
+  if (/\d/.test(before) || /\d/.test(after)) return true;
+  return !/^[\p{Script=Latin}\p{M}'’-]+$/u.test(word);
+}
+
+/**
+ * A replacement action for the Czech pass: the whole misspelled range becomes
+ * the suggestion. Same positional contract as toAction.
+ * @param {string} text
+ * @returns {import("@codemirror/lint").Action}
+ */
+function replaceWith(text) {
+  return {
+    name: text,
+    apply: (view, from, to) =>
+      view.dispatch({ changes: { from, to, insert: text }, userEvent: "input.complete" }),
+  };
+}
+
+/**
+ * Diagnostics for the Czech paragraphs. Each distinct word is asked of
+ * Hunspell once per pass; suggestions come from hunspell.js under its time
+ * budget, and the words that miss it are filled in idle time, after which
+ * the pass is re-run (see hunspell.fillIdle).
+ * @param {string} text
+ * @param {readonly { from: number, to: number }[]} ranges
+ * @returns {import("@codemirror/lint").Diagnostic[]}
+ */
+function czechDiagnostics(text, ranges) {
+  const budget = hunspell.newBudget();
+  /** @type {Map<string, string[] | null | true>} true = a known word */
+  const verdicts = new Map();
+  /** @type {import("@codemirror/lint").Diagnostic[]} */
+  const out = [];
+
+  for (const r of ranges) {
+    const para = proseOnly(text.slice(r.from, r.to));
+    for (const m of para.matchAll(WORD)) {
+      const word = m[0];
+      const start = /** @type {number} */ (m.index);
+      if (skipWord(word, para[start - 1] ?? "", para[start + word.length] ?? "")) continue;
+
+      let verdict = verdicts.get(word);
+      if (verdict === undefined) {
+        verdict = hunspell.isWord(word) ? true : hunspell.suggest(word, budget);
+        verdicts.set(word, verdict);
+      }
+      if (verdict === true) continue;
+
+      out.push({
+        from: r.from + start,
+        to: r.from + start + word.length,
+        severity: "warning",
+        message: "“" + word + "” is not in the Czech dictionary.",
+        source: "Spelling (Czech)",
+        actions: (verdict ?? []).map(replaceWith),
+      });
+    }
+  }
+  hunspell.fillIdle(relintAll);
+  return out;
+}
+
+/**
  * The lint source. Runs on the main thread; see MAX_DOC_CHARS.
  * @param {EditorView} view
  * @returns {Promise<readonly import("@codemirror/lint").Diagnostic[]>}
  */
-async function harperSource(view) {
+async function spellSource(view) {
   lintedGeneration = generation;
-  if (!enabled) return [];
-  if (!isProse(view)) return [];
-  if (view.state.doc.length > MAX_DOC_CHARS) return [];
+  if (!enabled || !isProse(view) || view.state.doc.length > MAX_DOC_CHARS) {
+    setDetected([]);
+    return [];
+  }
 
-  const local = engineOrLoad();
-  if (!local) return [];
+  const text = view.state.doc.toString();
+  const segs = segments(text);
+  setDetected(languagesOf(segs));
 
-  // No `language` option: Harper defaults to Markdown, which is what the
-  // editor's own language mode assumes, and it keeps code fences out.
-  const lints = await local.lint(view.state.doc.toString());
-  return lints.map(toDiagnostic);
+  const czech = segs.filter((s) => !s.code && s.lang === "cs");
+  const hasEnglish = segs.some((s) => !s.code && s.lang === "en");
+
+  /** @type {import("@codemirror/lint").Diagnostic[]} */
+  const out = [];
+
+  if (hasEnglish) {
+    const harper = harperOrLoad();
+    if (harper) {
+      // No `language` option: Harper defaults to Markdown, which is what the
+      // editor's own language mode assumes, and it keeps code fences out.
+      const lints = await harper.lint(blank(text, czech));
+      for (const lint of lints) {
+        // toDiagnostic frees the wasm objects either way. A lint that leaks
+        // into a blanked range is whitespace noise, never a finding.
+        const d = toDiagnostic(lint);
+        if (!overlaps(d, czech)) out.push(d);
+      }
+    }
+  }
+
+  if (czech.length > 0) {
+    if (hunspell.isReady()) {
+      out.push(...czechDiagnostics(text, czech));
+    } else if (!czechRequested) {
+      // Same shape as Harper: the pass that triggers the load returns
+      // without Czech findings, and the load's completion re-runs it.
+      czechRequested = true;
+      hunspell.load().then(relintAll, () => {});
+    }
+  }
+  return out;
 }
 
 // The view set drives forceLinting from setEnabled and from the engine load,
@@ -324,7 +508,7 @@ const spellcheckTheme = EditorView.theme({
  */
 export function spellcheck() {
   return [
-    linter(harperSource, {
+    linter(spellSource, {
       delay: LINT_DELAY,
       // The second test catches a mode switch. A compartment reconfigure
       // changes no text, so without it the underlines from the old mode would

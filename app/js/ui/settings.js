@@ -97,8 +97,10 @@ const SECTIONS = [
       {
         type: "toggle",
         key: "spellcheck",
-        label: "Spellcheck (English)",
-        hint: "Harper, offline. Spelling is underlined red, style hints blue.",
+        label: "Spellcheck (English and Czech)",
+        hint:
+          "Offline, per paragraph: Harper for English, Hunspell for Czech. " +
+          "Spelling is underlined red, style hints blue.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
       },

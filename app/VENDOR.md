@@ -168,6 +168,73 @@ worker active and the network cut, linting still runs). This is the deliberate
 opposite of the Twemoji decision: one 15 MB file the feature cannot work
 without, against 4,000 small files most users never need.
 
+## Hunspell and the Czech dictionary (Czech spellcheck)
+
+Vendored on **2026-09-08** for offline Czech spellcheck (architecture.md §11).
+Two packages, both fetched from the npm registry as tarballs and copied by
+hand, for the same reason as `harper.js`: `tools/vendor.py` takes one entry
+file per package and these need a module tree plus raw data files.
+
+| Item | Value |
+|---|---|
+| Package | [`hunspell-wasm`](https://www.npmjs.com/package/hunspell-wasm) (Hunspell compiled to WebAssembly, with a small TypeScript wrapper) |
+| Version | **0.3.0** |
+| License | Hunspell tri-license LGPL-2.1 / GPL-2.0 / MPL-1.1; used under the MPL, `COPYING.MPL` is kept |
+| Source | `https://registry.npmjs.org/hunspell-wasm/-/hunspell-wasm-0.3.0.tgz` |
+| Tarball SHA-256 | `796ed8e22cecac1e1563e370f19f1c51d011f9b792a219790a56c34da1d1c74a` |
+| Taken from | `dist/` (the four runtime modules, no `.d.ts`, no maps) and `wasm/` |
+| Placed at | `vendor/hunspell/`, upstream layout kept |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `dist/Hunspell.js` | `dist/Hunspell.js` | 10,876 |
+| `dist/Utf8.js` | `dist/Utf8.js` | 752 |
+| `dist/Utilities.js` | `dist/Utilities.js` | 601 |
+| `dist/WasmMemoryManager.js` | `dist/WasmMemoryManager.js` | 12,898 |
+| `wasm/hunspell.js` | `wasm/hunspell.js` | 67,406 |
+| `wasm/hunspell.wasm` | `wasm/hunspell.wasm` | 811,567 |
+| `COPYING.MPL` | `COPYING.MPL` | 25,755 |
+
+| Item | Value |
+|---|---|
+| Package | [`dictionary-cs`](https://www.npmjs.com/package/dictionary-cs) (wooorm/dictionaries, from translatoblog.cz, revision of 2021-02-20) |
+| Version | **4.0.0** |
+| License | GPL-2.0 (the dictionary data; it links to nothing and stays a separate work) |
+| Source | `https://registry.npmjs.org/dictionary-cs/-/dictionary-cs-4.0.0.tgz` |
+| Tarball SHA-256 | `119518d93ea373c4976818dc5366e15c28590f85a635f3d1b5a1bc962461e97a` |
+| Taken from | the two data files and the license; not `index.js` (a Node `fs` reader) |
+| Placed at | `vendor/dictionary-cs/` |
+
+| File | Upstream path | Bytes |
+|---|---|---|
+| `index.aff` | `index.aff` | 112,714 |
+| `index.dic` | `index.dic` | 3,648,134 |
+| `license` | `license` | 48,038 |
+
+**10 files, 4,738,741 bytes (4.52 MiB).** Byte-identical to the published
+packages; nothing was minified, renamed or rewritten.
+
+- `hunspell-wasm` keeps its `dist/` and `wasm/` split because `dist/Hunspell.js`
+  imports `../wasm/hunspell.js` by that relative path, and the Emscripten glue
+  finds `hunspell.wasm` next to itself through `import.meta.url`. The import
+  map entry `hunspell-wasm` points at `dist/Hunspell.js`; only the page
+  imports it, no worker, so an import map entry is enough (compare age).
+- The dictionary is fetched by `js/editor/hunspell.js` with two plain
+  `fetch()` calls resolved against the module URL, and handed to Hunspell as
+  strings. Measured in Node: the load costs about 120 ms, a spelling test is
+  microseconds, a suggestion 5 to 55 ms.
+- Precached, like Harper: spellcheck must work offline (architecture.md §11).
+  The 3.6 MB `.dic` is the cost; gzip brings it to 0.9 MB on the wire.
+
+### Why `hunspell-wasm` and not `nspell` or `hunspell-asm`
+
+`nspell` is a pure JavaScript Hunspell that does not implement every affix
+feature, and Czech is affix-heavy (260,000 stems, 3.6 MB of them). Real
+Hunspell in wasm gives the same verdicts as LibreOffice. `hunspell-asm` is the
+older Emscripten port (2022), four times the size, and its ESM build still
+assumes a bundler for the wasm path. `hunspell-wasm` 0.3.0 is native ESM, 0.9
+MB, and loads on the main thread with no configuration.
+
 ## age encryption (typage and the noble/scure family)
 
 Vendored on **2026-09-02** for per-document encryption (architecture.md §5 and

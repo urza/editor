@@ -473,6 +473,34 @@ better than Sublime's. Czech comes later via Hunspell (section 8 item 4).
   debounce; a worker only if typing measurably lags.
 - Custom dictionary ("add word") comes later, with sync in mind.
 
+### Czech via Hunspell, per paragraph (agreed 2026-09-08, shipped)
+
+- Engine: Hunspell compiled to wasm (`hunspell-wasm`, vendored, main
+  thread) with the `dictionary-cs` word list. Lazy: the dictionary loads on
+  the first Czech paragraph, so an English-only user never fetches it.
+- Language detection is natural-language detection, separate from the
+  syntax detection of §9 and living in `editor/textlang.js`. Unit: the
+  paragraph (a blank-line separated block), because notes mix languages. The
+  signals, strongest first: letters that exist in Czech and not in English
+  (count double), function words of either language (words common to both,
+  like "a", "to", "on", "my", count for nobody), and word-initial consonant
+  clusters English never uses ("ml-", "zv-", "kt-") for Czech typed without
+  diacritics. A paragraph with no signal inherits the document's verdict; a
+  document with none is English. Nothing is stored: detection runs inside
+  the lint pass, which is already debounced.
+- Routing: Harper lints the document with the Czech paragraphs blanked to
+  spaces (same length, same line breaks, so offsets need no mapping and
+  Harper keeps its context). Hunspell gets the Czech paragraphs tokenized in
+  the app, with inline code, URLs, emails, link targets, HTML tags, acronyms
+  and digit-glued tokens skipped. Fenced code blocks reach neither engine.
+- Suggestions are the expensive call (up to 55 ms a word), so they are cached
+  per word and computed under a 60 ms budget per pass; the rest fill in idle
+  time and the pass re-runs. A pasted page of Czech never freezes the editor.
+- One toggle for both languages (`spell.toggle`, the statusbar button, the
+  settings row). The statusbar label shows what the pass found in the active
+  buffer: "cs", "en", "cs+en". A manual per-document language override and a
+  custom dictionary are later work.
+
 ## 12. Decision log
 
 Decided (2026-09-01):
@@ -526,6 +554,11 @@ Decided (2026-09-01):
   a remote tombstone never removes a record without a sync target; a freshly
   attached record (rev 0) ignores tombstones; one device id for keyring and
   sync (model/device.js).
+
+- Czech spellcheck (2026-09-08, §11): Hunspell in wasm next to Harper,
+  language decided per paragraph by `editor/textlang.js`, never stored;
+  Harper sees the document with Czech paragraphs blanked, so offsets are
+  shared; one toggle for both languages; the Czech dictionary loads lazily.
 
 Open: none.
 

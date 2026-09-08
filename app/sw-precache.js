@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "7d4b5834daae",
+  "version": "dc908daa14a8",
   "files": [
     "./",
     "./app.css",
@@ -14,8 +14,10 @@ self.__PRECACHE = {
     "./js/crypto/unlock.worker.js",
     "./js/editor/editor.js",
     "./js/editor/emoji.js",
+    "./js/editor/hunspell.js",
     "./js/editor/lang.js",
     "./js/editor/spellcheck.js",
+    "./js/editor/textlang.js",
     "./js/main.js",
     "./js/model/capabilities.js",
     "./js/model/codec.js",
@@ -131,9 +133,19 @@ self.__PRECACHE = {
     "./vendor/age-encryption/webauthn.js",
     "./vendor/age-encryption/x25519.js",
     "./vendor/crelt/index.js",
+    "./vendor/dictionary-cs/index.aff",
+    "./vendor/dictionary-cs/index.dic",
+    "./vendor/dictionary-cs/license",
     "./vendor/harper/BinaryModule-Aj1vLnwf.js",
     "./vendor/harper/harper_wasm_slim_bg.wasm",
     "./vendor/harper/index.js",
+    "./vendor/hunspell/COPYING.MPL",
+    "./vendor/hunspell/dist/Hunspell.js",
+    "./vendor/hunspell/dist/Utf8.js",
+    "./vendor/hunspell/dist/Utilities.js",
+    "./vendor/hunspell/dist/WasmMemoryManager.js",
+    "./vendor/hunspell/wasm/hunspell.js",
+    "./vendor/hunspell/wasm/hunspell.wasm",
     "./vendor/style-mod/index.js",
     "./vendor/w3c-keyname/index.js"
   ]

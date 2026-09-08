@@ -23,6 +23,7 @@
     "@marijn/find-cluster-break": "src/index.js",
     "crelt": "index.js",
     "harper.js": "dist/index.js",
+    "hunspell-wasm": "dist/Hunspell.js",
     "style-mod": "src/style-mod.js",
     "w3c-keyname": "index.js"
   },
@@ -55,7 +56,9 @@
     "@scure/base": "2.4.0",
     "age-encryption": "0.3.1",
     "crelt": "1.0.7",
+    "dictionary-cs": "4.0.0",
     "harper.js": "2.7.0",
+    "hunspell-wasm": "0.3.0",
     "style-mod": "4.1.3",
     "w3c-keyname": "2.2.8"
   }

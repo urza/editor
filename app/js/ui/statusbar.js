@@ -5,7 +5,7 @@
 import { titleOf } from "../model/docs.js";
 import { hasFileSystemAccess } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
-import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { detectedLanguages, events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
 
 /**
@@ -41,12 +41,19 @@ export function mountStatusbar(store, sync) {
     });
   });
 
-  /** @param {boolean} on */
-  function renderSpell(on) {
-    // The "off" class dims the label and strikes it through (app.css).
+  const LANG_NAME = { cs: "Czech", en: "English" };
+
+  function renderSpell() {
+    const on = isEnabled();
+    const langs = detectedLanguages();
+    // The label is the language the checker found in this buffer ("cs",
+    // "en", "cs+en"), and the generic "abc" until a pass has run or while
+    // off. The "off" class dims the label and strikes it through (app.css).
     statusSpell.classList.toggle("off", !on);
+    statusSpell.textContent = on && langs.length > 0 ? langs.join("+") : "abc";
+    const names = langs.map((l) => LANG_NAME[l]).join(" and ");
     statusSpell.title = on
-      ? "Spellcheck on (click to turn off)"
+      ? "Spellcheck on" + (names ? ": " + names : "") + " (click to turn off)"
       : "Spellcheck off (click to turn on)";
   }
 
@@ -54,8 +61,8 @@ export function mountStatusbar(store, sync) {
   // module's own event. That is what keeps this button honest when the
   // settings panel flips the same setting.
   statusSpell.addEventListener("click", () => run("spell.toggle"));
-  spellEvents.addEventListener("change", () => renderSpell(isEnabled()));
-  renderSpell(isEnabled());
+  spellEvents.addEventListener("change", renderSpell);
+  renderSpell();
 
   if (hasFileSystemAccess) {
     statusSaveAs.addEventListener("click", () => run("file.saveAs"));
