@@ -143,6 +143,20 @@ Phones therefore default "new docs sync by default" to on (section 3), because
 no disk file backs them. A phone with no server configured still works fully;
 it shows a persistent "no backup" hint instead.
 
+Two layout rules come from the first real iPhone session (2026-09-09) and must
+survive later CSS work; both carry their reason in app.css at the rule:
+
+- Every text field is 16px under 700px. Below that size iOS Safari zooms the
+  page in on focus and never zooms back out, so the page stays wider than the
+  screen. The fix is the font size, never a `maximum-scale` lock, which would
+  take pinch zoom away from the user.
+- A settings row wraps, and long values (62-character age keys) take their own
+  line. Without the wrap the label column collapsed to zero width and the two
+  texts drew on top of each other.
+
+Confirmed on the device the same day: Czech and English spellcheck run
+together, and encryption uses the WebCrypto CryptoKey path (section 5).
+
 ## 5. Encryption (age)
 
 Optional, per document. Uses the real age format via typage
@@ -217,7 +231,11 @@ The plan above is validated end to end in `crypto-proto/`. Key facts:
   Lock then leaves nothing in the JS heap. Unlock transiently handles the
   identity string; a CryptoKey is structured-cloneable, so nothing may ever
   write it to IndexedDB. Browsers without WebCrypto X25519 fall back to the
-  string identity (works, weaker hygiene). Test a real iPhone in step 3a.
+  string identity (works, weaker hygiene). Tested on a real iPhone
+  2026-09-09: iOS Safari reports "unlocked (CryptoKey)", so the phone takes
+  the CryptoKey path and the fallback stays for older engines only. Setup
+  and unlock felt immediate there, so scrypt is no problem on the phone;
+  the worker stays, because a synchronous 600 ms would still block paint.
 - Metadata fix: `enc` stores a PRESET ID, never the resolved recipient list.
   An age header deliberately hides who can decrypt; writing the list into
   record metadata would hand the server exactly that. Presets resolve to
