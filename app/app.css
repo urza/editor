@@ -786,6 +786,17 @@ body {
 
 .dialog-input:focus { outline: 1px solid var(--st-caret); }
 
+/* iOS Safari zooms the whole page in when it focuses a text field whose font
+   is under 16px, and it never zooms back out: the page then really is wider
+   than the screen, which is what the user meets after one tap on a field.
+   16px is that browser's threshold, not a design choice, so all three inputs
+   (dialog, settings row, sidebar rename) take it on a phone. */
+@media (max-width: 700px) {
+  .dialog-input,
+  .settings-input,
+  .buffer-rename { font-size: 16px; }
+}
+
 .dialog-error { margin: 0; font-size: 11px; color: #EC5F67; }
 .dialog-error[hidden] { display: none; }
 
