@@ -623,10 +623,16 @@ body {
   color: var(--st-sidebar-heading);
 }
 
+/* Label left, value right. flex-wrap is load-bearing: an age key is 62
+   characters, it cannot share a phone row with its label, and without the
+   wrap the label column shrinks to zero width and the two texts draw on top
+   of each other (seen on iOS, 2026-09-09). Wrapped, the long value takes the
+   next line by itself. The row gap is small so it still reads as one row. */
 .settings-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 12px;
+  gap: 4px 12px;
   padding: 7px 0;
 }
 
@@ -647,7 +653,14 @@ body {
   color: var(--st-gutter-fg);
 }
 
-.settings-value { color: var(--st-sidebar-label); overflow-wrap: anywhere; }
+/* min-width for the same reason as the label above. overflow-wrap alone is
+   not enough: iOS Safari still sizes this flex item to the unbroken key and
+   runs the row off the screen. */
+.settings-value {
+  min-width: 0;
+  color: var(--st-sidebar-label);
+  overflow-wrap: anywhere;
+}
 
 .settings-note a { color: #6699CC; }
 
@@ -702,6 +715,15 @@ body {
 }
 
 .settings-input:focus { outline: 1px solid var(--st-caret); }
+
+/* Phone rows are about 350px wide. Keep half of that for the label and its
+   hint, or a medium-length value squeezes the hint into one word per line;
+   a value that no longer fits wraps to its own line instead. An input always
+   takes its own line: a server URL is typed here, not just read. */
+@media (max-width: 700px) {
+  .settings-label { flex: 1 0 55%; }
+  .settings-input { flex: 1 0 100%; }
+}
 
 /* Revision history (js/ui/history.js). A plain list inside a dialog body. */
 .history-list {

@@ -8,8 +8,10 @@
 //
 // The forms use method="dialog", which is what gives Enter-to-submit and the
 // submitting button's value in `dialog.returnValue` with no key handling of our
-// own. Escape is the browser's own cancel; every dialog here resolves null for
-// it, except showSecret (see there).
+// own. Only the confirming button may be a submit button, because Enter picks
+// the first one in the form and not the primary one (see cancelButton).
+// Escape is the browser's own cancel; every dialog here resolves null for it,
+// except showSecret (see there).
 
 /**
  * Open a prepared dialog and resolve when it closes.
@@ -76,6 +78,27 @@ function button(label, value, primary = false) {
 }
 
 /**
+ * Cancel, and never a submit button.
+ *
+ * Enter in a text field triggers implicit submission, which clicks the FIRST
+ * submit button of the form, not the primary one. Cancel is first because it
+ * reads to the left of OK, so as a submit button it made Enter cancel the
+ * dialog. On a phone that is the keyboard's return key, so setup could not be
+ * completed by typing (found on iOS, 2026-09-09).
+ *
+ * @param {HTMLDialogElement} dialog
+ * @param {string} [label]
+ */
+function cancelButton(dialog, label = "Cancel") {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = "settings-button";
+  el.textContent = label;
+  el.addEventListener("click", () => dialog.close("cancel"));
+  return el;
+}
+
+/**
  * @param {HTMLElement} parent
  * @param {string} label
  * @param {string} type
@@ -124,13 +147,9 @@ export function askPassphrase(opts = {}) {
   const first = field(body, opts.label ?? "Passphrase", "password");
   const second = opts.confirm ? field(body, "Repeat passphrase", "password") : null;
   const error = errorLine(body);
-  actions.append(button("Cancel", "cancel"), button("OK", "ok", true));
+  actions.append(cancelButton(dialog), button("OK", "ok", true));
 
   form.addEventListener("submit", (event) => {
-    const submitter = /** @type {HTMLButtonElement | null} */ (
-      /** @type {SubmitEvent} */ (event).submitter
-    );
-    if (submitter && submitter.value === "cancel") return;
     /** @param {string} text */
     const fail = (text) => {
       // preventDefault keeps method="dialog" from closing, which is the whole
@@ -171,13 +190,9 @@ export function askText(opts = {}) {
     body.appendChild(hint);
   }
   const error = errorLine(body);
-  actions.append(button("Cancel", "cancel"), button("OK", "ok", true));
+  actions.append(cancelButton(dialog), button("OK", "ok", true));
 
   form.addEventListener("submit", (event) => {
-    const submitter = /** @type {HTMLButtonElement | null} */ (
-      /** @type {SubmitEvent} */ (event).submitter
-    );
-    if (submitter && submitter.value === "cancel") return;
     if (!input.value.trim() && !opts.allowEmpty) {
       event.preventDefault();
       error.textContent = "Enter a value.";
@@ -282,7 +297,7 @@ export function choose(opts) {
     }
     body.appendChild(el);
   }
-  actions.append(button("Cancel", "cancel"));
+  actions.append(cancelButton(dialog));
   const ids = new Set(opts.options.map((o) => o.id));
   return openModal(dialog, (value) => (ids.has(value) ? value : null));
 }
