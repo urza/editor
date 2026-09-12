@@ -24,17 +24,52 @@ dotnet test
 
 ## Run it in Docker
 
+Every push to `main` that touches `server/` builds the image and publishes it to GitHub
+Container Registry as `ghcr.io/urza/vrtti-server`. The workflow is
+`.github/workflows/server-image.yml`. It runs `dotnet test` first, so `latest` only ever
+points at a commit whose tests passed. Tags:
+
+- `latest` - the newest build of `main`.
+- `sha-<short commit>` - one exact build, for a rollback or a pin.
+
+The image is multi-arch, `linux/amd64` and `linux/arm64`, so the same tag runs on a
+normal VPS and on an ARM box.
+
 Generate the token once and keep it; the app needs the same value.
 
 ```sh
 export VRTTI_TOKEN=$(openssl rand -hex 32); echo "$VRTTI_TOKEN"
-docker build -t vrtti-server server/
 docker run -d --name vrtti \
+  --restart unless-stopped \
   -p 8080:8080 \
   -v vrtti-data:/data \
   -e VRTTI_TOKEN \
   -e VRTTI_ORIGINS=https://urza.github.io \
-  vrtti-server
+  ghcr.io/urza/vrtti-server:latest
+```
+
+A new GHCR package starts private. Open the package page on GitHub once and set the
+visibility to public, or log the host in before the pull:
+
+```sh
+echo "$GHCR_TOKEN" | docker login ghcr.io -u urza --password-stdin
+```
+
+`GHCR_TOKEN` is a personal access token with the `read:packages` scope.
+
+Update to a newer build. The named volume keeps the database, so the new container finds
+the same documents:
+
+```sh
+docker pull ghcr.io/urza/vrtti-server:latest
+docker rm -f vrtti
+# then the same docker run command again
+```
+
+To build the image yourself instead of pulling it, from the repository root:
+
+```sh
+docker build -t vrtti-server server/
 ```
 
 ## HTTPS

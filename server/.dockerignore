@@ -1,0 +1,8 @@
+# Host build output must stay out of the build context. `COPY Vrtti.Server/` would
+# otherwise drop a stale obj/project.assets.json on top of the restore the Dockerfile
+# just did, and the cross-compiling publish would find no target for its RID.
+**/bin
+**/obj
+
+# The local SQLite database. The image gets its own volume at /data.
+data

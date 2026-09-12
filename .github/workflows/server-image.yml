@@ -1,0 +1,79 @@
+name: Publish sync server image
+
+# The sync server ships only as a container image. This workflow builds it and pushes
+# it to GitHub Container Registry, so a host needs `docker run`, not a .NET SDK.
+on:
+  push:
+    branches: [main]
+    # Nothing but the server goes into the image, so app-only commits skip the build.
+    # The workflow itself is in the list, or a change here would never test itself.
+    paths:
+      - "server/**"
+      - ".github/workflows/server-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: server-image
+  cancel-in-progress: true
+
+env:
+  # Owner-scoped, not repository-scoped: the package is the server, not the editor.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/vrtti-server
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # The image is the only artifact of the server, and this is its only CI. Running
+      # the suite before the push keeps the `latest` tag honest: it always points at a
+      # commit whose tests passed.
+      - name: Test
+        run: dotnet test server/Vrtti.slnx
+
+      - uses: docker/setup-buildx-action@v3
+
+      # GITHUB_TOKEN can write packages under the repository owner. No PAT needed.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action also emits org.opencontainers.image.source, which is what makes
+      # GHCR link the package to this repository instead of leaving it orphaned.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+          labels: |
+            org.opencontainers.image.title=vrtti sync server
+            org.opencontainers.image.description=Thin sync backend for the vrtti editor
+
+      # arm64 is here for cheap ARM hosts. It costs almost nothing: the Dockerfile
+      # cross-compiles from the runner's own amd64 SDK instead of emulating one.
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Provenance attestations appear in the GHCR package as "unknown/unknown"
+          # platform rows next to the two real ones. One private server does not need
+          # the attestation, and the clean package page is worth more here.
+          provenance: false
