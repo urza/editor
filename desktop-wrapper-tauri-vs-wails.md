@@ -497,11 +497,68 @@ Agreed with the user on 2026-09-13.
 - Signing. Unsigned means a warning on first launch on Windows and macOS. That
   is acceptable for a private tool.
 
+**The shortcuts are all-or-nothing**
+
+Added 2026-09-13, after the user read the plan: "either all of them or
+nothing". Shipping Ctrl+S alone in the browser is rejected. A hand that has to
+remember Ctrl+S but Alt+N is worse off than a hand that learned Alt for all
+three. So the deliverable is three chords at once, in the wrapper.
+
+That is achievable on all three systems. Each chord arrives as a native menu
+accelerator, and each one calls the existing command registry:
+
+| Chord | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| New buffer | Ctrl+N | Ctrl+N | Cmd+N |
+| Save | Ctrl+S | Ctrl+S | Cmd+S |
+| Close buffer | Ctrl+W | Ctrl+W | Cmd+W |
+
+`CmdOrCtrl` in the accelerator string produces that table on its own. If the
+user wants literal Ctrl on macOS instead, to match Windows muscle memory, use
+`Ctrl+N` and accept that it fights the platform convention.
+
+The Alt chords stay. The browser build keeps them, the desktop build gains the
+Ctrl chords on top, and both call the same command ids. Nothing in
+`app/js/commands/` has to change. `app/js/ui/shortcuts.js` keeps its early
+return, because in the wrapper the menu delivers the chord, not the keydown
+listener.
+
+**Ctrl+S has no command to call yet**
+
+Found while checking the registry on 2026-09-13. Two of the three chords map
+to commands that already exist. The third does not.
+
+| Chord | Command today | Current key |
+| --- | --- | --- |
+| Ctrl+N | `buffer.new` | Alt+KeyN |
+| Ctrl+W | `buffer.close` | Alt+KeyW |
+| Ctrl+S | none | none |
+
+The closest thing is `file.saveAs`, titled "Save to disk…", and it is a picker,
+not a save. There is no plain save because the app does not need one. Two
+debounces handle it, IndexedDB at about 300 ms and disk about a second behind
+it (architecture.md §1 and §2).
+
+So "all three chords" means writing a `buffer.save` command first. Proposed
+behaviour, which is as close to Sublime as an autosaving editor can get:
+
+- The buffer has a disk file. Flush both debounces now, do not wait. Report
+  "saved" in the status bar.
+- The buffer has no disk file, and the platform has the file picker. Run
+  `file.saveAs`, which is what Sublime does with Ctrl+S on an unsaved buffer.
+- No picker on this platform, such as the phone. Flush and report "saved".
+
+That needs one new command and one flush entry point in `app/js/model/docs.js`.
+It is small, and it is real work that the wrapper does not remove. Decide the
+behaviour before building it, because a Ctrl+S that silently does nothing is
+worse than no Ctrl+S at all.
+
 **Next actions, in order**
 
-1. Fix Ctrl+S in the browser. No wrapper, one change in
-   `app/js/ui/shortcuts.js`. Independent of everything above.
-2. Run the spike in section 8.
+1. Build the Tauri scaffold and hand it to the user to run. The spike in
+   section 8 needs a real desktop with a real keyboard, on each of the three
+   systems. It cannot be run from the sandbox.
+2. Run the spike, stop at the first failure.
 3. Only then plan the disk backend.
 
 ## Sources

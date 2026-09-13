@@ -75,11 +75,17 @@ Cmd+W.
 
 ## Recommendation
 
-1. Fix Ctrl+S now. It is free and it needs no wrapper.
-2. Then try a Tauri shell that points at the deployed URL, with Ctrl+N and
-   Ctrl+W as native accelerators. About one day, one folder.
-3. Keep the PWA as the main product.
-4. Decide on the native disk backend only after the shell proves itself.
+Superseded on 2026-09-13. The user rejected shipping Ctrl+S on its own:
+"either all of them or nothing". Half the muscle memory is worse than none,
+because the hand still has to remember which chord belongs to which key.
+
+So Ctrl+S is no longer a separate step. It ships with Ctrl+N and Ctrl+W, in
+the wrapper, or it does not ship. The current plan is section 11 of
+`desktop-wrapper-tauri-vs-wails.md`.
+
+The fact above still holds and still matters: Ctrl+S is the one chord that
+needs no native menu on any platform. That makes it the cheapest of the three
+to wire up, not a reason to ship it first.
 
 ## The one alternative without a wrapper
 
