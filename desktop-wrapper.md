@@ -7,6 +7,8 @@ wrapper in Rust or Go make this a real desktop app?
 Short answer: yes, it is possible, and it is a small project. But one of the
 three keys does not need a wrapper at all.
 
+A framework comparison follows in `desktop-wrapper-tauri-vs-wails.md`.
+
 ## Ctrl+S works in the browser today
 
 Chrome, Edge and Firefox let a page cancel Ctrl+S with `preventDefault` on
