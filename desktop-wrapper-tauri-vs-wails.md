@@ -14,6 +14,9 @@ change the engine, so it does not change the hard parts.
 The real fork in the road is not Rust against Go. It is this question: does the
 desktop app have to run on macOS or Linux, or only on Windows?
 
+Section 9 answers the follow-up question about .NET. Short form: Photino cannot
+do the menus we need, Avalonia 12 can and is young, and Electron.NET needs npm.
+
 - **Windows only.** The engine is WebView2, which is Chromium. Everything the
   app does today keeps working, disk access included. The wrapper is then a
   weekend project. Pick either framework. Wails is the smaller toolchain.
@@ -352,7 +355,86 @@ Half a day of work. Stop at the first step that fails.
 7. Type in the editor for ten minutes. Watch for the WebKitGTK
    `contenteditable` and blur faults, on Linux only.
 
-## 9. Alternatives that were considered and dropped
+## 9. The .NET options
+
+Added 2026-09-13, after the user asked. The server in `server/` is already
+.NET, so one language across the whole project is a fair thing to want.
+
+.NET has three candidates. Numbers read from the GitHub API on 2026-09-13.
+
+| | Photino | Avalonia WebView | Electron.NET |
+| --- | --- | --- | --- |
+| Shape | thin webview host | full UI framework, webview control | Electron with .NET inside |
+| Engine | the OS webview | the OS webview | bundled Chromium |
+| Linux | yes | yes | yes |
+| Stars | 1,336 | 130, inside Avalonia's 31,496 | 7,597 |
+| Last push | 2026-03-26 | 2026-08-15 | 2026-09-10 |
+| Needs Node | no | no | yes, Node 22 and npm |
+| Native menu with accelerators | no | yes | yes |
+
+### Photino
+
+Closest in spirit to Tauri. A small native host, the OS webview, your web
+files. It is the obvious first look and it fails on the one feature this whole
+exercise is about.
+
+Photino has no native menu bar. The request, `photino.Native` issue 43, has
+been open since March 2021 and was last touched in December 2024. Without a
+native menu there is no `Cmd+N` on macOS, because the macOS menu is the only
+thing that can claim that chord. The project also advises anyone wanting
+keyboard accelerators to open an issue and help build it.
+
+The repository has not been pushed since 2026-03-26. That is the same day the
+team announced a shift to AI-assisted maintenance, citing time constraints.
+Linux reports include a black window on Mint, a glibc mismatch on Ubuntu 22.04,
+a stale `libwebkit2gtk-4.0` dependency that blocks Flatpak, and a hang where a
+started process never exits.
+
+**Verdict: out.** It cannot do the one thing we need it for.
+
+### Avalonia with the WebView control
+
+The real .NET contender.
+
+Avalonia is a mature cross-platform UI framework, 31,496 stars, used by
+JetBrains, Unity and GitHub. Avalonia 12.0 shipped on 2026-04-07 and moved the
+WebView control from the paid Accelerate tier into open source. It uses the
+native renderer on each platform, with no bundled Chromium. Linux uses WPE
+WebKit when present and WebKitGTK otherwise.
+
+`NativeMenu` gives a real macOS menu bar, and menu items take gestures, so
+`Cmd+N` and `Ctrl+N` both work. Avalonia adapts common hotkeys per platform.
+There is two-way JavaScript interop.
+
+The catch is age. `Avalonia.Controls.WebView` has 130 stars and 25 open issues,
+and it became open source five months ago. Tauri has been doing this for six
+years. You would be an early user of the exact component you depend on.
+
+**Verdict: viable, and worth a look purely for the one-language argument.**
+
+### Electron.NET
+
+The only option here that solves the engine problem, because Chromium ships
+inside. Your File System Access code would then run unchanged on all three
+systems, and the Playwright gate would test the real engine again.
+
+It needs Node 22 and npm in the build chain. That breaks the hard rule in
+`motivation.txt`. It also carries Electron's size and an embedded ASP.NET Core
+host. Recent versions can drop the ASP.NET part for a plain console host, which
+suits us, since the files come from the web.
+
+**Verdict: same trade as plain Electron.** Correctness bought with npm and
+about 100 MB. Hold it in reserve for the case where WebKit fails the spike.
+
+### What .NET does not change
+
+Photino and Avalonia borrow the same three webviews as Tauri and Wails. So
+every engine problem in sections 2, 4.2, 4.3 and 4.4 of this document applies
+to them without change. The missing file picker API on macOS and Linux is still
+the big job, and .NET does not shrink it. What .NET gives is a nicer language
+for writing the native side, and the standard library for the file work.
+
+## 10. Alternatives that were considered and dropped
 
 **Electron.** The engine problem disappears, because Chromium ships inside. The
 File System Access API then works on all three systems, unchanged. It breaks
@@ -405,3 +487,15 @@ Developer opinion:
 - [Tauri issue 7073, long compilation times](https://github.com/tauri-apps/tauri/issues/7073)
 - [Playwright engine mismatch when testing Tauri](https://zudo-tauri-wisdom.takazudomodular.com/docs/frontend/playwright-engine-pitfall/)
 - [NLnet, Servo webview for Tauri](https://nlnet.nl/project/Tauri-Servo/)
+
+.NET options:
+- [Photino](https://www.tryphotino.io/)
+- [photino.Native issue 43, native menu support, open since 2021](https://github.com/tryphotino/photino.Native/issues/43)
+- [photino.NET issue 258, black window on Linux](https://github.com/tryphotino/photino.NET/issues/258)
+- [photino.Blazor issue 134, stale libwebkit2gtk dependency](https://github.com/tryphotino/photino.Blazor/issues/134)
+- [Avalonia 12 release](https://avaloniaui.net/blog/avalonia-12)
+- [The Avalonia WebView is going open source](https://avaloniaui.net/blog/the-avalonia-webview-is-going-open-source/)
+- [Avalonia NativeMenu reference](https://docs.avaloniaui.net/docs/reference/controls/nativemenu)
+- [Avalonia macOS platform guide](https://docs.avaloniaui.net/docs/platform-specific-guides/macos)
+- [Electron.NET](https://github.com/ElectronNET/Electron.NET)
+- [MAUI issue 11738, no Blazor Hybrid on Linux](https://github.com/dotnet/maui/issues/11738)
