@@ -51,7 +51,10 @@ export const marianaTheme = EditorView.theme(
       color: FOREGROUND,
       fontFamily:
         'Consolas, Menlo, "DejaVu Sans Mono", "Cascadia Mono", monospace',
-      fontSize: "14px",
+      // A CSS variable, not a literal: ui/textsize.js changes the document
+      // size by writing --editor-font-size on :root. Baking the number in
+      // here would make every size change a theme reconfigure instead.
+      fontSize: "var(--editor-font-size, 14px)",
       height: "100%",
     },
     ".cm-content": {

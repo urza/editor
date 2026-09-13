@@ -19,6 +19,40 @@
   --st-text-fg:          #D9D9D9;
 
   --st-mono: Consolas, Menlo, "DejaVu Sans Mono", "Cascadia Mono", monospace;
+
+  /* Text size (js/ui/textsize.js). Two independent knobs, both written onto
+     this element as inline properties. --ui-scale sizes the chrome and
+     --editor-font-size sizes the document. They are separate on purpose:
+     a phone wants large editor text next to a small sidebar, and browser zoom
+     cannot do that, because it scales both together.
+
+     Everything below multiplies by --ui-scale, so the whole chrome has one
+     number to turn. The steps stay in px rather than rem: named steps read
+     better than thirds of a root em, and the root em is exactly what the
+     editor must not follow. */
+  --ui-scale: 1;
+
+  /* Type: the four sizes the chrome uses for words. */
+  --ui-xs:   calc(11px * var(--ui-scale));  /* hints, markers, small buttons */
+  --ui-sm:   calc(12px * var(--ui-scale));  /* status bar, menus, dialogs */
+  --ui-md:   calc(13px * var(--ui-scale));  /* list rows, section titles */
+  --ui-base: calc(14px * var(--ui-scale));  /* the inherited default */
+
+  /* Glyphs: drawn rather than read, so they keep their own larger steps. */
+  --ui-icon:    calc(15px * var(--ui-scale));  /* the hamburgers, the status bar */
+  --ui-icon-lg: calc(18px * var(--ui-scale));  /* the settings close button */
+  --ui-plus:    calc(22px * var(--ui-scale));  /* the new-buffer "+" */
+
+  /* Boxes that hold the type above. A fixed height would clip its own label
+     once --ui-scale grows the text inside it. */
+  --ui-row-h: calc(26px * var(--ui-scale));  /* settings button, floating hamburger */
+  --ui-top-h: calc(48px * var(--ui-scale));  /* the "+" row, both halves */
+  --ui-sidebar-width: calc(220px * var(--ui-scale));
+
+  /* The editor document. The CodeMirror theme reads this instead of a literal
+     (js/editor/editor.js), which is what makes a size change one style write
+     and never a reconfigure: text, selection and undo history all survive it. */
+  --editor-font-size: 14px;
 }
 
 * { box-sizing: border-box; }
@@ -29,7 +63,7 @@ html, body {
   background: var(--st-background);
   color: var(--st-foreground);
   font-family: var(--st-mono);
-  font-size: 14px;
+  font-size: var(--ui-base);
 }
 
 body {
@@ -47,8 +81,8 @@ body {
    at the bottom. The scroll and the 8px padding moved off #sidebar onto its
    parts, so a long buffer list can never push a pinned button out of sight. */
 #sidebar {
-  width: var(--sidebar-width, 220px);
-  flex: 0 0 var(--sidebar-width, 220px);
+  width: var(--sidebar-width, var(--ui-sidebar-width));
+  flex: 0 0 var(--sidebar-width, var(--ui-sidebar-width));
   display: flex;
   flex-direction: column;
   background: var(--st-sidebar-bg);
@@ -76,13 +110,13 @@ body {
   flex: 0 0 auto;
   margin: 4px 8px 8px;
   padding: 0 8px;
-  height: 26px;
+  height: var(--ui-row-h);
   border: 0;
   border-radius: 3px;
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   line-height: 1;
   text-align: left;
   cursor: pointer;
@@ -97,7 +131,7 @@ body {
 
 .sidebar-heading {
   margin: 10px 10px 4px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   font-weight: normal;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -123,13 +157,13 @@ body {
 #new-buffer {
   flex: 1;
   min-width: 0;
-  height: 48px;
+  height: var(--ui-top-h);
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 22px;
+  font-size: var(--ui-plus);
   line-height: 1;
   cursor: pointer;
 }
@@ -149,7 +183,7 @@ body {
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 15px;
+  font-size: var(--ui-icon);
   line-height: 1;
   cursor: pointer;
   opacity: 0.6;
@@ -163,8 +197,8 @@ body {
 }
 
 #sidebar-toggle {
-  flex: 0 0 32px;
-  height: 48px;
+  flex: 0 0 calc(32px * var(--ui-scale));
+  height: var(--ui-top-h);
 }
 
 /* Floats in the strip #editor-host reserves for it whenever it is on screen
@@ -177,8 +211,8 @@ body {
   top: 4px;
   z-index: 5;
   display: none;
-  width: 26px;
-  height: 26px;
+  width: var(--ui-row-h);
+  height: var(--ui-row-h);
   opacity: 0.5;
 }
 
@@ -209,7 +243,7 @@ body {
 
   /* The strip the floating button lives in. Reserved, not overlaid: the
      button would otherwise cover the first line numbers. */
-  #app.sidebar-closed #editor-host { padding-left: 30px; }
+  #app.sidebar-closed #editor-host { padding-left: calc(var(--ui-row-h) + 4px); }
 }
 
 /* Phone: the sidebar becomes a drawer over the editor. A 220px column on a
@@ -225,7 +259,7 @@ body {
     /* Overrides the docked width and the resizer's --sidebar-width: a drag
        handle makes no sense on a drawer, and a stored PC width could cover
        the whole phone screen. */
-    width: min(80vw, 280px);
+    width: min(80vw, calc(280px * var(--ui-scale)));
     flex-basis: auto;
     transform: translateX(-100%);
     box-shadow: 0 0 12px rgba(0, 0, 0, 0.4);
@@ -239,7 +273,7 @@ body {
 
   /* Reserved whether the drawer is open or not, so opening it never reflows
      the text underneath. */
-  #editor-host { padding-left: 30px; }
+  #editor-host { padding-left: calc(var(--ui-row-h) + 4px); }
 }
 
 /* Disk entry points, one slim row under the big "+". Quiet on purpose: opening
@@ -257,13 +291,13 @@ body {
 
 #open-actions button {
   flex: 1;
-  height: 22px;
+  height: calc(22px * var(--ui-scale));
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1;
   cursor: pointer;
   opacity: 0.85;
@@ -281,7 +315,7 @@ body {
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 15px;
+  font-size: var(--ui-icon);
   line-height: 1;
   padding: 0 4px;
   cursor: pointer;
@@ -290,18 +324,18 @@ body {
 
 .icon-button:hover { opacity: 1; }
 
-#status-update { color: var(--st-gutter-fg); font-size: 13px; }
+#status-update { color: var(--st-gutter-fg); font-size: var(--ui-md); }
 
 /* Spellcheck indicator: the label is the state. Struck through and dimmed
    means off. The id beats .icon-button:hover on specificity, so the hover
    rule has to be repeated here or the off state would brighten on hover. */
-#status-spell { color: var(--st-gutter-fg); font-size: 12px; }
+#status-spell { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
 #status-spell.off { opacity: 0.35; text-decoration: line-through; }
 #status-spell.off:hover { opacity: 0.6; }
 
 /* Sync indicator, same rules as the spellcheck one next to it: the label is
    the state, and "off" (an error or offline) dims and strikes it. */
-#status-sync { color: var(--st-gutter-fg); font-size: 12px; }
+#status-sync { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
 #status-sync.off { opacity: 0.35; text-decoration: line-through; }
 #status-sync.off:hover { opacity: 0.6; }
 
@@ -317,7 +351,7 @@ body {
   gap: 6px;
   padding: 3px 10px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--ui-md);
   color: var(--st-sidebar-label);
 }
 
@@ -329,7 +363,7 @@ body {
 .buffer-mark {
   flex: 0 0 auto;
   color: var(--st-gutter-fg);
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1;
 }
 
@@ -342,7 +376,7 @@ body {
   background: transparent;
   color: var(--st-caret);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1;
   cursor: pointer;
   opacity: 0.75;
@@ -366,7 +400,7 @@ body {
   align-items: center;
   gap: 6px;
   margin: 0 10px 2px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--st-sidebar-heading);
@@ -393,7 +427,7 @@ body {
   gap: 4px;
   padding: 2px 10px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--ui-md);
   color: var(--st-sidebar-label);
 }
 
@@ -401,8 +435,8 @@ body {
 
 /* Holds the twisty column even on file rows, so names stay aligned. */
 .tree-twisty {
-  flex: 0 0 10px;
-  font-size: 10px;
+  flex: 0 0 var(--ui-xs);
+  font-size: var(--ui-xs);
   line-height: 1;
   color: var(--st-gutter-fg);
 }
@@ -423,14 +457,14 @@ body {
   background: var(--st-background);
   color: var(--st-foreground);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--ui-md);
 }
 
 .buffer-close,
 .buffer-more,
 .folder-close {
   flex: 0 0 auto;
-  width: 16px;
+  width: calc(16px * var(--ui-scale));
   text-align: center;
   border: 0;
   background: transparent;
@@ -463,15 +497,15 @@ body {
 .menu {
   position: fixed;
   z-index: 40;
-  min-width: 170px;
-  max-width: 260px;
+  min-width: calc(170px * var(--ui-scale));
+  max-width: calc(260px * var(--ui-scale));
   padding: 4px;
   border: 1px solid var(--st-selection-border);
   border-radius: 4px;
   background: var(--st-ui-bg);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   color: var(--st-sidebar-label);
-  font-size: 12px;
+  font-size: var(--ui-sm);
 }
 
 .menu-item {
@@ -485,7 +519,7 @@ body {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -506,7 +540,7 @@ body {
 
 /* Empty on a plain item, so every label starts at the same x. */
 .menu-check {
-  flex: 0 0 10px;
+  flex: 0 0 var(--ui-xs);
   color: var(--st-caret);
   line-height: 1.4;
 }
@@ -524,7 +558,7 @@ body {
 .menu-hint {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1.4;
   color: var(--st-gutter-fg);
 }
@@ -601,14 +635,14 @@ body {
 .settings-title {
   flex: 1;
   margin: 0;
-  font-size: 13px;
+  font-size: var(--ui-md);
   font-weight: normal;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--st-sidebar-heading);
 }
 
-#settings-close { font-size: 18px; }
+#settings-close { font-size: var(--ui-icon-lg); }
 
 .settings-section { margin-top: 18px; }
 
@@ -616,7 +650,7 @@ body {
   margin: 0 0 6px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--st-sidebar-bg);
-  font-size: 11px;
+  font-size: var(--ui-xs);
   font-weight: normal;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -648,7 +682,7 @@ body {
 .settings-hint,
 .settings-note {
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1.5;
   color: var(--st-gutter-fg);
 }
@@ -668,14 +702,14 @@ body {
    checkbox. aria-pressed is both the state and the style hook. */
 .settings-toggle {
   flex: 0 0 auto;
-  min-width: 52px;
+  min-width: calc(52px * var(--ui-scale));
   padding: 3px 10px;
   border: 1px solid var(--st-selection-border);
   border-radius: 10px;
   background: transparent;
   color: var(--st-gutter-fg);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1.4;
   cursor: pointer;
 }
@@ -693,17 +727,49 @@ body {
   background: var(--st-sidebar-bg);
   color: var(--st-sidebar-label);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
   line-height: 1.4;
   cursor: pointer;
 }
 
 .settings-button:hover { background: var(--st-sidebar-selected); }
 
+.settings-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The id-free hover rule above would still fire on a disabled button, and a
+   dead end that lights up under the pointer reads as clickable. */
+.settings-button:disabled:hover { background: var(--st-sidebar-bg); }
+
+/* Stepper (the two text sizes). The number sits between its two buttons and
+   holds a fixed column, so "+" does not walk sideways as the value grows. */
+.settings-stepper {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-stepper-value {
+  min-width: calc(46px * var(--ui-scale));
+  text-align: center;
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-stepper-button {
+  min-width: calc(30px * var(--ui-scale));
+  padding: 3px 0;
+  text-align: center;
+}
+
 /* Text row (the sync server and token). Same look as a dialog field, but it
    sits on the row's baseline next to its label instead of under it. */
 .settings-input {
-  flex: 0 1 220px;
+  flex: 0 1 calc(220px * var(--ui-scale));
   min-width: 0;
   padding: 3px 7px;
   border: 1px solid var(--st-selection-border);
@@ -711,7 +777,7 @@ body {
   background: var(--st-sidebar-bg);
   color: var(--st-foreground);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-xs);
 }
 
 .settings-input:focus { outline: 1px solid var(--st-caret); }
@@ -740,17 +806,17 @@ body {
   gap: 10px;
   padding: 5px 0;
   border-bottom: 1px solid var(--st-selection-border);
-  font-size: 12px;
+  font-size: var(--ui-sm);
 }
 
 .history-when { flex: 0 0 auto; color: var(--st-foreground); }
-.history-meta { flex: 1; min-width: 0; font-size: 11px; color: var(--st-gutter-fg); }
+.history-meta { flex: 1; min-width: 0; font-size: var(--ui-xs); color: var(--st-gutter-fg); }
 
 /* Native <dialog> prompts (js/ui/dialog.js). Same palette and the same button
    classes as the settings panel, because they are the same kind of chrome. */
 .vrtti-dialog {
-  min-width: 280px;
-  max-width: min(520px, calc(100vw - 32px));
+  min-width: calc(280px * var(--ui-scale));
+  max-width: min(calc(520px * var(--ui-scale)), calc(100vw - 32px));
   padding: 16px 18px;
   border: 1px solid var(--st-selection-border);
   border-radius: 4px;
@@ -764,7 +830,7 @@ body {
 
 .dialog-title {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--ui-md);
   font-weight: normal;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -773,7 +839,7 @@ body {
 
 .dialog-body { display: flex; flex-direction: column; gap: 10px; }
 
-.dialog-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.dialog-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--ui-sm); }
 
 .dialog-input {
   padding: 5px 7px;
@@ -794,10 +860,10 @@ body {
 @media (max-width: 700px) {
   .dialog-input,
   .settings-input,
-  .buffer-rename { font-size: 16px; }
+  .buffer-rename { font-size: max(16px, var(--ui-base)); }
 }
 
-.dialog-error { margin: 0; font-size: 11px; color: #EC5F67; }
+.dialog-error { margin: 0; font-size: var(--ui-xs); color: #EC5F67; }
 .dialog-error[hidden] { display: none; }
 
 /* The one-time recovery key. Monospace and wrapping, because the user reads it
@@ -811,7 +877,7 @@ body {
   background: var(--st-background);
   color: var(--st-caret);
   font-family: var(--st-mono);
-  font-size: 12px;
+  font-size: var(--ui-sm);
   line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -874,7 +940,7 @@ img.twemoji {
   padding: 3px 10px;
   background: var(--st-ui-bg);
   color: var(--st-text-fg);
-  font-size: 12px;
+  font-size: var(--ui-sm);
   user-select: none;
 }
 
@@ -886,7 +952,7 @@ img.twemoji {
   white-space: nowrap;
 }
 
-#status-saveas { color: var(--st-gutter-fg); font-size: 13px; }
+#status-saveas { color: var(--st-gutter-fg); font-size: var(--ui-md); }
 
 #status-save { color: var(--st-gutter-fg); }
 #status-build { color: var(--st-gutter-fg); }

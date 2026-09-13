@@ -32,6 +32,7 @@ import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
+import { mountTextSize } from "./ui/textsize.js";
 import { showHistory } from "./ui/history.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
@@ -47,6 +48,11 @@ function defaultDeviceName() {
 }
 
 async function start() {
+  // First: it registers the two size commands and repairs what the inline
+  // boot script in index.html put on :root. Nothing here waits on storage,
+  // so it must not sit behind the openDb await below.
+  mountTextSize();
+
   requestPersistence();
   await openDb();
 

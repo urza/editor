@@ -12,6 +12,7 @@ import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
+import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 
 /**
  * The keyring the Security section reports on, handed in by mountSettings.
@@ -37,7 +38,7 @@ let testResult = "";
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
- * @property {"toggle" | "text" | "info" | "action" | "note"} type
+ * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper"} type
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a toggle, info or action row.
@@ -45,6 +46,10 @@ let testResult = "";
  * @property {() => any} [get]        toggle: the state. text: the value.
  * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text:
  *                             dispatch the value the user typed.
+ * @property {number} [min]           stepper: the lowest value.
+ * @property {number} [max]           stepper: the highest value.
+ * @property {number} [step]          stepper: what one press adds.
+ * @property {string} [unit]          stepper: shown after the number.
  * @property {boolean} [password]     text: hide what is typed.
  * @property {string} [placeholder]   text: empty-field hint.
  * @property {() => string | Promise<string>} [value]    info (and action):
@@ -91,6 +96,37 @@ function syncStatusText() {
 
 /** @type {Section[]} */
 const SECTIONS = [
+  {
+    title: "Appearance",
+    items: [
+      {
+        type: "stepper",
+        key: "editor-size",
+        label: "Editor text size",
+        hint:
+          "The document only. It is a setting of this device, not of the " +
+          "documents, so it never syncs.",
+        unit: " px",
+        min: EDITOR.min,
+        max: EDITOR.max,
+        step: EDITOR.step,
+        get: () => editorFontSize(),
+        set: (value) => run("view.editorFontSize", value),
+      },
+      {
+        type: "stepper",
+        key: "ui-size",
+        label: "Interface text size",
+        hint: "The sidebar, the status bar, the menus and this panel.",
+        unit: " %",
+        min: UI.min,
+        max: UI.max,
+        step: UI.step,
+        get: () => uiScale(),
+        set: (value) => run("view.uiScale", value),
+      },
+    ],
+  },
   {
     title: "Editor",
     items: [
@@ -387,6 +423,59 @@ function makeRow(item, refresh) {
       paintOwn();
     });
     row.appendChild(button);
+  }
+
+  if (item.type === "stepper") {
+    const min = item.min ?? 0;
+    const max = item.max ?? 0;
+    const step = item.step ?? 1;
+
+    const group = document.createElement("div");
+    group.className = "settings-stepper";
+
+    const value = document.createElement("span");
+    value.className = "settings-stepper-value";
+    // The number is the only feedback a press gives, and it lives outside the
+    // button that was pressed, so a screen reader needs to be told to read it.
+    value.setAttribute("aria-live", "polite");
+
+    /** @param {-1 | 1} direction @param {string} glyph */
+    function stepButton(direction, glyph) {
+      const button = document.createElement("button");
+      button.className = "settings-button settings-stepper-button";
+      button.type = "button";
+      button.textContent = glyph;
+      button.setAttribute(
+        "aria-label",
+        (item.label ?? "") + (direction < 0 ? ", smaller" : ", larger"),
+      );
+      button.addEventListener("click", async () => {
+        const current = Number(item.get ? item.get() : 0);
+        const next = Math.min(max, Math.max(min, current + direction * step));
+        if (next === current) return;
+        // Awaited for the same reason as the toggle: the paint below must see
+        // the value the command settled on, not the one before it.
+        if (item.set) await item.set(next);
+        paintOwn();
+      });
+      return button;
+    }
+
+    // U+2212, not a hyphen: it has the same width as the "+" beside it.
+    const down = stepButton(-1, "\u2212");
+    const up = stepButton(1, "+");
+
+    paintOwn = () => {
+      const current = Number(item.get ? item.get() : 0);
+      value.textContent = current + (item.unit ?? "");
+      // Disabled rather than inert at the ends, so the control shows where the
+      // range stops instead of swallowing the press.
+      down.disabled = current <= min;
+      up.disabled = current >= max;
+    };
+
+    group.append(down, value, up);
+    row.appendChild(group);
   }
 
   if (item.type === "text") {

@@ -449,6 +449,36 @@ dismisses it. No modal library, no routing.
 - Buttons that need instant reach (new buffer, save indicator, update) stay
   outside the panel; the panel is for the rest, so chrome stays sparse.
 
+### Text size (agreed 2026-09-13, shipped)
+
+Two independent sizes, both device-local, both in the Appearance section of
+the settings panel. Browser zoom is the thing they replace, and it cannot do
+this: it scales the document and the chrome together.
+
+- **Editor text size**, 9-32 px. Writes `--editor-font-size` on `:root`. The
+  CodeMirror theme reads that variable instead of a literal
+  (`editor/editor.js`), so a change is one style write. CodeMirror is never
+  reconfigured, and the text, the selection and the undo history survive it.
+  Twemoji widgets are already sized in `em`, so they follow for free.
+- **Interface text size**, 70-200 %. Writes `--ui-scale` on `:root`. Every
+  size in `app.css` is `calc(Npx * var(--ui-scale))`, so one number turns the
+  whole chrome. Boxes scale with the type they hold (row heights, the sidebar
+  width fallback, the drawer, the menu, the tree indent), or a bigger label
+  would clip inside a fixed row.
+- `app.css` carries a named type scale for this: `--ui-xs/sm/md/base` for
+  words, `--ui-icon/icon-lg/plus` for glyphs. px steps, not rem: the editor is
+  exactly the thing that must not follow the root em.
+- `ui/textsize.js` owns both keys in localStorage and registers
+  `view.editorFontSize` and `view.uiScale`. An inline script in the head of
+  `index.html` replays the stored values before the first paint, because a
+  module script is deferred and the app would otherwise flash at the default
+  size. That script is the only other reader of the two keys.
+- The phone input floor stays: `max(16px, var(--ui-base))`, so a smaller
+  interface scale can never drop a field under the size at which iOS Safari
+  zooms the page in.
+- No keyboard shortcut. Ctrl and Cmd belong to the browser, and Alt is spent
+  on the chords that already exist.
+
 ## 10. Twemoji plan (agreed 2026-09-01)
 
 Goal: render color emoji (Twemoji SVGs) in the editor instead of platform
@@ -572,6 +602,12 @@ Decided (2026-09-01):
   a remote tombstone never removes a record without a sync target; a freshly
   attached record (rev 0) ignores tombstones; one device id for keyring and
   sync (model/device.js).
+
+- Text size (2026-09-13, §9): two device-local settings, one for the editor
+  document and one for the interface, rather than one number or browser zoom.
+  Both are CSS custom properties on `:root`; the chrome multiplies a single
+  `--ui-scale` and the editor theme reads `--editor-font-size`. Never synced:
+  a phone and a desktop monitor want different numbers.
 
 - Czech spellcheck (2026-09-08, §11): Hunspell in wasm next to Harper,
   language decided per paragraph by `editor/textlang.js`, never stored;

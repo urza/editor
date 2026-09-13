@@ -323,8 +323,10 @@ export function mountSidebar(store, folders, sync) {
     const li = document.createElement("li");
     li.className = "tree-row " + (isDir ? "dir" : "file");
     // Inline indent: the depth is unbounded, so no fixed set of classes can
-    // cover it. 10px is the padding every other sidebar row uses.
-    li.style.paddingLeft = 10 + depth * 14 + "px";
+    // cover it. 10px is the padding every other sidebar row uses. The calc
+    // keeps the step proportional to the interface text size (ui/textsize.js),
+    // or a deep tree at 200% would indent by a third of a character.
+    li.style.paddingLeft = `calc(${10 + depth * 14}px * var(--ui-scale))`;
     li.dataset.path = entry.path;
 
     const twisty = document.createElement("span");

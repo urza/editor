@@ -10,6 +10,26 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="app.css">
 
+<!-- Replays the stored text sizes before the first paint. js/ui/textsize.js
+     owns these two keys and is the only writer; this only reads them back. It
+     has to be here, inline and in the head: a module script is deferred, so
+     the app would paint once at the default size and then visibly jump.
+     The bounds repeat that module's ranges as a guard, not as the rule: a
+     value rejected here keeps the CSS default, and the module settles it a
+     moment later. Without the guard a junk value reaches --ui-scale as NaN,
+     which voids every calc() in the chrome for that first frame. -->
+<script>
+  try {
+    const root = document.documentElement.style;
+    const ui = Number(localStorage.getItem("vrtti.uiScale"));
+    const editor = Number(localStorage.getItem("vrtti.editorFontSize"));
+    if (ui >= 70 && ui <= 200) root.setProperty("--ui-scale", String(ui / 100));
+    if (editor >= 9 && editor <= 32) root.setProperty("--editor-font-size", editor + "px");
+  } catch (err) {
+    // Private mode can throw on localStorage. The CSS defaults then stand.
+  }
+</script>
+
 <!-- Every bare specifier maps to one vendored file. One entry per package, no
      versions in the specifier: that is what keeps a single @codemirror/state
      instance alive and keeps `instanceof` checks working across packages. -->
