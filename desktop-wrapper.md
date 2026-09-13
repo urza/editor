@@ -8,6 +8,7 @@ Short answer: yes, it is possible, and it is a small project. But one of the
 three keys does not need a wrapper at all.
 
 A framework comparison follows in `desktop-wrapper-tauri-vs-wails.md`.
+That document ends with the decision: Tauri, for all three systems.
 
 ## Ctrl+S works in the browser today
 

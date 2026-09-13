@@ -1,9 +1,9 @@
 # Tauri vs Wails for vrtti
 
-Status: research, 2026-09-13. Nothing is decided and nothing is built.
+Status: decided 2026-09-13. Tauri is the chosen framework. Nothing is built.
 Follows `desktop-wrapper.md`, which asked whether a native shell can give back
-Ctrl+N, Ctrl+S and Ctrl+W. This document compares the two candidates against
-what vrtti actually needs.
+Ctrl+N, Ctrl+S and Ctrl+W. This document compares the candidates against what
+vrtti actually needs, and section 11 records the decision.
 
 ## The short version
 
@@ -449,6 +449,60 @@ Chrome. No help.
 
 **A minimal webview binding, such as webview_go.** Too small. No menus, no
 accelerators, no updater. You would rebuild Wails, badly.
+
+## 11. Decision
+
+Agreed with the user on 2026-09-13.
+
+**Target: Windows, Linux and macOS. All three.**
+
+**Framework: Tauri.** The reasons, in the order that decided it:
+
+1. It is mature. Six years, a stable v2 for two of them, 111,037 stars.
+2. Multiple windows work today. The editor wants that.
+3. The plugins already exist for the parts we will need: file dialogs, file
+   system access with persisted scope, single instance, window state, file
+   associations and an updater.
+4. Rust and slow builds are a real cost, and the user accepts it, because the
+   native side is small and Claude does the writing and the building.
+
+**Rejected, and why:**
+
+- **Wails (Go).** Faster builds and a smaller toolchain. The stable line, v2,
+  is single-window. The multi-window line, v3, reached beta on 2026-08-02 and
+  its tracker still lists 27 blocking issues. Reconsider if v3 goes stable and
+  Tauri disappoints.
+- **Photino (.NET).** No native menu bar, so no Cmd+N on macOS, which is the
+  feature the wrapper exists for. The request has been open since March 2021.
+  No push to the repository since 2026-03-26.
+- **Avalonia (.NET).** The only serious .NET answer, and the only one with a
+  one-language argument, since `server/` is already .NET. The WebView control
+  went open source in April 2026 and has 130 stars. Too young to bet the disk
+  layer on. Worth another look in a year.
+- **Electron.NET.** The only option that bundles Chromium, so the current disk
+  code would run unchanged everywhere. Needs Node 22 and npm, which
+  `motivation.txt` forbids. Held in reserve if WebKit fails the spike.
+- **.NET MAUI.** No Linux, and none planned. Microsoft lists Android, iOS, Mac
+  Catalyst and Windows. The only Linux path is Avalonia's MAUI backend, a
+  preview on a preview of .NET 11, which means depending on Avalonia anyway.
+  MAUI has been in maintenance mode since .NET 8 and Microsoft laid off senior
+  MAUI engineers in May 2025.
+
+**What is still open**
+
+- The remote URL against the bundled files, section 4.6. Start with the remote
+  URL and keep the Pages deploy flow.
+- The native disk backend for macOS and Linux, section 4.4. It is the large
+  piece of work and it does not start until the spike passes.
+- Signing. Unsigned means a warning on first launch on Windows and macOS. That
+  is acceptable for a private tool.
+
+**Next actions, in order**
+
+1. Fix Ctrl+S in the browser. No wrapper, one change in
+   `app/js/ui/shortcuts.js`. Independent of everything above.
+2. Run the spike in section 8.
+3. Only then plan the disk backend.
 
 ## Sources
 
