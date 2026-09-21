@@ -30,6 +30,7 @@ import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
+import { mountDesktop } from "./ui/desktop.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
@@ -113,6 +114,22 @@ async function start() {
     run: (id) => {
       const target = id ?? store.activeId;
       if (target) return store.close(target);
+    },
+  });
+  // Ctrl+S in the desktop shell (desktop-wrapper-tauri-vs-wails.md §11). The
+  // editor autosaves, so this is Sublime's Ctrl+S mapped onto the two
+  // debounces: flush now, or pick a file when there is none to flush to.
+  // Alt chords stay out on purpose: the user wants the Ctrl set complete or
+  // absent, and in a browser Ctrl+S is not ours to take.
+  register({
+    id: "buffer.save",
+    title: "Save",
+    run: (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return;
+      const record = store.get(target);
+      if (record?.kind === "file" || !hasFileSystemAccess) return store.saveNow(target);
+      return run("file.saveAs", target);
     },
   });
   register({
@@ -520,6 +537,7 @@ async function start() {
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
   mountShortcuts();
+  mountDesktop();
   mountResizer();
 
   await store.start();

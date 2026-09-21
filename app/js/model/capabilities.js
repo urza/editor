@@ -6,6 +6,12 @@
 // Desktop Chrome/Edge only. Gates the future storage/fsa.js module.
 export const hasFileSystemAccess = "showDirectoryPicker" in window;
 
+// Inside the desktop shell (src-tauri/). The shell sets the marker before any
+// page script runs, so the flag is safe at import time like the others. The
+// page talks to the shell through DOM events only (ui/desktop.js); the same
+// build runs in a browser and in the shell.
+export const isDesktop = Boolean(/** @type {any} */ (window).vrttiDesktop);
+
 // Dedicated module workers. Unlock runs scrypt in one, because scrypt is
 // synchronous and would freeze the UI for ~650 ms on the main thread
 // (architecture.md §5). js/crypto/unlock.js still falls back to the main thread

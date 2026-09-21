@@ -254,23 +254,48 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       id,
       setTimeout(async () => {
         saveTimers.delete(id);
-        const record = buffers.get(id);
-        if (!record) return;
-        if (!(await encodeForRecord(record))) {
-          // Say so, or the indicator hangs at "…": nothing more happens for
-          // this buffer until the keyring is unlocked again.
-          if (id === activeId && !saveTimers.has(id)) emit("save", { status: "locked" });
-          return;
-        }
-        await putBuffer({ ...record });
-        // Only claim "saved" if no newer keystroke started another debounce.
-        if (id === activeId && !saveTimers.has(id)) {
-          emit("save", { status: "saved" });
-        }
         // Disk is stage two: it starts only once the text is durable.
-        diskSoon(id);
+        if (await persistNow(id)) diskSoon(id);
       }, SAVE_DELAY)
     );
+  }
+
+  /**
+   * Stage one of the write pipeline (architecture.md §1): encode and put the
+   * record. Returns false when the keyring is locked and nothing was written.
+   * @param {string} id
+   */
+  async function persistNow(id) {
+    const record = buffers.get(id);
+    if (!record) return false;
+    if (!(await encodeForRecord(record))) {
+      // Say so, or the indicator hangs at "…": nothing more happens for
+      // this buffer until the keyring is unlocked again.
+      if (id === activeId && !saveTimers.has(id)) emit("save", { status: "locked" });
+      return false;
+    }
+    await putBuffer({ ...record });
+    // Only claim "saved" if no newer keystroke started another debounce.
+    if (id === activeId && !saveTimers.has(id)) {
+      emit("save", { status: "saved" });
+    }
+    return true;
+  }
+
+  /**
+   * Ctrl+S (desktop-wrapper-tauri-vs-wails.md §11): both debounces, now. An
+   * autosaving editor has nothing else to save. A buffer without a disk file
+   * lands in IndexedDB and reports "saved"; the caller decides whether that
+   * case should open the file picker instead.
+   * @param {string} id
+   */
+  async function saveNow(id) {
+    if (!buffers.has(id)) return;
+    clearTimeout(saveTimers.get(id));
+    saveTimers.delete(id);
+    clearTimeout(diskTimers.get(id));
+    diskTimers.delete(id);
+    if (await persistNow(id)) await writeToDisk(id);
   }
 
   /** @param {BufferRecord} [record] @returns {any} */
@@ -1368,6 +1393,7 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     renameFile,
     createFromFile,
     saveAs,
+    saveNow,
     replaceFromDisk,
     checkExternalChanges,
     needsReconnect,
