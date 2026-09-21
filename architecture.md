@@ -321,6 +321,8 @@ Field notes (revised 2026-09-02, see section 13):
 - `kind: 'keyring'` marks the one hidden record that carries the device list
   (section 13.3). The sidebar never shows it.
 - `group` and `order` serve manual sidebar ordering and grouping (section 9).
+- `closed` goes away when workspaces ship (section 14). Membership in a
+  workspace `tabs` list becomes the single truth for "open".
 
 Server revision row:
 
@@ -614,6 +616,16 @@ Decided (2026-09-01):
   Harper sees the document with Czech paragraphs blanked, so offsets are
   shared; one toggle for both languages; the Czech dictionary loads lazily.
 
+- Workspaces (2026-09-21, §14): every window is a workspace with its own
+  ordered tabs, active buffer, and folders. One buffer and one folder live
+  in exactly one workspace; opening a doc elsewhere focuses the owning
+  window. Closing a secondary window dissolves its workspace to Recent;
+  quitting keeps all workspaces, and the wrapper restores them. The
+  workspace store never syncs. Window identity is the URL (`?ws=`).
+  Membership in `tabs` replaces the `closed` flag (v4 migration).
+  Prerequisite fixes ship with it: sync leader via `navigator.locks`,
+  `BroadcastChannel` updates, `versionchange` handling.
+
 Open: none.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
@@ -811,3 +823,100 @@ the settings store. `sync.deviceId` is minted once. `sync.cursor` is the seq.
   kind); "open as copy" creates a scratch buffer from that revision, decoded
   through the codec when encrypted.
 - The service worker must not touch cross-origin requests; verify in unit 4.
+
+## 14. Workspaces: the multi-window model (agreed 2026-09-21)
+
+The desktop wrapper (desktop-wrapper.md) brings real multi-window. Each
+window must carry its own context, like a Sublime Text window: its own tabs,
+its own active buffer, its own opened folders, and later its own
+search-in-files scope. The context object is called a **workspace**. The
+model lives in the app, not in the wrapper, because every window shares one
+IndexedDB origin.
+
+Workspace record, in a new object store:
+
+```
+{ id, tabs: [bufferId...], activeId, folderIds: [...], createdAt }
+```
+
+The record buys three things beyond multi-window:
+
+- `tabs` is a real ordered list. Today "open" order is `createdAt` and
+  cannot change.
+- `activeId` replaces the global localStorage key `vrtti.activeBuffer`,
+  which today is one pointer for the whole origin.
+- Folders become workspace property. Search in files then has a natural
+  scope: the workspace tabs plus its folders.
+
+### Rules
+
+- **One buffer lives in exactly one workspace.** Opening a doc that is open
+  in another workspace focuses that window instead. This keeps the write
+  pipeline single-writer: only the owning window runs the IndexedDB and
+  disk debounces for a buffer. Most of the multi-instance danger (section
+  "Coordination" below) disappears with this one rule.
+- A folder also lives in exactly one workspace.
+- The buffer pool stays global. Recent shows the closed buffers of all
+  workspaces. Membership in a workspace `tabs` list is the single truth for
+  "open"; the `closed` flag on the buffer record is dropped.
+- Closing a secondary window dissolves its workspace: the tabs go to
+  Recent, the record is deleted. Nothing is lost and nothing prompts.
+  Quitting the app is different: all workspace records stay, and the
+  wrapper reopens one window per workspace at the next launch.
+- The main workspace is never dissolved. It is the window the taskbar icon
+  opens, and it holds the scratch buffers, as the single window does today.
+- Workspace records never sync. This follows the existing per-device rule
+  by omission (`closed`, `file`, `sync.*`), and folder paths are
+  machine-specific anyway.
+- A doc that arrives from sync opens in the main workspace, as today.
+
+### Window identity
+
+The page reads `?ws=<id>` at boot. No parameter means the main workspace.
+The wrapper opens each window at its workspace URL. This is the goose
+pattern (desktop-wrapper-goose-patterns.md, sections 2 and 10): window
+identity is the URL, and per-window state needs no IPC round-trip.
+
+A plain browser tab with `?ws=` is a window too. The whole model builds and
+tests in the browser, with Playwright driving two tabs, before any Tauri
+work. Without the wrapper, only the main workspace opens by itself; the
+others wait for their windows.
+
+### Coordination (prerequisite, absent today)
+
+Two views on the origin corrupt each other today: whole-record puts from
+stale in-memory Maps, a conflict-copy storm from doubled disk debounces,
+and two sync clients clobbering one cursor. The workspace unit must ship
+these fixes with the model:
+
+- The ownership rule above gives every buffer one writer.
+- Exactly one window runs the sync client, elected with `navigator.locks`.
+  When that window closes, another takes the lock and continues.
+- Windows announce record and workspace changes on a `BroadcastChannel`.
+  Each window patches its in-memory Map from the message instead of
+  re-reading the store. Keyring, settings, and Recent changes travel the
+  same channel.
+- `openDb` gets `versionchange` and `onblocked` handlers, so a schema
+  upgrade survives open windows (today the connection is cached forever).
+
+### Migration (IndexedDB v4)
+
+- Create the `workspaces` store and one main workspace.
+- Buffers with `closed: false` become the main workspace `tabs`, ordered by
+  `createdAt`. The `closed` field is removed from buffer records.
+- `vrtti.activeBuffer` from localStorage seeds the main `activeId`, then
+  the key is deleted.
+- Existing directory handles attach to the main workspace `folderIds`.
+
+### Naming
+
+The model and the command ids say workspace: `workspace.new`,
+`workspace.close`. The native menu says "New Window", because the OS object
+is a window. The label is cheap to change; the command ids are not.
+
+### Search in files (later, separate feature)
+
+Scope: the workspace tabs plus its folders. On Chromium the folder files
+are readable through the stored FSA handles. On macOS and Linux it waits
+for the wrapper's native disk backend (desktop-wrapper-goose-patterns.md,
+section 4). It is not part of the workspace build unit.
