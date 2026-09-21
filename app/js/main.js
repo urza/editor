@@ -578,6 +578,9 @@ async function start() {
   await store.start();
   folders.start();
   workspaces.start({ isDesktop });
+  // After the store is up and listening to the keyring: an answer flips the
+  // locked placeholders to text.
+  keyring.askUnlock();
   // Last: its first run pulls, and a pull emits "replace" and "active" into UI
   // that has to be mounted already. One client per origin (architecture.md
   // §14.3, the lock ships with §14.2): the window that holds the lock runs

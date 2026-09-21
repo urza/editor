@@ -258,7 +258,52 @@ export function createWorkspaces({ id }) {
     }
   }
 
+  /** @type {{at: number, set: Set<string>} | null} */
+  let liveCache = null;
+
+  /**
+   * The workspaces whose window is up right now, read from the Web Locks
+   * every window holds (unit 14.3 routes pulled changes to them). Cached for
+   * a second, because a pull page asks once per change.
+   * @returns {Promise<Set<string>>}
+   */
+  async function liveSet() {
+    const now = Date.now();
+    if (liveCache && now - liveCache.at < 1000) return liveCache.set;
+    const set = new Set([id]);
+    try {
+      const state = await navigator.locks.query();
+      for (const lock of state.held ?? []) {
+        if (lock.name?.startsWith(LOCK_PREFIX)) set.add(lock.name.slice(LOCK_PREFIX.length));
+      }
+    } catch {
+      // No Web Locks: as far as this window knows, it is alone.
+    }
+    liveCache = { at: now, set };
+    return set;
+  }
+
+  /**
+   * A duplicated tab would be a second window of the same workspace, and
+   * then two windows own the same tabs. The second one becomes a fresh
+   * empty workspace instead, before anything else loads.
+   * @returns {Promise<boolean>} true when this window is being redirected
+   */
+  async function redirectIfDuplicate() {
+    if (!navigator.locks) return false;
+    const state = await navigator.locks.query();
+    const held = (state.held ?? []).some((lock) => lock.name === LOCK_PREFIX + id);
+    if (!held) return false;
+    const fresh = newRecord(crypto.randomUUID());
+    await save(fresh);
+    const url = new URL(location.href);
+    url.search = "?ws=" + encodeURIComponent(fresh.id);
+    location.replace(url.toString());
+    return true;
+  }
+
   async function load() {
+    if (await redirectIfDuplicate()) return;
     for (const record of await getAllWorkspaces()) records.set(record.id, record);
     // A fresh database has no main record yet; a stale `?ws=` link names a
     // workspace nobody wrote. Both get an empty one, so the window opens.
@@ -274,6 +319,7 @@ export function createWorkspaces({ id }) {
     openSet,
     ownerOf,
     hasFolder,
+    liveSet,
     addTab,
     removeTab,
     setActive,

@@ -1022,6 +1022,14 @@ new-window button and chord) plus the 47 of unit 14.1. The sync lock from
 
 ### 14.3 One sync client (unit 3)
 
+Shipped 2026-09-21; the gate ran 32 checks against an in-memory mock of the
+sync API: leader and mirror, a non-leader's edit pushed with the owner
+keeping the books, a routed change landing in the owner's editor in under
+ten milliseconds, fork on dirty in the owner, an unknown doc routed to
+main and its delete, the two-second ack timeout fallback, unlock and lock
+travelling to a third window, the duplicated-tab redirect, and the lock
+handover when the leader closes.
+
 - **Leader.** `navigator.locks.request("vrtti:sync", () => hold)`. The
   holder runs the client as today; the others only `load()` the config and
   show a relayed status. When the leader window closes, the next request
@@ -1040,6 +1048,13 @@ new-window button and chord) plus the 47 of unit 14.1. The sync lock from
   posts `pushed` `{ id, rev, sentUpdatedAt }` and the owner runs
   `afterPush`, whose `sentUpdatedAt` guard already protects a newer edit.
   The cursor stays one settings row, written by the leader only.
+- **Two rules the build added.** The leader waits two seconds for the
+  owner's `remote-applied`; a window that is frozen or gone answers nothing,
+  and the leader then applies the change itself, which the owner takes as
+  an external replace when it wakes (the 14.2 path stays as the fallback).
+  And a duplicated tab would be a second window of one workspace, so a
+  window that finds its `ws:<id>` lock already held at boot creates a fresh
+  empty workspace and redirects itself to it before anything loads.
 - **Unlock travels.** A window that unlocks the keyring posts `unlock`
   with the identity; a window that boots posts `who-is-unlocked` and takes
   the first answer. `CryptoKey` objects clone across same-origin contexts,

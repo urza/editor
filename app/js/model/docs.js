@@ -1037,6 +1037,17 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   async function afterPush(id, rev, sentUpdatedAt) {
     const record = buffers.get(id);
     if (!record || !record.sync) return;
+    const owner = workspaces.ownerOf(id);
+    if (owner && owner !== workspaces.id && (await workspaces.liveSet()).has(owner)) {
+      // The owner keeps the record's books (architecture.md §14.3). This
+      // copy follows in memory only, so the next push loop already sees the
+      // rev; the owner's own persist brings the stored record.
+      record.sync.rev = rev;
+      record.sync.dirty =
+        sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt;
+      post("pushed", { ws: owner, id, rev, sentUpdatedAt });
+      return;
+    }
     // A tombstone push is the last thing this record ever says to the server.
     if (record.sync.tombstone) return clearSync(id);
     record.sync.rev = rev;
@@ -1115,12 +1126,74 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     await putSystemRecord(next);
   }
 
+  // ---- Routing between windows (architecture.md §14.3) --------------------
+  // The sync leader pulls for every window, but a buffer has one writer: its
+  // owner. A change for a buffer another live window holds travels to it as
+  // remote-change; the owner applies it with its own in-memory text (so the
+  // fork-on-dirty rule sees real keystrokes) and answers remote-applied. No
+  // answer within ROUTE_TIMEOUT means a frozen or vanished window, and the
+  // leader applies the change itself; the owner then takes it as an external
+  // replace when it wakes (adoptFromWindow).
+  const ROUTE_TIMEOUT = 2000;
+  /** @type {Map<string, () => void>} */
+  const acks = new Map();
+
+  on("remote-applied", ({ docId, rev }) => {
+    acks.get(docId + "@" + rev)?.();
+  });
+
+  on("remote-change", ({ ws, change }) => {
+    if (ws !== workspaces.id) return;
+    applyRemote(change, { local: true })
+      .catch((err) => console.log("[vrtti] routed change failed", err))
+      .finally(() => post("remote-applied", { docId: change.docId, rev: change.rev }));
+  });
+
+  on("pushed", ({ ws, id, rev, sentUpdatedAt }) => {
+    if (ws === workspaces.id) void afterPush(id, rev, sentUpdatedAt);
+  });
+
+  /**
+   * Which live window should apply a pulled change: the buffer's owner, or
+   * main for a document nobody has yet. null means this one.
+   * @param {string} id @param {BufferRecord | undefined} record @param {RecordMeta} meta
+   */
+  async function routeTarget(id, record, meta) {
+    if (id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring") return null;
+    const owner = workspaces.ownerOf(id);
+    const target = owner ?? (record ? null : MAIN_WORKSPACE);
+    if (!target || target === workspaces.id) return null;
+    return (await workspaces.liveSet()).has(target) ? target : null;
+  }
+
+  /**
+   * @param {string} target @param {Change} change
+   * @returns {Promise<boolean>} true when the target applied it
+   */
+  function deliverRemote(target, change) {
+    return new Promise((resolve) => {
+      const key = change.docId + "@" + change.rev;
+      const timer = setTimeout(() => {
+        acks.delete(key);
+        resolve(false);
+      }, ROUTE_TIMEOUT);
+      acks.set(key, () => {
+        clearTimeout(timer);
+        acks.delete(key);
+        resolve(true);
+      });
+      post("remote-change", { ws: target, change });
+    });
+  }
+
   /**
    * Apply one pulled change (architecture.md §13.6). The sync client feeds
    * these in seq order and decides nothing itself.
    * @param {Change} change
+   * @param {{local?: boolean}} [options] local: apply here whatever the
+   *   ownership says (the receiving end of remote-change).
    */
-  async function applyRemote(change) {
+  async function applyRemote(change, options = {}) {
     if (!change || !change.docId) return;
     const id = change.docId;
     const record = buffers.get(id);
@@ -1129,6 +1202,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (record && record.sync && change.rev <= record.sync.rev) return;
 
     const meta = change.meta || {};
+    if (!options.local) {
+      const target = await routeTarget(id, record, meta);
+      if (target && (await deliverRemote(target, change))) return;
+    }
     if (id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring") {
       return applyRemoteKeyring(record, change);
     }

@@ -70,7 +70,19 @@ export function createSyncClient({ store, keyring }) {
   function setStatus(next) {
     status = next;
     events.dispatchEvent(new CustomEvent("status", { detail: status }));
+    // The leader's status is everyone's status (architecture.md §14.3).
+    if (started) post("sync-status", { status });
   }
+
+  on("sync-status", (payload) => {
+    if (started) return;
+    status = payload.status;
+    events.dispatchEvent(new CustomEvent("status", { detail: status }));
+  });
+
+  on("sync-request", () => {
+    if (started) syncNow();
+  });
 
   /**
    * @param {string} path @param {{method?: string, body?: any}} [opts]
@@ -192,6 +204,12 @@ export function createSyncClient({ store, keyring }) {
 
   /** Pull, then push. Single-flight; a call during a run buys one more run. */
   async function syncNow() {
+    if (!started) {
+      // Not the lock holder: the leader runs, and its status comes back
+      // over the channel.
+      post("sync-request", {});
+      return;
+    }
     if (!isConfigured()) {
       setStatus({ state: "off" });
       return;

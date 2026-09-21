@@ -102,15 +102,42 @@ export class KeyRing extends EventTarget {
   async load() {
     this.stored = (await getSetting(STORE_KEY)) ?? null;
     if (!watching.has(this)) {
-      // Setup or forget ran in another window: follow it. The unlock state
-      // stays per window; unit 14.3 shares it.
       watching.add(this);
+      // Setup or forget ran in another window: follow it.
       on("setting", ({ key }) => {
         if (key !== STORE_KEY) return;
         this.load().then(() => this.emit("change"));
       });
+      // The unlock travels (architecture.md §14.3): one passphrase per
+      // session, not one per window. A CryptoKey clones across same-origin
+      // contexts and stays non-extractable; the string form is the fallback
+      // for engines without X25519 in WebCrypto, on the same origin only.
+      on("unlock", ({ identity, kind }) => {
+        if (this.isUnlocked || !this.stored) return;
+        this.identity = identity;
+        this.identityKind = kind;
+        this.emit("change");
+      });
+      on("lock", () => {
+        if (this.isUnlocked) this.lock({ broadcast: false });
+      });
+      on("who-is-unlocked", () => {
+        if (this.isUnlocked) this.share();
+      });
     }
     return this.stored;
+  }
+
+  /** Offer this window's identity to the others. */
+  share() {
+    if (!this.isUnlocked) return;
+    post("unlock", { identity: this.identity, kind: this.identityKind });
+  }
+
+  /** A window that just booted asks whether anyone is unlocked already. */
+  askUnlock() {
+    if (this.isUnlocked || !this.stored) return;
+    post("who-is-unlocked", {});
   }
 
   /**
@@ -191,12 +218,14 @@ export class KeyRing extends EventTarget {
         this.identity = key;
         this.identityKind = "cryptokey";
         this.emit("change");
+        this.share();
         return;
       }
     }
     this.identity = secret;
     this.identityKind = "string";
     this.emit("change");
+    this.share();
   }
 
   /**
@@ -206,11 +235,17 @@ export class KeyRing extends EventTarget {
    * way to zero it. With a CryptoKey there is nothing to zero in the JS heap at
    * all. The caller must also drop cached editor states of encrypted docs,
    * which is a store concern, not a keyring one.
+   *
+   * A lock is for the whole app, so it travels to the other windows; the
+   * receiving end passes broadcast: false, or the windows would lock each
+   * other for ever.
+   * @param {{broadcast?: boolean}} [options]
    */
-  lock() {
+  lock({ broadcast = true } = {}) {
     this.identity = null;
     this.identityKind = "none";
     this.emit("change");
+    if (broadcast) post("lock", {});
   }
 
   /** Forget this device. The wrapped identity is unrecoverable afterwards. */
