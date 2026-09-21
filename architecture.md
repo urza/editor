@@ -1008,8 +1008,14 @@ Spike log:
   on Windows and its `preventDefault` holds (our save dialog opened, not
   WebView2's "save page"). Menu items work by mouse. `storage.persist()`
   is true. The File System Access API exists in WebView2, so real files
-  work without a native backend; whether a stored handle survives a restart
-  is still open, as is the offline start.
+  work without a native backend. The offline start works: the page comes up
+  from the service worker cache. A stored file handle survives a restart,
+  but its permission does not: the row shows the reconnect marker and one
+  click restores it. Chrome keeps that permission, WebView2 does not. That
+  gap belongs to the disk backend unit, either through the native backend
+  shared with macOS and Linux or through WebView2's
+  `CreateWebFileSystemDirectoryHandle` (desktop-wrapper.md). The Windows
+  spike is complete and passed.
 
 After the spike: workspaces (§14) as the next unit, then the disk backend
 (desktop-wrapper-goose-patterns.md §4).
