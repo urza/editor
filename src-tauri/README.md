@@ -10,6 +10,14 @@ It exists for three chords a browser reserves: Ctrl+N, Ctrl+S, Ctrl+W
 - `src/lib.rs` holds the whole shell: one window factory, one menu, one
   forwarder that hands menu ids to the page as `vrtti:command` DOM events.
   The page side is `app/js/ui/desktop.js`.
+- Every window is a workspace (architecture.md §14). Label `main` loads the
+  plain URL; label `ws-<id>` loads `?ws=<id>`. The page opens and focuses
+  windows through two Tauri commands, `open_workspace` and
+  `focus_workspace`, whose permissions build.rs generates and
+  `capabilities/default.json` grants to the Pages origin. Closing a
+  secondary window runs `workspace.dissolve` in a surviving window; the
+  last window closing is a quit and keeps every workspace, and main's page
+  reopens them at the next launch.
 - `src/debug.rs` is the Debug menu: reload, force update (drops the service
   worker and its caches, reloads past the CDN edge), "Copy spike report to
   clipboard", a diagnostics dialog, and the inspector. A recorder injected

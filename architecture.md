@@ -1066,6 +1066,12 @@ handover when the leader closes.
 
 ### 14.4 The shell opens windows (unit 4)
 
+Built 2026-09-21. The Rust side compiles for Linux and Windows; the
+page-side bridge passed its gate against a faked shell. The user's run on
+Windows is the remaining gate. One addition to the plan: a native "Close
+Window" item on `CmdOrCtrl+Shift+W`, because a page cannot close a window
+it did not open, and closing through the shell is what dissolves.
+
 - **Labels.** `main` for the main workspace, `ws-<id>` for the others. The
   window factory takes the workspace id and appends `?ws=`.
 - **Page to shell.** The bridge (`ui/desktop.js`) calls two Tauri commands

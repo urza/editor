@@ -572,7 +572,7 @@ async function start() {
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
   mountShortcuts();
-  mountDesktop();
+  mountDesktop({ workspaces });
   mountResizer();
 
   await store.start();
