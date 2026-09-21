@@ -37,6 +37,7 @@ import {
   newBufferRecord,
   putBuffer,
   putHandle,
+  MAIN_WORKSPACE,
 } from "../storage/idb.js";
 import {
   ensurePermission,
@@ -61,7 +62,6 @@ import { detectFromName, isLang } from "../editor/lang.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 
-const ACTIVE_KEY = "vrtti.activeBuffer";
 // Fixed id, not a UUID: every device must arrive at the same record so sync
 // merges one keyring instead of forking one per device (architecture.md §13.3).
 export const KEYRING_ID = "keyring";
@@ -110,15 +110,18 @@ export function titleOf(record) {
 
 /**
  * @param {{keyring: import("../crypto/keyring.js").KeyRing,
- *          syncDefault?: () => boolean}} deps
+ *          syncDefault?: () => boolean,
+ *          workspaces: ReturnType<typeof import("./workspace.js").createWorkspaces>}} deps
  *   The keyring is a dependency, not an import: the codec resolves recipients
  *   and identities through it, and the store must follow its lock state
  *   (architecture.md §5). `syncDefault` answers "does a new document get a
  *   server target?" (§3, §13.6). A function, not a flag: the answer depends on
  *   a setting and on whether a server is configured at all, and both can change
- *   while the app runs.
+ *   while the app runs. `workspaces` is this window's workspace and the
+ *   others (architecture.md §14): "open" means a tab there, and the store
+ *   writes its membership through it, never around it.
  */
-export function createDocStore({ keyring, syncDefault = () => false }) {
+export function createDocStore({ keyring, syncDefault = () => false, workspaces }) {
   /** @type {Map<string, BufferRecord>} */
   const buffers = new Map();
   /**
@@ -170,15 +173,23 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     return record.kind !== "keyring";
   }
 
+  // This window's tabs, in tab order (architecture.md §14). A tab whose
+  // record is gone (deleted elsewhere) is skipped, never shown as a hole.
   function openBuffers() {
-    return [...buffers.values()]
-      .filter((b) => !b.closed && isDocument(b))
-      .sort((a, b) => a.createdAt - b.createdAt);
+    /** @type {BufferRecord[]} */
+    const open = [];
+    for (const id of workspaces.current().tabs) {
+      const record = buffers.get(id);
+      if (record && isDocument(record)) open.push(record);
+    }
+    return open;
   }
 
+  // Recent is global: every document open in no workspace at all.
   function closedBuffers() {
+    const open = workspaces.openSet();
     return [...buffers.values()]
-      .filter((b) => b.closed && isDocument(b))
+      .filter((b) => !open.has(b.id) && isDocument(b))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
@@ -387,7 +398,8 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     }
     const previousId = activeId;
     activeId = id;
-    localStorage.setItem(ACTIVE_KEY, id);
+    // Persisted on the workspace record, so each window remembers its own.
+    workspaces.setActive(id).catch((err) => console.log("[vrtti] active not saved", err));
     emit("active", { id, previousId });
     // The indicator belongs to the buffer on screen. Switching away from a
     // buffer that was still mid-debounce used to leave its "…" behind, because
@@ -568,6 +580,7 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     if (syncDefault()) record.sync = { rev: 0, dirty: true };
     buffers.set(record.id, record);
     await putBuffer(record);
+    await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
     return record;
@@ -747,8 +760,9 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
   async function createFromFile(handle, options = {}) {
     const existing = await bufferForHandle(handle);
     if (existing) {
-      if (existing.closed) await reopen(existing.id);
-      else activate(existing.id);
+      // reopen() knows the three cases: a tab here, a tab in another window,
+      // or Recent.
+      await reopen(existing.id);
       return existing;
     }
     const { content, enc } = await readFileForRecord(handle, handle.name);
@@ -765,6 +779,7 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     if (options.path && record.file) record.file.path = options.path;
     buffers.set(record.id, record);
     await putBuffer({ ...record });
+    await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
     return record;
@@ -865,6 +880,8 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     }
     buffers.set(fork.id, fork);
     await putBuffer(fork);
+    // Open next to the original, so the user sees the copy exists.
+    await workspaces.addTab(fork.id);
     // Not activated on purpose: an edit made in another program must never
     // move the caret out of what the user is typing in.
     emit("change");
@@ -1063,7 +1080,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       id: KEYRING_ID,
       kind: /** @type {'keyring'} */ ("keyring"),
       content: "",
-      closed: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -1121,6 +1137,7 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       buffers.delete(id);
       plain.delete(id);
       await deleteBuffer(id);
+      await workspaces.removeTab(id);
       emit("evict", { id });
       if (id === activeId) {
         // Null first, so the next activate() parks nothing into a record that
@@ -1149,7 +1166,6 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       const created = {
         id,
         content: change.content ?? "",
-        closed: false,
         createdAt: Date.now(),
         // The other device's clock: it is what the row's age should show, and
         // this device never saw the document before now.
@@ -1159,6 +1175,8 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       applyMeta(created, meta);
       buffers.set(id, created);
       await putBuffer({ ...created });
+      // A document that arrives from sync opens in the main workspace (§14).
+      await workspaces.addTab(id, MAIN_WORKSPACE);
       emit("change");
       return;
     }
@@ -1196,6 +1214,7 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     if (fields.enc) record.enc = fields.enc;
     buffers.set(record.id, record);
     await putBuffer({ ...record });
+    await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
     return record;
@@ -1267,34 +1286,46 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
     return true;
   }
 
-  // The point of the whole app: closing never asks anything.
+  // The point of the whole app: closing never asks anything. Close means
+  // "leave this workspace": the buffer goes to Recent, and the tab beside it
+  // takes the screen (architecture.md §14).
   /** @param {string} id */
   async function close(id) {
     const record = buffers.get(id);
-    if (!record || record.closed) return;
-    record.closed = true;
+    const index = workspaces.current().tabs.indexOf(id);
+    if (!record || index < 0) return;
     record.updatedAt = Date.now();
     emit("evict", { id });
     await putBuffer({ ...record });
+    await workspaces.removeTab(id);
 
     if (id === activeId) {
       // Null first: the next activate() must see no previousId, or the editor
       // would park its live state back into the buffer we just evicted.
       activeId = null;
-      const next = openBuffers()[0];
+      const open = openBuffers();
+      const next = open[Math.min(index, open.length - 1)];
       if (next) activate(next.id);
       else await create();
     }
     emit("change");
   }
 
-  /** @param {string} id */
+  /**
+   * Bring a buffer into this workspace. Three cases: already a tab here
+   * (activate), a tab in another window (that window should come forward,
+   * unit 14.2), or Recent (take it).
+   * @param {string} id
+   */
   async function reopen(id) {
     const record = buffers.get(id);
-    if (!record || !record.closed) return;
-    record.closed = false;
+    if (!record) return;
+    const owner = workspaces.ownerOf(id);
+    if (owner === workspaces.id) return activate(id);
+    if (owner !== null) return;
     record.updatedAt = Date.now();
     await putBuffer({ ...record });
+    await workspaces.addTab(id);
     activate(id);
     emit("change");
   }
@@ -1324,11 +1355,14 @@ export function createDocStore({ keyring, syncDefault = () => false }) {
       first = newBufferRecord();
       buffers.set(first.id, first);
       await putBuffer(first);
+      await workspaces.addTab(first.id);
     }
 
-    const stored = localStorage.getItem(ACTIVE_KEY);
-    const storedRecord = stored ? buffers.get(stored) : undefined;
-    const target = storedRecord && !storedRecord.closed ? storedRecord.id : first.id;
+    const stored = workspaces.current().activeId;
+    const target =
+      stored && buffers.has(stored) && workspaces.current().tabs.includes(stored)
+        ? stored
+        : first.id;
 
     activate(target);
     emit("save", { status: "saved" });

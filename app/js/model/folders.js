@@ -39,7 +39,13 @@ const SEP = "\u0000";
 // passes over every open level.
 const FOCUS_GAP = 2000;
 
-export function createFolderStore() {
+/**
+ * @param {{workspaces: ReturnType<typeof import("./workspace.js").createWorkspaces>}} deps
+ *   A folder lives in exactly one workspace (architecture.md §14). The
+ *   handle store stays global; the workspace record says which handles this
+ *   window shows.
+ */
+export function createFolderStore({ workspaces }) {
   /** @type {Map<string, FolderRecord>} */
   const folders = new Map();
   // Folder ids whose handle is not "granted" right now. A stored handle loses
@@ -64,8 +70,15 @@ export function createFolderStore() {
     return folderId + SEP + path;
   }
 
+  // This workspace's folders, in the order they were added to it.
   function openFolders() {
-    return [...folders.values()].sort((a, b) => a.addedAt - b.addedAt);
+    /** @type {FolderRecord[]} */
+    const open = [];
+    for (const id of workspaces.current().folderIds) {
+      const folder = folders.get(id);
+      if (folder) open.push(folder);
+    }
+    return open;
   }
 
   /**
@@ -180,6 +193,9 @@ export function createFolderStore() {
     for (const folder of folders.values()) {
       // isSameEntry, never a name match: two paths can both end in "notes".
       if (await folder.handle.isSameEntry(handle)) {
+        // Known handle, maybe from another workspace: this one lists it too.
+        await workspaces.addFolder(folder.id);
+        emit("change");
         await refresh(folder.id);
         return folder;
       }
@@ -194,6 +210,7 @@ export function createFolderStore() {
     };
     await putHandle(record);
     folders.set(record.id, record);
+    await workspaces.addFolder(record.id);
     emit("change");
     await entries(record.id, "");
     return record;
@@ -201,13 +218,18 @@ export function createFolderStore() {
 
   /** @param {string} id Close a folder. Buffers opened from it keep their own handles. */
   async function closeFolder(id) {
-    if (!folders.delete(id)) return;
-    needsPermission.delete(id);
-    const prefix = id + SEP;
-    for (const cacheKey of [...listings.keys()]) {
-      if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
+    if (!folders.has(id)) return;
+    await workspaces.removeFolder(id);
+    // The handle outlives this workspace while another one still lists it.
+    if (!workspaces.hasFolder(id)) {
+      folders.delete(id);
+      needsPermission.delete(id);
+      const prefix = id + SEP;
+      for (const cacheKey of [...listings.keys()]) {
+        if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
+      }
+      await deleteHandle(id);
     }
-    await deleteHandle(id);
     emit("change");
   }
 

@@ -934,6 +934,11 @@ section 4). It is not part of the workspace build unit.
 ### 14.1 Schema and store (unit 1: one window, new model)
 
 Ships alone and changes nothing visible. Every later unit builds on it.
+Shipped 2026-09-21; the gate ran 47 checks across migration, fresh install,
+single-window regressions, a second `?ws=` tab, sync arrivals and folders.
+One rule was added on the way: a window that writes another workspace's
+record (a synced doc landing in main from a `?ws=` window) re-reads that
+record from IndexedDB first, because its Map copy can be stale.
 
 - **IndexedDB v4.** New store `workspaces`, keyPath `id`. The upgrade
   handler gets `oldVersion` branches for the first time: under 4, it reads

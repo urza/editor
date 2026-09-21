@@ -9,6 +9,8 @@
 // v3 added the "settings" store and the record fields the crypto and sync work
 // reserved: kind 'keyring', sync, enc (architecture.md §7). `group` and
 // `order` for manual sidebar ordering are still reserved and unused.
+// v4 added the "workspaces" store and removed the buffer `closed` flag:
+// membership in a workspace's `tabs` is the one truth for "open" (§14.1).
 
 /**
  * @typedef {Object} FileLink
@@ -44,7 +46,6 @@
  * @typedef {Object} BufferRecord
  * @property {string} id
  * @property {string} content  Opaque to this layer: plaintext today, may be age ciphertext later.
- * @property {boolean} closed
  * @property {number} createdAt
  * @property {number} updatedAt
  * @property {string} [title]  User label from the sidebar rename (architecture.md
@@ -86,11 +87,28 @@
  * @property {number} addedAt
  */
 
+/**
+ * @typedef {Object} WorkspaceRecord  One window (architecture.md §14).
+ * @property {string} id  "main" for the main workspace, a UUID otherwise.
+ * @property {string[]} tabs  Open buffers in tab order. Membership here is
+ *                            the one truth for "open"; a buffer in no
+ *                            workspace is in Recent.
+ * @property {string | null} activeId
+ * @property {string[]} folderIds  Directory handle ids from the handles store.
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ */
+
 const DB_NAME = "vrtti";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = "buffers";
 const HANDLES = "handles";
 const SETTINGS = "settings";
+const WORKSPACES = "workspaces";
+export const MAIN_WORKSPACE = "main";
+// Where v3 kept the active buffer. v4 moves it into the main workspace
+// record; the migration reads the key once and deletes it.
+const LEGACY_ACTIVE_KEY = "vrtti.activeBuffer";
 
 let dbPromise = null;
 
@@ -106,11 +124,12 @@ export function openDb() {
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       // Every version's stores are created here, each behind a "does it exist"
-      // check. That makes the handler idempotent, so one code path upgrades a
-      // v1 or v2 database and creates a fresh v3 one. Existing records are
-      // never rewritten: every field v3 adds is optional, so an old record is
-      // already a valid new one.
-      req.onupgradeneeded = () => {
+      // check. That makes the handler idempotent, so one code path upgrades
+      // any older database and creates a fresh one. v1 to v3 never rewrote a
+      // record, because every field they added was optional. v4 rewrites the
+      // buffers once, to drop `closed`, and that step needs the old version
+      // number: a fresh database (oldVersion 0) has nothing to migrate.
+      req.onupgradeneeded = (event) => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) {
           db.createObjectStore(STORE, { keyPath: "id" });
@@ -121,12 +140,89 @@ export function openDb() {
         if (!db.objectStoreNames.contains(SETTINGS)) {
           db.createObjectStore(SETTINGS, { keyPath: "key" });
         }
+        if (!db.objectStoreNames.contains(WORKSPACES)) {
+          db.createObjectStore(WORKSPACES, { keyPath: "id" });
+        }
+        if (event.oldVersion > 0 && event.oldVersion < 4 && req.transaction) {
+          migrateToWorkspaces(req.transaction);
+        }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        // Another window opened a newer schema, which means a newer build
+        // after a deploy. Close so its upgrade can proceed, drop the cached
+        // promise so nothing hands out a closed connection, and let main.js
+        // reload this window into that build (architecture.md §14.1).
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+          window.dispatchEvent(new Event("vrtti:db-versionchange"));
+        };
+        resolve(db);
+      };
+      // Older windows hold the old version open. They close on their own
+      // versionchange event, so this resolves by itself; the log is for the
+      // case where one of them is stuck.
+      req.onblocked = () => {
+        console.log("[vrtti] database upgrade waits for another window to close");
+      };
+      req.onerror = () => {
+        dbPromise = null;
+        reject(req.error);
+      };
     });
   }
   return dbPromise;
+}
+
+/**
+ * v3 to v4: the main workspace takes over the `closed` flag and the
+ * localStorage active-buffer key (architecture.md §14.1). Runs inside the
+ * upgrade transaction, which stays open while these requests chain, so no
+ * await is possible here: the callbacks nest instead.
+ * @param {IDBTransaction} tx
+ */
+function migrateToWorkspaces(tx) {
+  const buffers = tx.objectStore(STORE);
+  buffers.getAll().onsuccess = (event) => {
+    /** @type {any[]} */
+    const all = /** @type {IDBRequest} */ (event.target).result;
+    // Open buffers keep their old order, which was createdAt.
+    const tabs = all
+      .filter((record) => record.closed !== true && record.kind !== "keyring")
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((record) => record.id);
+    for (const record of all) {
+      if ("closed" in record) {
+        delete record.closed;
+        buffers.put(record);
+      }
+    }
+    tx.objectStore(HANDLES).getAll().onsuccess = (event2) => {
+      /** @type {any[]} */
+      const handles = /** @type {IDBRequest} */ (event2.target).result;
+      const folderIds = handles
+        .filter((handle) => handle.kind === "directory")
+        .sort((a, b) => a.addedAt - b.addedAt)
+        .map((handle) => handle.id);
+      let active = null;
+      try {
+        active = localStorage.getItem(LEGACY_ACTIVE_KEY);
+        localStorage.removeItem(LEGACY_ACTIVE_KEY);
+      } catch {
+        // No localStorage (a blocked context): the first tab is active.
+      }
+      const now = Date.now();
+      tx.objectStore(WORKSPACES).put({
+        id: MAIN_WORKSPACE,
+        tabs,
+        activeId: active && tabs.includes(active) ? active : tabs[0] ?? null,
+        folderIds,
+        createdAt: now,
+        updatedAt: now,
+      });
+    };
+  };
 }
 
 export async function getAllBuffers() {
@@ -151,6 +247,47 @@ export async function deleteBuffer(id) {
   const db = await openDb();
   const tx = db.transaction(STORE, "readwrite");
   tx.objectStore(STORE).delete(id);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Workspaces store (architecture.md §14). model/workspace.js owns the records.
+
+/** @returns {Promise<WorkspaceRecord[]>} */
+export async function getAllWorkspaces() {
+  const db = await openDb();
+  return request(
+    db.transaction(WORKSPACES, "readonly").objectStore(WORKSPACES).getAll()
+  );
+}
+
+/** @param {string} id @returns {Promise<WorkspaceRecord | undefined>} */
+export async function getWorkspace(id) {
+  const db = await openDb();
+  return request(
+    db.transaction(WORKSPACES, "readonly").objectStore(WORKSPACES).get(id)
+  );
+}
+
+/** @param {WorkspaceRecord} record */
+export async function putWorkspace(record) {
+  const db = await openDb();
+  const tx = db.transaction(WORKSPACES, "readwrite");
+  tx.objectStore(WORKSPACES).put(record);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(record);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/** @param {string} id */
+export async function deleteWorkspace(id) {
+  const db = await openDb();
+  const tx = db.transaction(WORKSPACES, "readwrite");
+  tx.objectStore(WORKSPACES).delete(id);
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
@@ -243,7 +380,6 @@ export function newBufferRecord() {
   return {
     id: crypto.randomUUID(),
     content: "",
-    closed: false,
     createdAt: now,
     updatedAt: now,
   };

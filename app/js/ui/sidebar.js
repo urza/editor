@@ -132,10 +132,10 @@ export function mountSidebar(store, folders, sync) {
    * buffers; a file-backed doc means renaming it to `.age` on disk, which is
    * a later unit (architecture.md §13.4).
    *
-   * @param {BufferRecord} record
+   * @param {BufferRecord} record @param {{closable: boolean}} opts
    * @returns {import("./menu.js").MenuItem[]}
    */
-  function rowMenu(record) {
+  function rowMenu(record, { closable }) {
     /** @type {import("./menu.js").MenuItem[]} */
     const items = [];
 
@@ -193,10 +193,12 @@ export function mountSidebar(store, folders, sync) {
           }
     );
     items.push({ separator: true });
+    // A row is either a tab of this window (closable) or in Recent; the
+    // record itself no longer says which (architecture.md §14).
     items.push(
-      record.closed
-        ? { label: "Reopen", act: () => run("buffer.reopen", record.id) }
-        : { label: "Close", act: () => run("buffer.close", record.id) }
+      closable
+        ? { label: "Close", act: () => run("buffer.close", record.id) }
+        : { label: "Reopen", act: () => run("buffer.reopen", record.id) }
     );
     return items;
   }
@@ -275,7 +277,7 @@ export function mountSidebar(store, folders, sync) {
     more.addEventListener("click", (event) => {
       // Without this the row would also activate the buffer behind the menu.
       event.stopPropagation();
-      openMenu(more, rowMenu(record));
+      openMenu(more, rowMenu(record, { closable }));
     });
     li.appendChild(more);
 
@@ -293,8 +295,8 @@ export function mountSidebar(store, folders, sync) {
     }
 
     li.addEventListener("click", () => {
-      if (record.closed) run("buffer.reopen", record.id);
-      else run("buffer.activate", record.id);
+      if (closable) run("buffer.activate", record.id);
+      else run("buffer.reopen", record.id);
       // On a phone the sidebar is a drawer over the editor, so it has to get
       // out of the way of the document it just opened. A no-op on a PC.
       run("sidebar.autoclose");

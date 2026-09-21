@@ -12,6 +12,7 @@ import {
 } from "./model/capabilities.js";
 import { createDocStore, firstLineTitle, KEYRING_ID } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
+import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
 import { register, run } from "./commands/registry.js";
 import { createSyncClient } from "./sync/client.js";
 import * as age from "./crypto/age.js";
@@ -57,6 +58,14 @@ async function start() {
   requestPersistence();
   await openDb();
 
+  // Which window this is (architecture.md §14): `?ws=<id>` names a workspace,
+  // no parameter is the main one. Before the stores, which scope by it.
+  const workspaces = createWorkspaces({ id: workspaceIdFromUrl() });
+  await workspaces.load();
+  // Another window upgraded the schema, so it runs a newer build than this
+  // one. The connection is already closed; the reload picks the build up.
+  window.addEventListener("vrtti:db-versionchange", () => location.reload());
+
   // Before the store: the store takes the keyring as a dependency, because the
   // codec stage of its write pipeline encrypts and decrypts through it, and it
   // follows the keyring's lock state (architecture.md §5, §13.4).
@@ -71,6 +80,7 @@ async function start() {
   const store = createDocStore({
     keyring,
     syncDefault: () => Boolean(sync && sync.syncDefaultOn()),
+    workspaces,
   });
   await store.load();
 
@@ -97,7 +107,7 @@ async function start() {
   // Built on every platform: without the File System Access API no directory
   // handle can be stored, so the store loads nothing and the sidebar draws no
   // section. Only its entry points are gated, below.
-  const folders = createFolderStore();
+  const folders = createFolderStore({ workspaces });
   await folders.load();
 
   register({
@@ -241,7 +251,6 @@ async function start() {
         const record = {
           id: KEYRING_ID,
           kind: "keyring",
-          closed: false,
           createdAt: now,
           ...previous,
           // Union, never replace: the pulled list already names the other
@@ -550,6 +559,7 @@ async function start() {
   // @ts-ignore - deliberate global test hook
   window.vrtti = {
     buffers: store.buffers,
+    workspaces,
     get activeId() {
       return store.activeId;
     },
