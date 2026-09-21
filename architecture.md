@@ -1000,5 +1000,16 @@ The spike protocol, per OS (the order of §8 in the comparison doc):
    Linux should fail, and that failure sizes the disk backend.
 6. Type for ten minutes on Linux and watch for lost focus or a frozen caret.
 
+Spike log:
+
+- **Windows, 2026-09-21** (WebView2, Edge 153). All three chords work and
+  arrive as keydown only: the native menu accelerator does not fire while
+  the webview has focus, so the bridge's keydown fallback is the real path
+  on Windows and its `preventDefault` holds (our save dialog opened, not
+  WebView2's "save page"). Menu items work by mouse. `storage.persist()`
+  is true. The File System Access API exists in WebView2, so real files
+  work without a native backend; whether a stored handle survives a restart
+  is still open, as is the offline start.
+
 After the spike: workspaces (§14) as the next unit, then the disk backend
 (desktop-wrapper-goose-patterns.md §4).
