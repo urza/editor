@@ -10,6 +10,10 @@ It exists for three chords a browser reserves: Ctrl+N, Ctrl+S, Ctrl+W
 - `src/lib.rs` holds the whole shell: one window factory, one menu, one
   forwarder that hands menu ids to the page as `vrtti:command` DOM events.
   The page side is `app/js/ui/desktop.js`.
+- `src/debug.rs` is the Debug menu: reload, force update (drops the service
+  worker and its caches, reloads past the CDN edge), a diagnostics dialog,
+  and the inspector. It runs from the shell side, so it works on any page
+  build. Spike tooling; remove it with the devtools feature when done.
 - The folder is named `src-tauri` because the Tauri CLI looks for that name.
 - The identifier `io.github.urza.vrtti` names the app's data directory on
   every OS. Never change it: a change orphans every install.

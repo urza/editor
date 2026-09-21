@@ -4,8 +4,10 @@
 //! push to main still updates the desktop app (desktop-wrapper-tauri-vs-wails.md
 //! §4.6, shape A).
 
+mod debug;
+
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 /// Where the page comes from.
 const APP_URL: &str = "https://urza.github.io/editor/";
@@ -28,6 +30,8 @@ pub fn run() {
             // Predefined items (Quit, Copy, ...) act on their own.
             if CHORDS.iter().any(|(chord, _, _)| *chord == id) {
                 forward_command(app, id);
+            } else {
+                debug::handle(app, id);
             }
         })
         .setup(|app| {
@@ -64,14 +68,7 @@ fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// app/js/ui/desktop.js. `id` comes from CHORDS only, so it is safe inside a
 /// JS string literal.
 fn forward_command<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    // The focused window gets the chord. With one window that is "main"; the
-    // fallback covers the moment right after launch when nothing reports focus.
-    let target = app
-        .webview_windows()
-        .into_values()
-        .find(|window| window.is_focused().unwrap_or(false))
-        .or_else(|| app.get_webview_window("main"));
-    let Some(window) = target else { return };
+    let Some(window) = debug::target_window(app) else { return };
     let js = format!(
         "window.dispatchEvent(new CustomEvent('vrtti:command', {{ detail: {{ id: '{id}' }} }}))"
     );
@@ -128,5 +125,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             .build()?;
         menu = menu.item(&edit);
     }
+    // Spike tooling (src/debug.rs). Stays until the shell is past the spike.
+    menu = menu.item(&debug::submenu(app)?);
     menu.build()
 }

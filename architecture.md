@@ -943,6 +943,14 @@ What the unit contains:
   app. The web inspector stays enabled for the spike. On macOS the menu also
   carries the application and Edit submenus, because WKWebView has no
   Cmd+C/V/X/A without them.
+- **The Debug menu** (`src-tauri/src/debug.rs`): Reload, Force update,
+  Diagnostics, Open inspector. Added after the first run on Windows, where
+  the shell showed the build from before the deploy and the update check
+  said "up to date": the GitHub Pages edge caches every file for ten
+  minutes, and a page served from the service worker cannot tell. Force
+  update drops the service worker and its caches and reloads with a query
+  string. Diagnostics shows page build, server build with the edge age,
+  service worker state, cache names and the persistence answer.
 - **The marker.** An initialization script sets `window.vrttiDesktop`
   before any page script. `model/capabilities.js` reads it into `isDesktop`.
 - **The page bridge**, `ui/desktop.js`. It listens for `vrtti:command` and,
