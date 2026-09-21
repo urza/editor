@@ -1,0 +1,26 @@
+[package]
+name = "vrtti"
+version = "0.1.0"
+description = "Desktop shell for the vrtti editor: a native window around the deployed PWA"
+authors = ["urza"]
+repository = "https://github.com/urza/editor"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "vrtti_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# "devtools" keeps the web inspector in release builds. The spike
+# (desktop-wrapper-tauri-vs-wails.md §8) reads the console to see which chords
+# reach the page and by which path. Drop the feature once the spike is over.
+tauri = { version = "2.11.6", features = ["devtools"] }
+
+[profile.dev.package."*"]
+# Dependencies without debug info: a smaller target/ and faster links
+# (desktop-wrapper-goose-patterns.md §5). First-party code keeps its symbols.
+debug = false

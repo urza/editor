@@ -1,6 +1,8 @@
 # Desktop wrapper: can a native shell give back Ctrl+N, Ctrl+S, Ctrl+W?
 
-Status: analysis only, 2026-09-13. Nothing is decided and nothing is built.
+Status: decided 2026-09-13 (Tauri), built 2026-09-21 as `src-tauri/`
+(architecture.md §15). The spike from `desktop-wrapper-tauri-vs-wails.md` §8
+waits on a run on a real desktop.
 Question from the user: the PWA cannot use the Sublime chords, so would a thin
 wrapper in Rust or Go make this a real desktop app?
 

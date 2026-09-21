@@ -626,6 +626,13 @@ Decided (2026-09-01):
   Prerequisite fixes ship with it: sync leader via `navigator.locks`,
   `BroadcastChannel` updates, `versionchange` handling.
 
+- Desktop shell, unit 1 (2026-09-21, §15): the Tauri scaffold with the three
+  chords as native menu accelerators, forwarded to the page as DOM events.
+  Ctrl+S saves to file: flush both debounces, or open the picker for a
+  buffer that has no file. The page never imports Tauri. Bundle identifier
+  `io.github.urza.vrtti`, fixed. Builds come from CI, unsigned, at the
+  `desktop-latest` prerelease.
+
 Open: none.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
@@ -920,3 +927,64 @@ Scope: the workspace tabs plus its folders. On Chromium the folder files
 are readable through the stored FSA handles. On macOS and Linux it waits
 for the wrapper's native disk backend (desktop-wrapper-goose-patterns.md,
 section 4). It is not part of the workspace build unit.
+
+## 15. Desktop shell, unit 1: the scaffold and the three chords (2026-09-21)
+
+The Tauri shell from desktop-wrapper-tauri-vs-wails.md §11 exists in
+`src-tauri/`. It is the spike vehicle of §8 there, built so the user can run
+the spike on a real desktop. Nothing of the editor moved into it.
+
+What the unit contains:
+
+- **The shell.** One window factory (`open_main_window`), one app menu with
+  File > New, Save, Close on `CmdOrCtrl+N/S/W`, and one forwarder: a menu id
+  becomes `webview.eval` of a `vrtti:command` DOM event. The window loads
+  `https://urza.github.io/editor/`, so push-to-main still updates the desktop
+  app. The web inspector stays enabled for the spike. On macOS the menu also
+  carries the application and Edit submenus, because WKWebView has no
+  Cmd+C/V/X/A without them.
+- **The marker.** An initialization script sets `window.vrttiDesktop`
+  before any page script. `model/capabilities.js` reads it into `isDesktop`.
+- **The page bridge**, `ui/desktop.js`. It listens for `vrtti:command` and,
+  as a fallback, for the same three chords on keydown. The first delivery
+  runs the command; a repeat within 50 ms is dropped, because a platform may
+  deliver a chord both ways. Every delivery logs its path to the console,
+  which is spike steps 2 and 3 in one build.
+- **`buffer.save`** and `store.saveNow(id)`. Ctrl+S flushes both debounces.
+  A buffer without a disk file opens the picker where the platform has one,
+  and elsewhere lands in IndexedDB and reports "saved".
+- **CI.** `.github/workflows/desktop.yml` builds Windows, Linux and a
+  universal macOS bundle on every push that touches `src-tauri/`, and
+  uploads them to the `desktop-latest` prerelease under fixed file names.
+
+Decided with this unit:
+
+- The page never imports Tauri. The shell talks to the page through DOM
+  events, and the page has no way to call the shell yet. The Tauri IPC comes
+  with the disk backend, when the page needs to call native code, and it will
+  be granted to the Pages origin through a capability with `remote.urls`.
+- The bundle identifier is `io.github.urza.vrtti`. It names the app's data
+  directory on every OS and never changes.
+- The Edit submenu exists on macOS only. On Windows and Linux the webview
+  owns the edit chords, and a menu copy would take them from CodeMirror.
+- Tauri does not expose the WebView2 switch for browser accelerator keys, so
+  on Windows they stay on. The page cancels Ctrl+S on keydown, which is what
+  stops WebView2's own "save page" dialog. F5 and Ctrl+P remain the webview's.
+
+The spike protocol, per OS (the order of §8 in the comparison doc):
+
+1. Launch the binary. Open the inspector (Ctrl+Shift+I, on macOS
+   Cmd+Option+I) and keep the console visible.
+2. Press Ctrl+N, Ctrl+S, Ctrl+W. Each press must do the Sublime thing and
+   log one `[vrtti desktop]` line. The line says `via menu` or `via keydown`;
+   a second line marked `duplicate, dropped` is fine and is the answer to
+   "does this platform deliver both".
+3. Quit, disconnect the network, relaunch. The page must come up from the
+   service worker cache.
+4. In the console: `navigator.storage.persist()` must resolve to `true`.
+5. Open a real file through the sidebar. Windows should work. macOS and
+   Linux should fail, and that failure sizes the disk backend.
+6. Type for ten minutes on Linux and watch for lost focus or a frozen caret.
+
+After the spike: workspaces (§14) as the next unit, then the disk backend
+(desktop-wrapper-goose-patterns.md §4).

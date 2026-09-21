@@ -1,0 +1,129 @@
+# Desktop shell builds (src-tauri/, desktop-wrapper.md). Unsigned binaries for
+# Windows, Linux and macOS, uploaded to the "desktop-latest" prerelease so each
+# file keeps a stable download URL across builds. The page itself is not in
+# these binaries: the shell loads https://urza.github.io/editor/, which
+# pages.yml deploys.
+name: desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            target: ""
+            rust-targets: ""
+          - os: ubuntu-24.04
+            name: linux
+            target: ""
+            rust-targets: ""
+          - os: macos-latest
+            name: macos
+            # One .app for Apple silicon and Intel.
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
+            build-essential curl wget file
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The Tauri CLI as a prebuilt cargo binary: no Node, no npm, no
+      # five-minute compile of the CLI itself.
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall --no-confirm tauri-cli@2.11.5
+
+      - name: Build
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo tauri build --target "${{ matrix.target }}"
+          else
+            cargo tauri build
+          fi
+
+      # One flat folder per OS with self-describing file names, because the
+      # release job merges all three and uploads them side by side.
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p dist
+          case "${{ matrix.name }}" in
+            windows)
+              cp src-tauri/target/release/vrtti.exe dist/vrtti.exe
+              cp src-tauri/target/release/bundle/nsis/*-setup.exe dist/vrtti-setup.exe
+              ;;
+            linux)
+              cp src-tauri/target/release/vrtti dist/vrtti-linux-x86_64
+              cp src-tauri/target/release/bundle/deb/*.deb dist/vrtti-linux-x86_64.deb
+              cp src-tauri/target/release/bundle/appimage/*.AppImage dist/vrtti-linux-x86_64.AppImage
+              ;;
+            macos)
+              cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/vrtti-macos-universal.dmg
+              ;;
+          esac
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vrtti-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # Publish whatever built, so one broken OS does not hide the other two.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to the desktop-latest prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la dist
+          [ -n "$(ls -A dist 2>/dev/null)" ] || { echo "no build succeeded"; exit 1; }
+          if ! gh release view desktop-latest >/dev/null 2>&1; then
+            gh release create desktop-latest --prerelease \
+              --title "Desktop builds (latest main)" \
+              --notes "Unsigned builds of src-tauri/, replaced on every push to main that touches it. Windows and macOS warn on first launch."
+          fi
+          gh release upload desktop-latest dist/* --clobber
+          gh release edit desktop-latest --notes "Unsigned builds of src-tauri/ from ${GITHUB_SHA}, replaced on every push to main that touches it. Windows and macOS warn on first launch."

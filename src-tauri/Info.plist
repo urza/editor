@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Tauri merges this file into the macOS bundle. Service workers in
+       WKWebView need the page's domain declared app-bound (WebKit blog,
+       "App-Bound Domains"). This is half of the requirement: the WKWebView
+       must also opt in with limitsNavigationsToAppBoundDomains, which Tauri
+       does not set. Spike step 4 measures what this alone buys. -->
+  <key>WKAppBoundDomains</key>
+  <array>
+    <string>urza.github.io</string>
+  </array>
+</dict>
+</plist>
