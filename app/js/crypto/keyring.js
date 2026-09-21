@@ -9,6 +9,10 @@
 // private key.
 
 import { deleteSetting, getSetting, putSetting } from "../storage/idb.js";
+import { on, post } from "../model/channel.js";
+
+// Instances that already follow the other windows' setting writes (§14.2).
+const watching = new WeakSet();
 import { deviceId } from "../model/device.js";
 import * as age from "./age.js";
 import { unwrapInWorker, wrapInWorker } from "./unlock.js";
@@ -97,6 +101,15 @@ export class KeyRing extends EventTarget {
   /** Read the stored keyring. Async, so the bootstrap awaits it. */
   async load() {
     this.stored = (await getSetting(STORE_KEY)) ?? null;
+    if (!watching.has(this)) {
+      // Setup or forget ran in another window: follow it. The unlock state
+      // stays per window; unit 14.3 shares it.
+      watching.add(this);
+      on("setting", ({ key }) => {
+        if (key !== STORE_KEY) return;
+        this.load().then(() => this.emit("change"));
+      });
+    }
     return this.stored;
   }
 
@@ -153,6 +166,7 @@ export class KeyRing extends EventTarget {
       createdAt: Date.now(),
     };
     await putSetting(STORE_KEY, this.stored);
+    post("setting", { key: STORE_KEY });
     // Leave the device locked after setup. Unlock is an explicit command, so
     // setup and unlock share one code path from here on.
     this.emit("change");
@@ -202,6 +216,7 @@ export class KeyRing extends EventTarget {
   /** Forget this device. The wrapped identity is unrecoverable afterwards. */
   async forget() {
     await deleteSetting(STORE_KEY);
+    post("setting", { key: STORE_KEY });
     this.stored = null;
     this.peers = [];
     this.lock();

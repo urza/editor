@@ -21,6 +21,22 @@ const CHORDS = {
 // The first delivery runs the command, a repeat inside this window is dropped.
 const DUPLICATE_MS = 50;
 
+/**
+ * Open the window for a workspace (architecture.md §14.2). In a browser it
+ * is a named window.open, which must run inside the user's gesture; the
+ * shell opens a native window instead (unit 14.4).
+ * @param {string} id
+ */
+export function openWorkspaceWindow(id) {
+  if (isDesktop) {
+    console.log("[vrtti desktop] new window for", id, "waits for unit 14.4");
+    return;
+  }
+  const url = new URL(location.href);
+  url.search = "?ws=" + encodeURIComponent(id);
+  window.open(url.toString(), "vrtti-ws-" + id);
+}
+
 export function mountDesktop() {
   if (!isDesktop) return;
 

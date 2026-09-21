@@ -18,7 +18,8 @@ export function mountShortcuts() {
     // Ctrl/Meta chords stay with the browser; Alt is our modifier space
     // (Sublime's Ctrl+N/Ctrl+W are not interceptable in a browser).
     if (event.ctrlKey || event.metaKey) return;
-    const chord = (event.altKey ? "Alt+" : "") + event.code;
+    const chord =
+      (event.altKey ? "Alt+" : "") + (event.shiftKey ? "Shift+" : "") + event.code;
     const id = byChord.get(chord);
     if (!id) return;
     event.preventDefault();

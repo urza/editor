@@ -22,6 +22,7 @@ import {
   openDirectoryPicker,
   permissionState,
 } from "../storage/fsa.js";
+import { on, post } from "./channel.js";
 
 /** @typedef {import("../storage/idb.js").HandleRecord} FolderRecord */
 /**
@@ -210,6 +211,7 @@ export function createFolderStore({ workspaces }) {
     };
     await putHandle(record);
     folders.set(record.id, record);
+    post("handle", { kind: "added", record });
     await workspaces.addFolder(record.id);
     emit("change");
     await entries(record.id, "");
@@ -229,9 +231,38 @@ export function createFolderStore({ workspaces }) {
         if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
       }
       await deleteHandle(id);
+      post("handle", { kind: "removed", id });
     }
     emit("change");
   }
+
+  // ---- Other windows (architecture.md §14.2) ------------------------------
+  // The handle store is global; a handle opened or closed elsewhere shows up
+  // here so that this window can list the same folder without a reload.
+  on("handle", (message) => {
+    if (message.kind === "added") {
+      /** @type {FolderRecord} */
+      const record = message.record;
+      folders.set(record.id, record);
+      // A cloned handle carries the grant of its origin window, but check:
+      // "prompt" here would list nothing and show the reconnect marker.
+      permissionState(record.handle)
+        .then((state) => {
+          if (state !== "granted") needsPermission.add(record.id);
+          emit("change");
+        })
+        .catch(() => emit("change"));
+      return;
+    }
+    if (folders.delete(message.id)) {
+      needsPermission.delete(message.id);
+      const prefix = message.id + SEP;
+      for (const cacheKey of [...listings.keys()]) {
+        if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
+      }
+    }
+    emit("change");
+  });
 
   /** @param {string} id Does this folder need a permission grant? */
   function needsReconnect(id) {

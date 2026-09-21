@@ -45,16 +45,24 @@ export function mountSidebar(store, folders, sync) {
     run("settings.toggle");
   });
 
-  // The disk row stays hidden markup where the API is missing, so the commands
-  // it dispatches (registered only on the same condition) always exist.
+  // The disk buttons stay hidden markup where the API is missing, so the
+  // commands they dispatch (registered only on the same condition) always
+  // exist.
   if (hasFileSystemAccess) {
-    const openActions = /** @type {HTMLElement} */ (document.getElementById("open-actions"));
     const openFile = /** @type {HTMLElement} */ (document.getElementById("open-file"));
     const openFolder = /** @type {HTMLElement} */ (document.getElementById("open-folder"));
-    openActions.hidden = false;
+    openFile.hidden = false;
+    openFolder.hidden = false;
     openFile.addEventListener("click", () => run("file.open"));
     openFolder.addEventListener("click", () => run("folder.open"));
   }
+
+  // A new window is a new workspace (architecture.md §14). Multi-window is a
+  // desktop thing: on a phone the tab would open outside the installed app,
+  // so the button hides under the drawer breakpoint.
+  const newWindow = /** @type {HTMLElement} */ (document.getElementById("new-window"));
+  newWindow.hidden = matchMedia("(max-width: 700px)").matches;
+  newWindow.addEventListener("click", () => run("workspace.new"));
 
   const recentHeading = /** @type {HTMLElement} */ (document.getElementById("recent-heading"));
 

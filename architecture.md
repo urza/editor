@@ -978,6 +978,12 @@ record from IndexedDB first, because its Map copy can be stale.
 
 ### 14.2 Windows talk (unit 2: two tabs in a browser)
 
+Shipped 2026-09-21; the gate drove two pages through 34 checks (live Recent,
+reopen and focus, content and rename relay, folder handle relay, settings
+relay, delete eviction, sync lock handover, close-versus-reload grace, the
+new-window button and chord) plus the 47 of unit 14.1. The sync lock from
+14.3 ships here already: only the lock holder runs the schedule.
+
 - **`model/channel.js`.** One `BroadcastChannel("vrtti")`, a random
   `windowId`, `post(type, payload)` and `on(type, handler)`. Messages:
   `buffer` (a record after a local put), `buffer-deleted`, `workspace`,
@@ -991,7 +997,10 @@ record from IndexedDB first, because its Map copy can be stale.
   the file dedupe in `createFromFile` ask `ownerOf`: another workspace
   means post `focus` (and, in the shell, unit 14.4 brings the window up);
   no owner means take it. If two windows take the same Recent buffer at
-  once, the later `workspace.updatedAt` loses and drops the tab.
+  once, main keeps it, and between two secondary workspaces the smaller id
+  keeps it: both windows run the rule on the other's record and must reach
+  the same answer, and a timestamp rule failed that (each window bumps its
+  own record twice while the other's message is in flight).
 - **Commands.** `workspace.new` creates a record and opens its window: in
   a browser `window.open(url + "?ws=" + id, "vrtti-ws-" + id)` from the
   user gesture, in the shell through the bridge (14.4). `workspace.close`

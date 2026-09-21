@@ -6,7 +6,15 @@
 // model/folders.js ask it who owns what and write their membership through it.
 //
 // Events on store.events:
-//   "change"  { id }  a workspace record was written or removed
+//   "change"  { id, foreign? }  a workspace record was written or removed.
+//             `foreign` marks a change the doc store did not ask for itself:
+//             one from another window, a dissolve, a lost double take. The
+//             doc store re-renders on those and keeps its active buffer
+//             inside the tabs; its own tab writes it already follows up.
+//
+// Every window holds a Web Lock named ws:<id> for its lifetime. That is how
+// the main window tells a closed tab from a reloaded one (unit 14.2), and
+// how the shell learns which workspaces have no window (unit 14.4).
 
 import {
   deleteWorkspace,
@@ -15,6 +23,12 @@ import {
   MAIN_WORKSPACE,
   putWorkspace,
 } from "../storage/idb.js";
+import { on, post } from "./channel.js";
+
+const LOCK_PREFIX = "ws:";
+// A closed browser tab posts window-closed on pagehide, but so does a reload.
+// Main waits this long, then dissolves only if nobody holds the tab's lock.
+const CLOSE_GRACE = 5000;
 
 /** @typedef {import("../storage/idb.js").WorkspaceRecord} WorkspaceRecord */
 
@@ -49,6 +63,7 @@ export function createWorkspaces({ id }) {
     record.updatedAt = Date.now();
     records.set(record.id, record);
     await putWorkspace(record);
+    post("workspace", { record });
     emit("change", { id: record.id });
   }
 
@@ -163,7 +178,84 @@ export function createWorkspaces({ id }) {
     if (wsId === MAIN_WORKSPACE || !records.has(wsId)) return;
     records.delete(wsId);
     await deleteWorkspace(wsId);
-    emit("change", { id: wsId });
+    post("workspace-deleted", { id: wsId });
+    emit("change", { id: wsId, foreign: true });
+  }
+
+  // ---- Other windows (architecture.md §14.2) ------------------------------
+
+  on("workspace", ({ record }) => {
+    records.set(record.id, record);
+    emit("change", { id: record.id, foreign: true });
+    void resolveDoubleTake(record);
+  });
+
+  on("workspace-deleted", ({ id: wsId }) => {
+    records.delete(wsId);
+    emit("change", { id: wsId, foreign: true });
+  });
+
+  on("focus", ({ ws }) => {
+    // Best effort in a browser, which lets a tab focus itself only in some
+    // cases. The shell does it for real (unit 14.4).
+    if (ws === id) window.focus();
+  });
+
+  on("window-closed", ({ ws }) => {
+    if (id !== MAIN_WORKSPACE || ws === MAIN_WORKSPACE) return;
+    setTimeout(() => void dissolveIfGone(ws), CLOSE_GRACE);
+  });
+
+  /**
+   * Two windows took the same Recent buffer at the same moment. Both run
+   * this on the other's record and must reach the same answer, so the rule
+   * uses nothing a clock or message order can skew (each window bumps its
+   * own updatedAt twice while the other's message is in flight, and a
+   * timestamp rule made both drop the tab): main keeps the tab, and between
+   * two secondary workspaces the smaller id keeps it.
+   * @param {WorkspaceRecord} incoming
+   */
+  async function resolveDoubleTake(incoming) {
+    if (incoming.id === id) return;
+    const mine = current();
+    const shared = mine.tabs.filter((tab) => incoming.tabs.includes(tab));
+    if (shared.length === 0) return;
+    const keep =
+      id === MAIN_WORKSPACE || (incoming.id !== MAIN_WORKSPACE && id < incoming.id);
+    if (keep) return;
+    for (const tab of shared) await removeTab(tab);
+    // Told as foreign: the store then moves its active buffer off the
+    // dropped tab, which it does not do for its own tab writes.
+    emit("change", { id, foreign: true });
+  }
+
+  /** @param {string} ws */
+  async function dissolveIfGone(ws) {
+    if (!records.has(ws)) return;
+    try {
+      const state = await navigator.locks.query();
+      if ((state.held ?? []).some((lock) => lock.name === LOCK_PREFIX + ws)) return;
+    } catch {
+      // No Web Locks: nothing can tell a close from a reload, so keep it.
+      return;
+    }
+    await dissolve(ws);
+  }
+
+  /**
+   * Hold this window's lock and, in a browser, announce the tab's end.
+   * The shell decides closes itself (unit 14.4), so it skips the announce.
+   * @param {{isDesktop: boolean}} options
+   */
+  function start({ isDesktop }) {
+    if (navigator.locks) {
+      navigator.locks
+        .request(LOCK_PREFIX + id, () => new Promise(() => {}))
+        .catch((err) => console.log("[vrtti] workspace lock", err));
+    }
+    if (!isDesktop && id !== MAIN_WORKSPACE) {
+      window.addEventListener("pagehide", () => post("window-closed", { ws: id }));
+    }
   }
 
   async function load() {
@@ -190,5 +282,6 @@ export function createWorkspaces({ id }) {
     create,
     dissolve,
     load,
+    start,
   };
 }

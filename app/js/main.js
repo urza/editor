@@ -8,6 +8,7 @@ import { openFilePicker } from "./storage/fsa.js";
 import {
   checkForUpdate,
   hasFileSystemAccess,
+  isDesktop,
   requestPersistence,
 } from "./model/capabilities.js";
 import { createDocStore, firstLineTitle, KEYRING_ID } from "./model/docs.js";
@@ -31,7 +32,7 @@ import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
-import { mountDesktop } from "./ui/desktop.js";
+import { mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
@@ -151,6 +152,31 @@ async function start() {
     id: "buffer.reopen",
     title: "Reopen buffer",
     run: (id) => store.reopen(id),
+  });
+
+  // Windows (architecture.md §14): a workspace is one window's context. The
+  // browser opens a tab for it; the shell opens a native window (unit 14.4).
+  // The command ids say workspace, the labels say window (§14, Naming).
+  register({
+    id: "workspace.new",
+    title: "New window",
+    keys: "Alt+Shift+KeyN",
+    run: async () => {
+      const workspace = await workspaces.create();
+      openWorkspaceWindow(workspace.id);
+      return workspace;
+    },
+  });
+  register({
+    id: "workspace.close",
+    title: "Close window",
+    // A browser closes only a tab it opened itself; the shell closes any.
+    run: () => window.close(),
+  });
+  register({
+    id: "workspace.dissolve",
+    title: "Dissolve workspace",
+    run: (id) => workspaces.dissolve(id),
   });
   register({
     id: "buffer.rename",
@@ -551,9 +577,22 @@ async function start() {
 
   await store.start();
   folders.start();
+  workspaces.start({ isDesktop });
   // Last: its first run pulls, and a pull emits "replace" and "active" into UI
-  // that has to be mounted already.
-  sync.start();
+  // that has to be mounted already. One client per origin (architecture.md
+  // §14.3, the lock ships with §14.2): the window that holds the lock runs
+  // the schedule, the others keep their config loaded and wait. The lock
+  // releases when its window closes, and the next request in line starts.
+  if (navigator.locks) {
+    navigator.locks
+      .request("vrtti:sync", () => {
+        sync.start();
+        return new Promise(() => {});
+      })
+      .catch((err) => console.log("[vrtti] sync lock", err));
+  } else {
+    sync.start();
+  }
 
   // Exposed for the Playwright checks; the UI itself never calls these.
   // @ts-ignore - deliberate global test hook

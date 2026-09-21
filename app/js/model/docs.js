@@ -59,6 +59,7 @@ import { mergeKeyringContent, readKeyringContent } from "../crypto/keyring.js";
 // record, not about a view, and it lives next to the mode table it names
 // (editor/lang.js explains why the two stay together).
 import { detectFromName, isLang } from "../editor/lang.js";
+import { on, post } from "./channel.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 
@@ -161,6 +162,23 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     events.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
+  /**
+   * IndexedDB, then the other windows (architecture.md §14.2). Every buffer
+   * write in this module goes through here, so no window ever needs to
+   * re-read the store to learn what another one wrote.
+   * @param {BufferRecord} record
+   */
+  async function persist(record) {
+    await putBuffer(record);
+    post("buffer", { record });
+  }
+
+  /** @param {string} id */
+  async function remove(id) {
+    await deleteBuffer(id);
+    post("buffer-deleted", { id });
+  }
+
   // The keyring record (architecture.md §13.3) is a buffer record so that it
   // persists and syncs on the existing path, but it is not a document: it holds
   // the device list, it has no text a user would ever edit, and it must never
@@ -215,7 +233,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    */
   async function putSystemRecord(record) {
     buffers.set(record.id, record);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     // The keyring resolves "all my devices" against this record, so whoever
     // holds the keyring has to re-read it whenever it is written, here or by a
     // pull. One event for both paths (architecture.md §13.3).
@@ -285,7 +303,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       if (id === activeId && !saveTimers.has(id)) emit("save", { status: "locked" });
       return false;
     }
-    await putBuffer({ ...record });
+    await persist({ ...record });
     // Only claim "saved" if no newer keystroke started another debounce.
     if (id === activeId && !saveTimers.has(id)) {
       emit("save", { status: "saved" });
@@ -369,7 +387,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       diskFailed.delete(id);
       // Persist lastSyncAt, or a reload would see the buffer as dirty against
       // its own file and fork a conflict copy out of nothing.
-      await putBuffer({ ...record });
+      await persist({ ...record });
       // Clears a "disk write failed" left by an earlier attempt; without this
       // the failure would stay on screen until the next keystroke.
       if (id === activeId && !saveTimers.has(id)) emit("save", { status: "saved" });
@@ -497,7 +515,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // text on every device anyway, and pushing it would make every paste a
     // revision.
     if (source === "user") markDirty(record);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("lang", { id, lang });
   }
 
@@ -521,7 +539,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // The title is plaintext metadata on the wire (architecture.md §5), so a
     // rename is a push of its own; nothing else would ever carry it.
     markDirty(record);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
     return true;
   }
@@ -565,7 +583,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // buffer; keep it in step, and keep addedAt as it was.
     const stored = await getHandle(record.file.handleId);
     if (stored) await putHandle({ ...stored, name: next });
-    await putBuffer({ ...record });
+    await persist({ ...record });
     // A new extension is a new language. "auto", so a syntax the user picked
     // by hand survives the rename.
     await setLang(id, detectFromName(next), "auto");
@@ -579,7 +597,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // attaches it with baseRev null (architecture.md §13.6).
     if (syncDefault()) record.sync = { rev: 0, dirty: true };
     buffers.set(record.id, record);
-    await putBuffer(record);
+    await persist(record);
     await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
@@ -650,7 +668,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.sync.purge = true;
       record.sync.dirty = true;
     }
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
     return record;
   }
@@ -667,7 +685,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // The label stays: the user chose it at encrypt time, and "Use first line"
     // in the row menu clears it whenever they want the row to follow the text.
     if (record.sync) record.sync.dirty = true;
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
     return record;
   }
@@ -778,7 +796,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // record.file exists here (linkFile just set it); the check is for ts-check.
     if (options.path && record.file) record.file.path = options.path;
     buffers.set(record.id, record);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
@@ -801,7 +819,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const handle = await saveFilePicker(suggestedName(record));
     await writeFile(handle, record.content);
     await linkFile(record, handle);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     // The buffer now has a file name, and a file name decides the language.
     // "auto", so a syntax the user picked by hand survives the save.
     await setLang(id, detectFromName(handle.name), "auto");
@@ -829,7 +847,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     plain.delete(id);
     record.updatedAt = Date.now();
     record.file.lastSyncAt = record.updatedAt;
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await announceReplace(record);
     emit("change");
   }
@@ -879,7 +897,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         record.content;
     }
     buffers.set(fork.id, fork);
-    await putBuffer(fork);
+    await persist(fork);
     // Open next to the original, so the user sees the copy exists.
     await workspaces.addTab(fork.id);
     // Not activated on purpose: an edit made in another program must never
@@ -948,7 +966,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.sync.tombstone = "detached";
       record.sync.dirty = true;
     }
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
     return record;
   }
@@ -958,7 +976,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const record = buffers.get(id);
     if (!record || !record.sync) return;
     delete record.sync;
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
   }
 
@@ -967,7 +985,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const record = buffers.get(id);
     if (!record || !record.sync) return;
     delete record.sync.purge;
-    await putBuffer({ ...record });
+    await persist({ ...record });
   }
 
   /**
@@ -1024,7 +1042,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     record.sync.rev = rev;
     record.sync.dirty =
       sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt;
-    await putBuffer({ ...record });
+    await persist({ ...record });
     emit("change");
   }
 
@@ -1058,7 +1076,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     record.updatedAt = Date.now();
     // The decoded text belongs to the ciphertext this just replaced.
     plain.delete(record.id);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await announceReplace(record);
     emit("change");
     // A file-backed record mirrors the pull to its own file, the same
@@ -1136,7 +1154,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       if (record.sync?.dirty) await forkConflict(record);
       buffers.delete(id);
       plain.delete(id);
-      await deleteBuffer(id);
+      await remove(id);
       await workspaces.removeTab(id);
       emit("evict", { id });
       if (id === activeId) {
@@ -1156,7 +1174,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       // "Stop syncing" is not "delete" (architecture.md §3): the text stays,
       // as a local document.
       delete record.sync;
-      await putBuffer({ ...record });
+      await persist({ ...record });
       emit("change");
       return;
     }
@@ -1174,7 +1192,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       };
       applyMeta(created, meta);
       buffers.set(id, created);
-      await putBuffer({ ...created });
+      await persist({ ...created });
       // A document that arrives from sync opens in the main workspace (§14).
       await workspaces.addTab(id, MAIN_WORKSPACE);
       emit("change");
@@ -1213,7 +1231,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (fields.langSource) record.langSource = fields.langSource;
     if (fields.enc) record.enc = fields.enc;
     buffers.set(record.id, record);
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await workspaces.addTab(record.id);
     activate(record.id);
     emit("change");
@@ -1296,7 +1314,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!record || index < 0) return;
     record.updatedAt = Date.now();
     emit("evict", { id });
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await workspaces.removeTab(id);
 
     if (id === activeId) {
@@ -1322,9 +1340,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!record) return;
     const owner = workspaces.ownerOf(id);
     if (owner === workspaces.id) return activate(id);
-    if (owner !== null) return;
+    if (owner !== null) {
+      // Open in another window: that window comes forward, this one stays.
+      post("focus", { ws: owner });
+      return;
+    }
     record.updatedAt = Date.now();
-    await putBuffer({ ...record });
+    await persist({ ...record });
     await workspaces.addTab(id);
     activate(id);
     emit("change");
@@ -1347,6 +1369,76 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     }
   }
 
+  // ---- Other windows (architecture.md §14.2) ------------------------------
+
+  // A record written in another window. Two rules. A buffer in this window's
+  // tabs has one writer, this window, so an incoming copy of it is an
+  // external replace (until unit 14.3 routes the sync leader's applies to the
+  // owner, this is how they land), and keystrokes still waiting in a debounce
+  // here win over it. Any other record is simply the newer copy.
+  on("buffer", ({ record }) => {
+    void adoptFromWindow(record);
+  });
+
+  on("buffer-deleted", ({ id }) => {
+    void evictFromWindow(id);
+  });
+
+  /** @param {BufferRecord} record */
+  async function adoptFromWindow(record) {
+    const id = record.id;
+    const mine = workspaces.current().tabs.includes(id);
+    if (mine && (saveTimers.has(id) || diskTimers.has(id))) return;
+    const previous = buffers.get(id);
+    buffers.set(id, record);
+    const contentChanged =
+      !previous ||
+      previous.content !== record.content ||
+      Boolean(previous.enc) !== Boolean(record.enc);
+    // The decoded text belongs to the old ciphertext.
+    if (contentChanged) plain.delete(id);
+    if (record.kind === "keyring") {
+      emit("system", { id });
+      emit("change");
+      return;
+    }
+    if (mine && contentChanged) await announceReplace(record);
+    emit("change");
+  }
+
+  /** @param {string} id */
+  async function evictFromWindow(id) {
+    if (!buffers.has(id)) return;
+    buffers.delete(id);
+    plain.delete(id);
+    emit("evict", { id });
+    if (workspaces.current().tabs.includes(id)) await workspaces.removeTab(id);
+    if (id === activeId) {
+      activeId = null;
+      const next = openBuffers()[0];
+      if (next) activate(next.id);
+      else await create();
+    }
+    emit("change");
+  }
+
+  // A workspace change this store did not ask for: another window wrote a
+  // record, a workspace dissolved into Recent, a double take was lost. The
+  // active buffer has to stay inside the tabs, and the UI has to redraw. Own
+  // tab writes are skipped: close() moves the active buffer to the neighbour
+  // itself, and this would pre-empt it with the first tab.
+  workspaces.events.addEventListener("change", (event) => {
+    if (!(/** @type {CustomEvent} */ (event).detail?.foreign)) return;
+    const tabs = workspaces.current().tabs;
+    if (activeId && !tabs.includes(activeId)) {
+      activeId = null;
+      const next = openBuffers()[0];
+      if (next) activate(next.id);
+      else void create();
+    }
+    emit("change");
+  });
+
   // Separate from load(): UI modules mount between the two, so they are
   // subscribed before the first "active" event fires.
   async function start() {
@@ -1354,7 +1446,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!first) {
       first = newBufferRecord();
       buffers.set(first.id, first);
-      await putBuffer(first);
+      await persist(first);
       await workspaces.addTab(first.id);
     }
 

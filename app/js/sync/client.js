@@ -14,6 +14,7 @@
 // most of those disappear before they happen.
 
 import { getSetting, putSetting } from "../storage/idb.js";
+import { on, post } from "../model/channel.js";
 import { KEYRING_ID } from "../model/docs.js";
 import { hasFileSystemAccess } from "../model/capabilities.js";
 
@@ -242,6 +243,7 @@ export function createSyncClient({ store, keyring }) {
     const token = (next.token ?? "").trim();
     config = { url, token };
     await putSetting(CONFIG_KEY, config);
+    post("setting", { key: CONFIG_KEY });
     if (!isConfigured()) {
       setStatus({ state: "off" });
       return;
@@ -297,6 +299,7 @@ export function createSyncClient({ store, keyring }) {
   async function toggleSyncDefault() {
     defaultOn = !syncDefaultOn();
     await putSetting(DEFAULT_ON_KEY, defaultOn);
+    post("setting", { key: DEFAULT_ON_KEY });
     return defaultOn;
   }
 
@@ -311,6 +314,18 @@ export function createSyncClient({ store, keyring }) {
     defaultOn = await getSetting(DEFAULT_ON_KEY);
     setStatus({ state: isConfigured() ? "idle" : "off" });
   }
+
+  // A setting written in another window (architecture.md §14.2): the leader
+  // picks up a new server or default without a reload, and a window that
+  // does not run the schedule still answers syncDefaultOn() correctly.
+  on("setting", ({ key }) => {
+    if (key !== CONFIG_KEY && key !== DEFAULT_ON_KEY) return;
+    load()
+      .then(() => {
+        if (started) syncNow();
+      })
+      .catch((err) => console.log("[vrtti] sync settings reload failed", err));
+  });
 
   /** Wire the triggers and run once. Call after store.start(). */
   function start() {
@@ -357,6 +372,10 @@ export function createSyncClient({ store, keyring }) {
     toggleSyncDefault,
     get status() {
       return status;
+    },
+    // Whether this window runs the schedule (the sync lock holder, §14.3).
+    get isRunning() {
+      return started;
     },
     get isConfigured() {
       return isConfigured();
