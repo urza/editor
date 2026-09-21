@@ -1,11 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "The page origin (GitHub Pages) gets the core defaults and clipboard write, which Debug > Copy spike report uses.",
+  "remote": {
+    "urls": [
+      "https://urza.github.io/*"
+    ]
+  },
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "clipboard-manager:allow-write-text"
   ]
 }

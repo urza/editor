@@ -950,7 +950,13 @@ What the unit contains:
   minutes, and a page served from the service worker cannot tell. Force
   update drops the service worker and its caches and reloads with a query
   string. Diagnostics shows page build, server build with the edge age,
-  service worker state, cache names and the persistence answer.
+  service worker state, cache names and the persistence answer. "Copy
+  spike report to clipboard" adds the chord delivery log that a recorder,
+  injected with the marker, keeps since launch: each menu event and each
+  Ctrl+N/S/W keydown with whether the page handled it. That log answers
+  spike steps 2 and 3 without the inspector. The clipboard write is the
+  first Tauri IPC granted to the Pages origin (`remote.urls` in the
+  capability); the page code itself still never imports Tauri.
 - **The marker.** An initialization script sets `window.vrttiDesktop`
   before any page script. `model/capabilities.js` reads it into `isDesktop`.
 - **The page bridge**, `ui/desktop.js`. It listens for `vrtti:command` and,

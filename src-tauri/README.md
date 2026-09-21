@@ -11,9 +11,13 @@ It exists for three chords a browser reserves: Ctrl+N, Ctrl+S, Ctrl+W
   forwarder that hands menu ids to the page as `vrtti:command` DOM events.
   The page side is `app/js/ui/desktop.js`.
 - `src/debug.rs` is the Debug menu: reload, force update (drops the service
-  worker and its caches, reloads past the CDN edge), a diagnostics dialog,
-  and the inspector. It runs from the shell side, so it works on any page
-  build. Spike tooling; remove it with the devtools feature when done.
+  worker and its caches, reloads past the CDN edge), "Copy spike report to
+  clipboard", a diagnostics dialog, and the inspector. A recorder injected
+  with the marker logs every chord delivery since launch; the report carries
+  that log plus the build, service worker, cache and storage facts. It runs
+  from the shell side, so it works on any page build. The clipboard write is
+  the one Tauri IPC the page origin may call (`capabilities/default.json`).
+  Spike tooling; remove it with the devtools feature when done.
 - The folder is named `src-tauri` because the Tauri CLI looks for that name.
 - The identifier `io.github.urza.vrtti` names the app's data directory on
   every OS. Never change it: a change orphans every install.

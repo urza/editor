@@ -19,6 +19,9 @@ tauri-build = { version = "2.6.3", features = [] }
 # (desktop-wrapper-tauri-vs-wails.md §8) reads the console to see which chords
 # reach the page and by which path. Drop the feature once the spike is over.
 tauri = { version = "2.11.6", features = ["devtools"] }
+# Debug > Copy spike report puts the report on the clipboard. This is the
+# first and so far only Tauri IPC the page origin may call (capabilities/).
+tauri-plugin-clipboard-manager = "2"
 
 [profile.dev.package."*"]
 # Dependencies without debug info: a smaller target/ and faster links

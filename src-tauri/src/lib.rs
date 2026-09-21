@@ -24,6 +24,7 @@ const CHORDS: [(&str, &str, &str); 3] = [
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .menu(build_menu)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -50,9 +51,10 @@ fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // it synchronously at import time. This marker is the page's only
     // knowledge of the shell; it never touches the Tauri IPC.
     let marker = format!(
-        "window.vrttiDesktop = {{ platform: '{}', version: '{}' }};",
+        "window.vrttiDesktop = {{ platform: '{}', version: '{}' }};\n{}",
         std::env::consts::OS,
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        debug::RECORDER_JS
     );
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("vrtti")
