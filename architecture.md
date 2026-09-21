@@ -265,6 +265,8 @@ app/js/
     docs.js            document store: in-memory Map + EventTarget, all mutations here
     codec.js           encrypt/decrypt stage between editor and record
     capabilities.js    feature detection (FSA, persist, ...)
+    workspace.js       workspace records, this window's identity, ownership (§14)
+    channel.js         BroadcastChannel between windows, typed messages (§14.2)
   commands/
     registry.js        id -> { title, run, keys }
   crypto/
@@ -321,8 +323,9 @@ Field notes (revised 2026-09-02, see section 13):
 - `kind: 'keyring'` marks the one hidden record that carries the device list
   (section 13.3). The sidebar never shows it.
 - `group` and `order` serve manual sidebar ordering and grouping (section 9).
-- `closed` goes away when workspaces ship (section 14). Membership in a
-  workspace `tabs` list becomes the single truth for "open".
+- `closed` is gone since workspaces (section 14, unit 14.1). Membership in a
+  workspace `tabs` list is the single truth for "open"; a buffer in no
+  workspace is in Recent.
 
 Server revision row:
 
@@ -927,6 +930,133 @@ Scope: the workspace tabs plus its folders. On Chromium the folder files
 are readable through the stored FSA handles. On macOS and Linux it waits
 for the wrapper's native disk backend (desktop-wrapper-goose-patterns.md,
 section 4). It is not part of the workspace build unit.
+
+### 14.1 Schema and store (unit 1: one window, new model)
+
+Ships alone and changes nothing visible. Every later unit builds on it.
+
+- **IndexedDB v4.** New store `workspaces`, keyPath `id`. The upgrade
+  handler gets `oldVersion` branches for the first time: under 4, it reads
+  every buffer on the upgrade transaction, builds the main workspace
+  (`id: "main"`, `tabs` = buffers with `closed !== true` and a document
+  kind, ordered by `createdAt`, `folderIds` = every directory handle,
+  `activeId` = `localStorage["vrtti.activeBuffer"]` when it is in `tabs`),
+  rewrites each buffer without `closed`, and deletes the localStorage key.
+  `openDb` gets `db.onversionchange` (close, drop the cached promise, fire a
+  `vrtti:db-versionchange` window event that main.js answers with a reload,
+  because a newer build in another window owns the schema now) and
+  `req.onblocked` (log and wait: the other windows close on versionchange).
+- **`model/workspace.js`**, `createWorkspaces({ id })`. Reads `?ws=` at
+  boot in main.js; no parameter means `"main"`. Holds every workspace
+  record in a Map (all windows load all records; unit 14.2 keeps them
+  patched). API: `id`, `current()`, `all()`, `ownerOf(bufferId)`,
+  `setTabs(tabs)`, `setActive(id)`, `addFolder(id)`, `removeFolder(id)`,
+  `create()`, `dissolve(id)`, `load()`, `events`. A missing record for a
+  `?ws=` id is created empty, so a stale link still opens a window. Every
+  write goes through one `save(record)` that puts and (14.2) posts.
+- **docs.js.** `createDocStore` takes `workspaces`. `openBuffers()` is the
+  current workspace's `tabs`, in tab order; `closedBuffers()` is every
+  document in no workspace, newest `updatedAt` first. `create` appends to
+  `tabs` and activates; `close` removes from `tabs` and activates the
+  neighbour; `reopen` appends; `activate` writes `workspace.activeId`.
+  `createFromFile` and `applyRemote` use the same three. `newBufferRecord`
+  loses `closed`; the keyring record never enters `tabs`. `start()` takes
+  the active buffer from the workspace record.
+- **folders.js.** `createFolderStore({ workspaces })`. `openFolders()`
+  filters the handle store by the workspace's `folderIds`; `openFolder`
+  adds the id, `closeFolder` removes it and deletes the handle only when
+  no other workspace lists it.
+- **Gate.** A seeded v3 database (open, closed and keyring records, a
+  directory handle, the localStorage key) migrates to the expected main
+  record; the single-window suite stays green; a `?ws=<new>` tab boots
+  with one fresh scratch buffer and a separate Open list.
+
+### 14.2 Windows talk (unit 2: two tabs in a browser)
+
+- **`model/channel.js`.** One `BroadcastChannel("vrtti")`, a random
+  `windowId`, `post(type, payload)` and `on(type, handler)`. Messages:
+  `buffer` (a record after a local put), `buffer-deleted`, `workspace`,
+  `workspace-deleted`, `handle` (added or removed), `setting` (key),
+  `focus` (workspace id), `window-closed` (workspace id). Units 14.3 and
+  14.4 add theirs. A window patches its Maps from the payload and emits
+  `change`, so the UI re-renders without a store read.
+- **Ownership at the edges.** A window writes only its own workspace
+  record and the buffers in its `tabs`. Buffers in Recent belong to nobody
+  and any window may write them. `buffer.activate`, `buffer.reopen` and
+  the file dedupe in `createFromFile` ask `ownerOf`: another workspace
+  means post `focus` (and, in the shell, unit 14.4 brings the window up);
+  no owner means take it. If two windows take the same Recent buffer at
+  once, the later `workspace.updatedAt` loses and drops the tab.
+- **Commands.** `workspace.new` creates a record and opens its window: in
+  a browser `window.open(url + "?ws=" + id, "vrtti-ws-" + id)` from the
+  user gesture, in the shell through the bridge (14.4). `workspace.close`
+  closes this window. `workspace.dissolve(id)` moves the tabs to Recent and
+  deletes the record; main is never dissolved. Browser chord
+  `Alt+Shift+KeyN`, which needs `Shift` in the chord grammar of
+  `ui/shortcuts.js`. The sidebar gets a "new window" button next to the
+  file buttons, visible on every platform.
+- **Browser close.** `pagehide` posts `window-closed`. The main window
+  waits five seconds, then dissolves the workspace unless
+  `navigator.locks.query()` shows its `ws:<id>` lock held again, which is
+  a reload. Every window holds `ws:<id>` for its lifetime. The shell skips
+  this path; there the shell decides (14.4).
+- **Gate.** Two pages in one Playwright context: a buffer created in A is
+  absent from B; closed in A, it appears in B's Recent; reopened in B, it
+  leaves A's Recent; a rename in B of a Recent buffer shows in A without a
+  reload; a folder opened in A is not in B; closing B's tab dissolves its
+  workspace into Recent after the grace; a reload of B keeps it.
+
+### 14.3 One sync client (unit 3)
+
+- **Leader.** `navigator.locks.request("vrtti:sync", () => hold)`. The
+  holder runs the client as today; the others only `load()` the config and
+  show a relayed status. When the leader window closes, the next request
+  in line gets the lock and starts. Non-leaders post `sync-request` for
+  "sync now" and `setting` after configure; the leader reloads its config
+  on `setting`.
+- **Routing keeps one writer.** The leader pulls. A change for a buffer in
+  its own `tabs` or in Recent applies locally through `applyRemote`, as
+  today. A change for a buffer owned by another live window travels as
+  `remote-change` to that window, which runs its own `applyRemote`
+  (the fork-on-dirty rule then sees the real in-memory text). An unknown
+  doc goes to main the same way; when main is not live, the leader creates
+  it and edits main's record, which is allowed because no window holds it.
+  Pushes read the leader's Map, which the owners keep current with their
+  `buffer` messages. After a push of a buffer it does not own, the leader
+  posts `pushed` `{ id, rev, sentUpdatedAt }` and the owner runs
+  `afterPush`, whose `sentUpdatedAt` guard already protects a newer edit.
+  The cursor stays one settings row, written by the leader only.
+- **Unlock travels.** A window that unlocks the keyring posts `unlock`
+  with the identity; a window that boots posts `who-is-unlocked` and takes
+  the first answer. `CryptoKey` objects clone across same-origin contexts,
+  so no secret is re-derived and no passphrase is asked twice.
+- **Gate.** Two pages against the existing sync test surface: only one
+  page's client runs; a dirty edit in the non-leader page reaches the
+  server; a remote change for the non-leader's buffer lands in its editor;
+  closing the leader page moves the lock and the schedule to the other.
+
+### 14.4 The shell opens windows (unit 4)
+
+- **Labels.** `main` for the main workspace, `ws-<id>` for the others. The
+  window factory takes the workspace id and appends `?ws=`.
+- **Page to shell.** The bridge (`ui/desktop.js`) calls two Tauri commands
+  through `window.__TAURI__.core.invoke`, granted to the Pages origin in
+  the capability: `open_workspace(id)` and `focus_workspace(id)`. That is
+  the second and third IPC after the clipboard; the page still imports
+  nothing from Tauri.
+- **Launch.** The shell opens only main. Main's page, once loaded, asks for
+  a window for every workspace whose `ws:<id>` lock nobody holds. Quit
+  therefore restores every window, and a plain browser does the same thing
+  with nothing, which is the rule of section 14.
+- **Close.** On `CloseRequested` of a non-main window while another window
+  exists, the shell runs `workspace.dissolve` in a surviving window (main
+  first). The last window closing is a quit: nothing dissolves. The menu
+  gets "New Window" on `CmdOrCtrl+Shift+N`; the bridge's keydown fallback
+  learns Shift.
+- **Gate.** Rust compiles for Linux and Windows here; the user runs it on
+  Windows: New Window opens a second workspace, a buffer closed in one
+  appears in the other's Recent, closing the second window dissolves it,
+  quitting and relaunching restores both.
 
 ## 15. Desktop shell, unit 1: the scaffold and the three chords (2026-09-21)
 
