@@ -1,6 +1,6 @@
 # First-Run Setup
 
-Status: DONE (2026-09-01)
+Status: DONE (2026-09-21)
 
 Do the tasks below one time in each new sandbox. Do them in order. When all tasks are complete:
 
@@ -15,7 +15,7 @@ If a task fails, do not mark the file as done. Write the error in the task's **R
 
 Check if ".claude-memory" folder exists in this project. If not, create it. Your memories will be stored there. We may or may not add that to .gitignore depending on public/private status of this repository on GitHub. Ask user about it if you just created.
 
-**Result:** Created `.claude-memory/` at the repo root. This folder is not yet a git repo, so the .gitignore question is on hold. Asked the user about public/private status.
+**Result:** The folder already existed, with memory files in it. No need to create it or ask the user. It is already in `.gitignore`.
 
 ## Task 2 — Prompt spellcheck
 
@@ -68,17 +68,15 @@ personal dictionary also covers all case forms.
 
    The underline shows after the next session restart.
 
-   Note: aspell can do only one laguage, guide how to manually merge dictionaries is in
+   Note: aspell can do only one laguage, guide how to manually merge dictionaries is in 
 
-**Result:** Installed aspell and aspell-en. Added `spellcheck.enabled: true` to `~/.claude/settings.json`, other keys kept as is. Added `ignore-case true` to `~/.aspell.conf`. Verified with the commands above.
-
-A prior sandbox merged a Czech dictionary into aspell, per `aspell-spellcheck.md`. That setup lives outside the project folder, so it did not survive this sandbox. Only the plain English setup from this task is in place now. Ask the user if they want the Czech merge redone.
+**Result:** Installed aspell and aspell-en. Merged `spellcheck.enabled: true` into `~/.claude/settings.json` with jq, keeping the other keys. Set `ignore-case true` in `~/.aspell.conf`. Verified: `aspell` is on the path, and `jq .spellcheck ~/.claude/settings.json` shows `{"enabled": true}`.
 
 ## Task 3 - Status line
 
 Install Calude code cli status line customization from statusline.sh - read that file, there are instructions inside.
-
-**Result:** Added `statusLine` to `~/.claude/settings.json`, pointing to `bash /d/PROJECTS/urza/vrtti-editor/statusline.sh`. Tested with sample JSON input, output rendered correctly.
+   
+**Result:** Added `statusLine` to `~/.claude/settings.json`, pointing to `bash /d/PROJECTS/urza/vrtti-editor/statusline.sh`. Tested it with sample JSON on stdin; it printed the line in the expected format. It shows after the next session restart.
 
 ---
 
