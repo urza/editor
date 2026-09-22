@@ -1506,6 +1506,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   // itself, and this would pre-empt it with the first tab.
   workspaces.events.addEventListener("change", (event) => {
     if (!(/** @type {CustomEvent} */ (event).detail?.foreign)) return;
+    // This window is being closed and its workspace is gone: creating a
+    // buffer now would write the workspace back (see workspace.js).
+    if (workspaces.isDissolved) return;
     const tabs = workspaces.current().tabs;
     if (activeId && !tabs.includes(activeId)) {
       activeId = null;

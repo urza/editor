@@ -76,7 +76,13 @@ export function closeWorkspaceWindow(id) {
   );
 }
 
-export function mountDesktop({ workspaces }) {
+/**
+ * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>,
+ *          isBlankBuffer: (id: string) => boolean}} deps
+ *   isBlankBuffer says whether a tab holds nothing worth a window: a scratch
+ *   buffer with no text, or a buffer that no longer exists.
+ */
+export function mountDesktop({ workspaces, isBlankBuffer }) {
   if (!isDesktop) return;
 
   /** @type {Map<string, number>} */
@@ -128,17 +134,18 @@ export function mountDesktop({ workspaces }) {
 
   // Launch: the shell opens only main, and main asks for a window for every
   // workspace whose lock nobody holds (§14.4). A reload of main while the
-  // others are up finds their locks held and asks for nothing. An empty
-  // workspace (no tabs, no folders) is what a window that never booted
-  // leaves behind, a crash or a kill; it has nothing to bring back and is
-  // dissolved instead, or every such launch would add a blank window.
+  // others are up finds their locks held and asks for nothing. A workspace
+  // with no folders and nothing but blank scratch buffers is what a window
+  // that never booted, or died mid-close, leaves behind; it has nothing to
+  // bring back and is dissolved instead, or every launch would add a
+  // blank window.
   if (workspaces.id === MAIN_WORKSPACE) {
     workspaces
       .liveSet()
       .then((live) => {
         for (const record of workspaces.all()) {
           if (record.id === MAIN_WORKSPACE || live.has(record.id)) continue;
-          if (record.tabs.length === 0 && record.folderIds.length === 0) {
+          if (record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
             void workspaces.dissolve(record.id);
             continue;
           }

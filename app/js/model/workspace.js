@@ -49,6 +49,12 @@ export function createWorkspaces({ id }) {
   /** @type {Map<string, WorkspaceRecord>} */
   const records = new Map();
   const events = new EventTarget();
+  // Set when another window dissolved this one (its window is closing). From
+  // then on this window's own record is never written again: the dying
+  // window used to hear the deletion, find itself with no tabs, create a
+  // scratch buffer, and write the record back, so the workspace returned
+  // at the next launch (the user's "second window keeps coming back").
+  let dissolved = false;
 
   /** @param {string} type @param {object} [detail] */
   function emit(type, detail) {
@@ -63,6 +69,7 @@ export function createWorkspaces({ id }) {
 
   /** @param {WorkspaceRecord} record */
   async function save(record) {
+    if (dissolved && record.id === id) return;
     record.updatedAt = Date.now();
     records.set(record.id, record);
     await putWorkspace(record);
@@ -209,6 +216,7 @@ export function createWorkspaces({ id }) {
 
   on("workspace-deleted", ({ id: wsId }) => {
     records.delete(wsId);
+    if (wsId === id) dissolved = true;
     emit("change", { id: wsId, foreign: true });
   });
 
@@ -331,6 +339,10 @@ export function createWorkspaces({ id }) {
   return {
     id,
     events,
+    /** True once another window dissolved this one; nothing here writes any more. */
+    get isDissolved() {
+      return dissolved;
+    },
     current,
     all,
     openSet,

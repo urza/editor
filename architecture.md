@@ -1115,6 +1115,14 @@ and the rest from the goose lifecycle patterns the first build had skipped
   last window closing is not a quit there, Cmd+Q is.
 - Windows other than in `setup` open from the async runtime, never from
   an event handler.
+- A dissolved window writes nothing back. The dying window used to hear
+  its own deletion, find itself with no tabs, create a scratch buffer by
+  the "a window always has a buffer" rule, and write the record back with
+  that tab, so the window returned at every launch (the user's report on
+  2026-09-22). Now the workspace store refuses its own writes once
+  dissolved, the doc store does no repair work in that state, and at
+  launch main dissolves any leftover workspace that has no folders and
+  nothing but blank scratch buffers.
 
 - **Labels.** `main` for the main workspace, `ws-<id>` for the others. The
   window factory takes the workspace id and appends `?ws=`.

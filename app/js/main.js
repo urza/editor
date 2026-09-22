@@ -573,7 +573,13 @@ async function start() {
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
   mountShortcuts();
-  mountDesktop({ workspaces });
+  mountDesktop({
+    workspaces,
+    isBlankBuffer: (id) => {
+      const record = store.get(id);
+      return !record || (record.kind !== "file" && !record.enc && !record.content.trim());
+    },
+  });
   mountResizer();
 
   await store.start();
