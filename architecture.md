@@ -1680,6 +1680,13 @@ user set the repository secret the same day.
 
 ### 18.2 Real shell (unit 2)
 
+**Passed on Windows 2026-09-22**, on the user's machine, with the real
+release: the shell installed from `vrtti-setup.exe` reported 0.1.11 and
+the page build in Help > About, a manual workflow run published 0.1.12
+from the same commit, the shell offered it, "Restart now" ran the
+passive install, and the relaunched shell reported 0.1.12 ("works").
+The Linux run below is optional now; the user's platform is Windows.
+
 On Linux under Xvfb: build two AppImages on local disk, `0.1.0` and
 `0.1.999`, sign the second with a throwaway key, serve a
 `latest-linux-x86_64.json` for it from a local HTTP server, run the
