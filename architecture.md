@@ -1089,7 +1089,12 @@ and the rest from the goose lifecycle patterns the first build had skipped
 - A native "Close Window" item on `CmdOrCtrl+Shift+W`, because a page
   cannot close a window it did not open, and closing through the shell is
   what dissolves. It closes only a window that reports focus, never a
-  guessed one.
+  guessed one. On Windows the accelerator never fires while the webview
+  has focus (§15), which the user found: the chord did nothing and a
+  leftover window could not be closed by keyboard. So the bridge's
+  keydown fallback takes Ctrl+Shift+W too and asks the shell through a
+  third command, `close_workspace`; the close still goes through the
+  shell, so it still dissolves.
 - Single instance on every platform through the plugin: a second launch
   hands off and exits; two processes on one WebView2 profile would not
   even open a webview.

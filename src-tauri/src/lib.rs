@@ -70,7 +70,12 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Mutex::new(Shell::default()))
-        .invoke_handler(tauri::generate_handler![open_workspace, focus_workspace, page_ready])
+        .invoke_handler(tauri::generate_handler![
+            open_workspace,
+            focus_workspace,
+            close_workspace,
+            page_ready
+        ])
         .menu(build_menu)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -307,6 +312,22 @@ fn eval_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&st
     let js = format!("window.dispatchEvent(new CustomEvent('vrtti:command', {{ detail: {detail} }}))");
     if let Err(err) = window.eval(js) {
         eprintln!("[vrtti] could not forward {id}: {err}");
+    }
+}
+
+/// The page asks to close a window: Ctrl+Shift+W arrives as a keydown on
+/// Windows, where menu accelerators do not fire while the webview has focus
+/// (architecture.md §15), so the native Close Window item alone was dead
+/// there. close() goes through CloseRequested, so the workspace dissolves
+/// like on any other close.
+#[tauri::command]
+async fn close_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    if !valid_workspace_id(&id) {
+        return Err("invalid workspace id".into());
+    }
+    match app.get_webview_window(&label_for(&id)) {
+        Some(window) => window.close().map_err(|err| err.to_string()),
+        None => Err("no window for that workspace".into()),
     }
 }
 

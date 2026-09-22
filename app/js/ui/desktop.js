@@ -21,6 +21,7 @@ const CHORDS = {
 };
 const SHIFT_CHORDS = {
   KeyN: "workspace.new",
+  KeyW: "workspace.close",
 };
 
 /**
@@ -60,6 +61,21 @@ export function openWorkspaceWindow(id) {
 /**
  * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>}} deps
  */
+/**
+ * Close a workspace's window through the shell (§14.4). A browser can close
+ * only a tab it opened itself.
+ * @param {string} id
+ */
+export function closeWorkspaceWindow(id) {
+  if (!isDesktop) {
+    window.close();
+    return;
+  }
+  invoke("close_workspace", { id }).catch((err) =>
+    console.log("[vrtti desktop] close window failed", err)
+  );
+}
+
 export function mountDesktop({ workspaces }) {
   if (!isDesktop) return;
 

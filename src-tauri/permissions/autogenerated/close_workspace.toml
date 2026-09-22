@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-workspace"
+description = "Enables the close_workspace command without any pre-configured scope."
+commands.allow = ["close_workspace"]
+
+[[permission]]
+identifier = "deny-close-workspace"
+description = "Denies the close_workspace command without any pre-configured scope."
+commands.deny = ["close_workspace"]

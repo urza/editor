@@ -32,7 +32,7 @@ import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
-import { mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
+import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
@@ -170,8 +170,9 @@ async function start() {
   register({
     id: "workspace.close",
     title: "Close window",
-    // A browser closes only a tab it opened itself; the shell closes any.
-    run: () => window.close(),
+    // The shell closes any window (Ctrl+Shift+W reaches it as a keydown on
+    // Windows); a browser closes only a tab it opened itself.
+    run: () => closeWorkspaceWindow(workspaces.id),
   });
   register({
     id: "workspace.dissolve",
