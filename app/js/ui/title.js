@@ -1,5 +1,5 @@
 // @ts-check
-// The window title: "<buffer> — vrtti", with the file's place inside its
+// The window title: "<buffer> - vrtti", with the file's place inside its
 // folder when it has one, so the taskbar button and the tab say what is on
 // screen (the user asked for a title that fills the taskbar button). The
 // browser tab takes document.title; the desktop shell has its own native
@@ -21,7 +21,7 @@ export function mountTitle(store) {
       const place = record.file?.path && record.file.path !== record.file.name
         ? " (" + record.file.path + ")"
         : "";
-      text = titleOf(record) + place + " — vrtti";
+      text = titleOf(record) + place + " - vrtti";
     }
     // Every keystroke emits "change"; only a changed title reaches the shell.
     if (text === last) return;
