@@ -85,6 +85,11 @@ export function mountDesktop({ workspaces }) {
     if (detail?.id) dispatch(detail.id, "menu", detail.arg);
   });
 
+  // The ready handshake (desktop-wrapper-goose-patterns.md §1): the shell
+  // queues a chord or a dissolve for this window until this call, so a key
+  // pressed during the boot is not lost.
+  invoke("page_ready", {}).catch((err) => console.log("[vrtti desktop] ready failed", err));
+
   window.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const table = event.shiftKey ? SHIFT_CHORDS : CHORDS;

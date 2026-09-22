@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The page origin (GitHub Pages) gets the core defaults, clipboard write (Debug > Copy spike report), and the two window commands of architecture.md \u00a714.4.",
+  "description": "The page origin (GitHub Pages) gets the core defaults, clipboard write (Debug > Copy spike report), and the three window commands of architecture.md \u00a714.4 (open, focus, ready).",
   "remote": {
     "urls": [
       "https://urza.github.io/*"
@@ -15,6 +15,7 @@
     "core:default",
     "clipboard-manager:allow-write-text",
     "allow-open-workspace",
-    "allow-focus-workspace"
+    "allow-focus-workspace",
+    "allow-page-ready"
   ]
 }

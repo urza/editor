@@ -22,6 +22,8 @@ tauri = { version = "2.11.6", features = ["devtools"] }
 # Debug > Copy spike report puts the report on the clipboard. This is the
 # first and so far only Tauri IPC the page origin may call (capabilities/).
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
 
 [profile.dev.package."*"]
 # Dependencies without debug info: a smaller target/ and faster links

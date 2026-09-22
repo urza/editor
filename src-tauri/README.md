@@ -26,6 +26,16 @@ It exists for three chords a browser reserves: Ctrl+N, Ctrl+S, Ctrl+W
   from the shell side, so it works on any page build. The clipboard write is
   the one Tauri IPC the page origin may call (`capabilities/default.json`).
   Spike tooling; remove it with the devtools feature when done.
+- Window creation must never run on the main thread's event handlers or in
+  a synchronous command: on Windows that deadlocks (tauri documents it on
+  the window builders, and the first 14.4 build froze that way). The two
+  page commands are async; other opens go through `open_or_focus`, which
+  spawns on the async runtime.
+- Three plugins: single instance (a second launch focuses main and exits),
+  window state (bounds per label, saved on every close and exit request),
+  clipboard (the spike report). The ready handshake queues a forwarded
+  command per window until the page calls `page_ready`, with an eight
+  second fallback for an older page that never does.
 - The folder is named `src-tauri` because the Tauri CLI looks for that name.
 - The identifier `io.github.urza.vrtti` names the app's data directory on
   every OS. Never change it: a change orphans every install.

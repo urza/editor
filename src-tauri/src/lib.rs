@@ -7,8 +7,16 @@
 
 mod debug;
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::Duration;
+
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::webview::PageLoadEvent;
+use tauri::{
+    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 /// Where the page comes from.
 const APP_URL: &str = "https://urza.github.io/editor/";
@@ -32,10 +40,37 @@ const CHORDS: [(&str, &str, &str); 4] = [
 /// the workspace dissolves like on any other close.
 const CLOSE_WINDOW: &str = "shell.closeWindow";
 
+/// The ready handshake (desktop-wrapper-goose-patterns.md §1). A command for
+/// a window whose page has no listener yet waits here; the page calls
+/// `page_ready` once its bridge listens, and the queue drains. A page load
+/// starting again (reload, Force update) takes the window back to not ready.
+#[derive(Default)]
+struct Shell {
+    ready: HashSet<String>,
+    pending: HashMap<String, Vec<(String, Option<String>)>>,
+}
+
+/// A page that never calls `page_ready` is an older build of the page: the
+/// service worker or the CDN edge can serve one for a while after a deploy.
+/// The shell must not go deaf on it, so this long after a page load finishes
+/// the window counts as ready anyway. The new page calls in well before.
+const READY_FALLBACK: Duration = Duration::from_secs(8);
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // First, as its docs require. A second launch on Windows or Linux
+        // hands its arguments to this instance and exits; two processes on
+        // one WebView2 profile would not even open (goose patterns §2).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            open_or_focus(app.clone(), MAIN);
+        }))
+        // Every window remembers its own bounds, by label (goose patterns §2:
+        // the plugin saves and restores the same bounds flavour, which is
+        // the trap goose fell into with a hand-written keeper).
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .invoke_handler(tauri::generate_handler![open_workspace, focus_workspace])
+        .manage(Mutex::new(Shell::default()))
+        .invoke_handler(tauri::generate_handler![open_workspace, focus_workspace, page_ready])
         .menu(build_menu)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -44,7 +79,13 @@ pub fn run() {
                     forward_command(&window, id, None);
                 }
             } else if id == CLOSE_WINDOW {
-                if let Some(window) = debug::target_window(app) {
+                // Only a window that really has focus, never a guessed one
+                // (goose patterns §2): a guess could close main at launch.
+                if let Some(window) = app
+                    .webview_windows()
+                    .into_values()
+                    .find(|window| window.is_focused().unwrap_or(false))
+                {
                     let _ = window.close();
                 }
             } else {
@@ -52,17 +93,59 @@ pub fn run() {
                 debug::handle(app, id);
             }
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { .. } => {
+                // The plugin saves on RunEvent::Exit only, and the last window
+                // closing on Linux exited without that event in the harness.
+                // Save here, while the closing window still has its bounds.
+                let _ = window.app_handle().save_window_state(StateFlags::all());
                 on_close_requested(window.app_handle(), window.label());
             }
+            WindowEvent::Destroyed => forget_window(window.app_handle(), window.label()),
+            _ => {}
         })
         .setup(|app| {
             open_workspace_window(app.handle(), MAIN)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the vrtti desktop shell");
+        .build(tauri::generate_context!())
+        .expect("error while building the vrtti desktop shell");
+
+    app.run(|app, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = &event {
+            let _ = app.save_window_state(StateFlags::all());
+        }
+        // macOS keeps running with no window and comes back from the dock
+        // (goose patterns §2). Closing the last window there is not a quit;
+        // Cmd+Q is, and it arrives with an exit code.
+        #[cfg(target_os = "macos")]
+        match event {
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => open_or_focus(app.clone(), MAIN),
+            _ => {}
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, &event);
+    });
+}
+
+/// Open a workspace window from an event handler. Window creation in a
+/// handler deadlocks on Windows (tauri's note on `WebviewWindowBuilder`),
+/// so the work moves to the async runtime, from where the builder hops to
+/// the main thread by itself. Focus alone is safe anywhere.
+fn open_or_focus<R: Runtime>(app: AppHandle<R>, ws: &'static str) {
+    if let Some(window) = app.get_webview_window(&label_for(ws)) {
+        let _ = window.set_focus();
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = open_workspace_window(&app, ws) {
+            eprintln!("[vrtti] could not open {ws}: {err}");
+        }
+    });
 }
 
 /// A workspace id is "main" or a UUID. Anything else is refused before it
@@ -113,6 +196,24 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
         .title("vrtti")
         .inner_size(1100.0, 760.0)
         .initialization_script(marker)
+        // A new page load means a page without listeners until it says so,
+        // or until the fallback decides it is an old page that never will.
+        .on_page_load(|window, payload| match payload.event() {
+            PageLoadEvent::Started => mark_not_ready(window.app_handle(), window.label()),
+            PageLoadEvent::Finished => {
+                let window = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(READY_FALLBACK);
+                    if is_ready(window.app_handle(), window.label()) {
+                        return;
+                    }
+                    eprintln!("[vrtti] no page_ready from {}: an older page, draining", window.label());
+                    for (id, arg) in take_pending(window.app_handle(), window.label()) {
+                        eval_command(&window, &id, arg.as_deref());
+                    }
+                });
+            }
+        })
         // Spike diagnostics: Ctrl+Shift+I (Cmd+Option+I) opens the console.
         .devtools(true)
         .build()?;
@@ -136,19 +237,87 @@ fn on_close_requested<R: Runtime>(app: &AppHandle<R>, label: &str) {
     }
 }
 
-/// Hand a command to a page as a DOM event. The page side is
-/// app/js/ui/desktop.js. `id` comes from CHORDS or this file, `arg` is a
-/// validated workspace id, so both are safe inside a JS string literal.
+/// Hand a command to a page as a DOM event, or queue it until the page is
+/// ready. The page side is app/js/ui/desktop.js. `id` comes from CHORDS or
+/// this file, `arg` is a validated workspace id, so both are safe inside a
+/// JS string literal.
 fn forward_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&str>) {
+    if let Some(arg) = arg {
+        if !valid_workspace_id(arg) {
+            return;
+        }
+    }
+    if queue_unless_ready(window.app_handle(), window.label(), id, arg) {
+        return;
+    }
+    eval_command(window, id, arg);
+}
+
+// The three lock helpers are statement-only on purpose: a guard used in a
+// block's tail expression outlives the block's locals in edition 2021, and
+// the borrow checker refuses it.
+
+/// True when the command was queued because the page is not ready yet.
+fn queue_unless_ready<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: Option<&str>) -> bool {
+    let state = app.state::<Mutex<Shell>>();
+    // A poisoned lock still holds a usable set; nothing here panics halfway.
+    let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    if shell.ready.contains(label) {
+        return false;
+    }
+    let queue = shell.pending.entry(label.to_string()).or_default();
+    queue.push((id.to_string(), arg.map(String::from)));
+    true
+}
+
+fn is_ready<R: Runtime>(app: &AppHandle<R>, label: &str) -> bool {
+    let state = app.state::<Mutex<Shell>>();
+    let shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    let ready = shell.ready.contains(label);
+    ready
+}
+
+fn mark_not_ready<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    let state = app.state::<Mutex<Shell>>();
+    let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    shell.ready.remove(label);
+}
+
+fn forget_window<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    let state = app.state::<Mutex<Shell>>();
+    let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    shell.ready.remove(label);
+    shell.pending.remove(label);
+}
+
+/// Mark the page ready and return what waited for it.
+fn take_pending<R: Runtime>(app: &AppHandle<R>, label: &str) -> Vec<(String, Option<String>)> {
+    let state = app.state::<Mutex<Shell>>();
+    let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    shell.ready.insert(label.to_string());
+    let queued = shell.pending.remove(label).unwrap_or_default();
+    queued
+}
+
+fn eval_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&str>) {
     let detail = match arg {
-        Some(arg) if valid_workspace_id(arg) => format!("{{ id: '{id}', arg: '{arg}' }}"),
-        Some(_) => return,
+        Some(arg) => format!("{{ id: '{id}', arg: '{arg}' }}"),
         None => format!("{{ id: '{id}' }}"),
     };
     let js = format!("window.dispatchEvent(new CustomEvent('vrtti:command', {{ detail: {detail} }}))");
     if let Err(err) = window.eval(js) {
         eprintln!("[vrtti] could not forward {id}: {err}");
     }
+}
+
+/// The page's bridge listens now: drain what waited for this window.
+#[tauri::command]
+fn page_ready<R: Runtime>(window: WebviewWindow<R>) -> Result<(), String> {
+    let queued = take_pending(window.app_handle(), window.label());
+    for (id, arg) in queued {
+        eval_command(&window, &id, arg.as_deref());
+    }
+    Ok(())
 }
 
 /// The page asks for a window: `workspace.new` made the record, this opens

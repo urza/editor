@@ -1066,11 +1066,38 @@ handover when the leader closes.
 
 ### 14.4 The shell opens windows (unit 4)
 
-Built 2026-09-21. The Rust side compiles for Linux and Windows; the
-page-side bridge passed its gate against a faked shell. The user's run on
-Windows is the remaining gate. One addition to the plan: a native "Close
-Window" item on `CmdOrCtrl+Shift+W`, because a page cannot close a window
-it did not open, and closing through the shell is what dissolves.
+Built 2026-09-21. The first Windows run froze both windows: a window
+created inside a synchronous Tauri command deadlocks on Windows, which
+tauri documents on its window builders. The two page commands are async
+since 2026-09-22, and the real shell then passed the whole unit on Linux
+under Xvfb (spike log in §15). Additions to the plan, the first from need
+and the rest from the goose lifecycle patterns the first build had skipped
+(desktop-wrapper-goose-patterns.md §1 and §2):
+
+- A native "Close Window" item on `CmdOrCtrl+Shift+W`, because a page
+  cannot close a window it did not open, and closing through the shell is
+  what dissolves. It closes only a window that reports focus, never a
+  guessed one.
+- Single instance on every platform through the plugin: a second launch
+  hands off and exits; two processes on one WebView2 profile would not
+  even open a webview.
+- Window state by label through the plugin, so each workspace window
+  remembers its bounds and the outer-versus-inner size trap stays with the
+  plugin.
+- The ready handshake: the shell queues a forwarded command per window
+  until the page's bridge calls `page_ready`, and a page load starting
+  again resets it. A chord during boot, or a dissolve sent to a main that
+  is still loading, is no longer lost. An older page never calls it (the
+  service worker or the CDN edge can serve one after a deploy), so eight
+  seconds after a page load finishes the window counts as ready anyway;
+  the harness found the shell deaf on the old page before that fallback.
+- Window state is saved on every close request and on exit request, not
+  only on the plugin's own exit event: closing the last window on Linux
+  exited without that event and lost the bounds.
+- macOS keeps running with no window and reopens main from the dock; the
+  last window closing is not a quit there, Cmd+Q is.
+- Windows other than in `setup` open from the async runtime, never from
+  an event handler.
 
 - **Labels.** `main` for the main workspace, `ws-<id>` for the others. The
   window factory takes the workspace id and appends `?ws=`.
@@ -1181,6 +1208,20 @@ Spike log:
   shared with macOS and Linux or through WebView2's
   `CreateWebFileSystemDirectoryHandle` (desktop-wrapper.md). The Windows
   spike is complete and passed.
+
+- **Linux, 2026-09-22** (WebKitGTK 2.52, run in the sandbox under Xvfb
+  through tauri-driver and WebKitWebDriver, real X key events via xdotool).
+  The mirror image of Windows: every chord arrives as a `menu event` from
+  the GTK accelerator and never reaches the page as a keydown, so the
+  bridge's fallback is dead code there. Ctrl+S flushes and the status bar
+  says "saved"; WebKitGTK has no save picker, as expected, and no File
+  System Access API at all. New Window, the live Recent between windows,
+  Close Window dissolving into Recent, and the restore of both windows
+  after a quit all passed on the real process. The harness is repeatable
+  (see the shell test notes in the session scratchpad; packages xvfb,
+  webkitgtk-webdriver, dbus-x11, xdotool, plus `cargo install
+  tauri-driver`). Still open on Linux: the ten-minute typing check for
+  focus and caret faults, which needs a human.
 
 After the spike: workspaces (§14) as the next unit, then the disk backend
 (desktop-wrapper-goose-patterns.md §4).

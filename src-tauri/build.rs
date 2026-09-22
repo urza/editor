@@ -5,7 +5,7 @@ fn main() {
     // capabilities/default.json grants to the Pages origin.
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
-            tauri_build::AppManifest::new().commands(&["open_workspace", "focus_workspace"]),
+            tauri_build::AppManifest::new().commands(&["open_workspace", "focus_workspace", "page_ready"]),
         ),
     )
     .expect("failed to run tauri-build");
