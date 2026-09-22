@@ -236,6 +236,25 @@ export function createFolderStore({ workspaces }) {
     emit("change");
   }
 
+  /** @param {string} id Forget a handle that left the store. */
+  function forget(id) {
+    if (!folders.delete(id)) return false;
+    needsPermission.delete(id);
+    const prefix = id + SEP;
+    for (const cacheKey of [...listings.keys()]) {
+      if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
+    }
+    return true;
+  }
+
+  // A dissolve in this window dropped handles nobody lists (workspace.js).
+  workspaces.events.addEventListener("folders-dropped", (event) => {
+    const ids = /** @type {CustomEvent<{ ids: string[] }>} */ (event).detail.ids;
+    let changed = false;
+    for (const id of ids) changed = forget(id) || changed;
+    if (changed) emit("change");
+  });
+
   // ---- Other windows (architecture.md §14.2) ------------------------------
   // The handle store is global; a handle opened or closed elsewhere shows up
   // here so that this window can list the same folder without a reload.
@@ -254,13 +273,7 @@ export function createFolderStore({ workspaces }) {
         .catch(() => emit("change"));
       return;
     }
-    if (folders.delete(message.id)) {
-      needsPermission.delete(message.id);
-      const prefix = message.id + SEP;
-      for (const cacheKey of [...listings.keys()]) {
-        if (cacheKey.startsWith(prefix)) listings.delete(cacheKey);
-      }
-    }
+    forget(message.id);
     emit("change");
   });
 

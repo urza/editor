@@ -6,7 +6,9 @@
 // model/folders.js ask it who owns what and write their membership through it.
 //
 // Events on store.events:
-//   "change"  { id, foreign? }  a workspace record was written or removed.
+//   "change"          { id, foreign? }  a workspace record was written or removed.
+//   "folders-dropped" { ids }  a dissolve removed folder handles no workspace
+//                     lists any more; model/folders.js forgets them
 //             `foreign` marks a change the doc store did not ask for itself:
 //             one from another window, a dissolve, a lost double take. The
 //             doc store re-renders on those and keeps its active buffer
@@ -17,6 +19,7 @@
 // how the shell learns which workspaces have no window (unit 14.4).
 
 import {
+  deleteHandle,
   deleteWorkspace,
   getAllWorkspaces,
   getWorkspace,
@@ -175,10 +178,24 @@ export function createWorkspaces({ id }) {
    * @param {string} wsId
    */
   async function dissolve(wsId) {
-    if (wsId === MAIN_WORKSPACE || !records.has(wsId)) return;
+    const record = records.get(wsId);
+    if (wsId === MAIN_WORKSPACE || !record) return;
     records.delete(wsId);
     await deleteWorkspace(wsId);
     post("workspace-deleted", { id: wsId });
+    // A folder listed by no other workspace has no way back into a sidebar;
+    // its handle would only pile up in the store (the user's folder windows
+    // come and go, architecture.md §14). Drop it, here and in the other
+    // windows' folder stores. The tabs need nothing: Recent is "open
+    // nowhere", so they are there already.
+    const dropped = [];
+    for (const folderId of record.folderIds) {
+      if (hasFolder(folderId)) continue;
+      await deleteHandle(folderId);
+      post("handle", { kind: "removed", id: folderId });
+      dropped.push(folderId);
+    }
+    if (dropped.length > 0) emit("folders-dropped", { ids: dropped });
     emit("change", { id: wsId, foreign: true });
   }
 

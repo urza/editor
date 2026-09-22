@@ -924,6 +924,18 @@ The model and the command ids say workspace: `workspace.new`,
 `workspace.close`. The native menu says "New Window", because the OS object
 is a window. The label is cheap to change; the command ids are not.
 
+### The workflow this serves (user, 2026-09-22)
+
+The main window is the notes scratchpad: buffers that rarely touch disk
+and must come back after every restart, which the store gives them. A
+second window is a work session on one folder (a documentation tree, for
+example): opened with the folder button, files edited and added and saved
+to disk there, searched there, and closed with Ctrl+Shift+W when the work
+is done. Closing dissolves the workspace: its tabs go to Recent, and a
+folder no other workspace lists loses its handle, so folder windows can
+come and go without piling up handles. Search in files, below, is the one
+piece of that workflow still missing.
+
 ### Search in files (later, separate feature)
 
 Scope: the workspace tabs plus its folders. On Chromium the folder files
