@@ -7,6 +7,7 @@
 
 mod debug;
 mod disk;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -50,6 +51,9 @@ const CLOSE_WINDOW: &str = "shell.closeWindow";
 struct Shell {
     ready: HashSet<String>,
     pending: HashMap<String, Vec<(String, Option<String>)>>,
+    /// The page build each window reported with `page_ready`, for Help >
+    /// About. An older page reports none.
+    builds: HashMap<String, String>,
 }
 
 /// A page that never calls `page_ready` is an older build of the page: the
@@ -75,6 +79,9 @@ pub fn run() {
         // §17). Only src/disk.rs calls it: the capability grants the page no
         // dialog permission, so a page script cannot open a picker by itself.
         .plugin(tauri_plugin_dialog::init())
+        // Shell auto-update (architecture.md §18, src/update.rs). Rust only,
+        // like the dialog plugin: the page gets no updater permission.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(Shell::default()))
         .invoke_handler(tauri::generate_handler![
             open_workspace,
@@ -109,9 +116,9 @@ pub fn run() {
                 {
                     let _ = window.close();
                 }
-            } else {
+            } else if !debug::handle(app, id) {
                 // Predefined items (Quit, Copy, ...) act on their own.
-                debug::handle(app, id);
+                update::handle(app, id);
             }
         })
         .on_window_event(|window, event| match event {
@@ -130,6 +137,7 @@ pub fn run() {
             // its folder at boot finds the record already there.
             app.manage(disk::Disk::load(app.handle()));
             open_workspace_window(app.handle(), MAIN)?;
+            update::init(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -210,10 +218,12 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
     // Runs before any page script, so app/js/model/capabilities.js can read
     // it synchronously at import time. The marker is the page's knowledge of
     // the shell; the two commands in the capability are its way back.
+    // The version is package_info's, never CARGO_PKG_VERSION: CI sets it
+    // at build time (architecture.md §18) and Cargo.toml stays 0.1.0.
     let marker = format!(
         "window.vrttiDesktop = {{ platform: '{}', version: '{}' }};\n{}",
         std::env::consts::OS,
-        env!("CARGO_PKG_VERSION"),
+        app.package_info().version,
         debug::RECORDER_JS
     );
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
@@ -312,6 +322,25 @@ fn forget_window<R: Runtime>(app: &AppHandle<R>, label: &str) {
     let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
     shell.ready.remove(label);
     shell.pending.remove(label);
+    shell.builds.remove(label);
+}
+
+/// The build the window's page reported, for Help > About (src/update.rs).
+pub(crate) fn page_build<R: Runtime>(app: &AppHandle<R>, label: &str) -> Option<String> {
+    let state = app.state::<Mutex<Shell>>();
+    let shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    let build = shell.builds.get(label).cloned();
+    build
+}
+
+/// A page build is a short commit id. Anything else is dropped: it only
+/// ever reaches a dialog, but a bound keeps a broken page from filling one.
+fn valid_build(build: &str) -> bool {
+    !build.is_empty()
+        && build.len() <= 40
+        && build
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
 }
 
 /// Mark the page ready and return what waited for it.
@@ -350,9 +379,15 @@ async fn close_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<()
     }
 }
 
-/// The page's bridge listens now: drain what waited for this window.
+/// The page's bridge listens now: drain what waited for this window. `build`
+/// is the page's commit id (app/js/version.js), absent from an older page.
 #[tauri::command]
-fn page_ready<R: Runtime>(window: WebviewWindow<R>) -> Result<(), String> {
+fn page_ready<R: Runtime>(window: WebviewWindow<R>, build: Option<String>) -> Result<(), String> {
+    if let Some(build) = build.filter(|build| valid_build(build)) {
+        let state = window.app_handle().state::<Mutex<Shell>>();
+        let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+        shell.builds.insert(window.label().to_string(), build);
+    }
     let queued = take_pending(window.app_handle(), window.label());
     for (id, arg) in queued {
         eval_command(&window, &id, arg.as_deref());
@@ -440,5 +475,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     }
     // Spike tooling (src/debug.rs). Stays until the shell is past the spike.
     menu = menu.item(&debug::submenu(app)?);
+    // Help: Check for updates…, About vrtti (src/update.rs).
+    menu = menu.item(&update::submenu(app)?);
     menu.build()
 }

@@ -1574,5 +1574,119 @@ the shell absent.
 Linux under Xvfb through tauri-driver (§15 spike log recipe) with
 `VRTTI_TEST_PICK` and `VRTTI_CONFIG_DIR` set: folder button, tree,
 edit, the text on disk after the debounce, rename, quit and relaunch
-with the folder back and no click. Then the user's Windows run, and
-macOS when a Mac is at hand.
+with the folder back and no click. The user's Windows run passed on
+2026-09-22 ("all looks good"). macOS when a Mac is at hand.
+
+## 18. Shell auto-update (agreed 2026-09-22)
+
+A push to main builds the shell for the three systems and replaces the
+files on the `desktop-latest` release (desktop.yml), but nothing told an
+installed shell about it; the user was running a hand-copied exe. The
+updater plugin closes that loop. The research this applies:
+desktop-wrapper-tauri-vs-wails.md §4.6 (the updater plugin wants a
+signing key pair and a manifest, GitHub Releases hosts both) and
+desktop-wrapper-goose-patterns.md §7 (one feature flag, an env kill
+switch, quiet failures).
+
+### Decisions
+
+- **Signed by us, not by the platform.** The updater verifies every
+  download against a minisign key built into the app. The pair was
+  generated 2026-09-22: the private half is `src-tauri/updater.key`,
+  gitignored, and the user keeps it (losing it strands every installed
+  shell on its version); the public half is `plugins.updater.pubkey` in
+  tauri.conf.json. CI signs when the `TAURI_SIGNING_PRIVATE_KEY` secret is
+  present and otherwise builds as before without updater artifacts, so a
+  missing secret degrades to today's release instead of a red build.
+  Authenticode and notarization stay out; the first-launch warning stays.
+- **Version = `0.1.<run number>`**, set at build time by
+  `cargo tauri build --config '{"version": …}'`. A local build stays
+  `0.1.0`, so it never outranks an installed CI build. Every place that
+  shows a version reads `app.package_info().version`, the page's
+  `vrttiDesktop.version` included, so nothing says `CARGO_PKG_VERSION`
+  any more.
+- **One manifest per platform key on the release**:
+  `latest-windows-x86_64.json`, `latest-linux-x86_64.json`,
+  `latest-darwin-aarch64.json` and `latest-darwin-x86_64.json` (the
+  universal app serves both), each in the plugin's single-platform format
+  (`version`, `pub_date`, `url`, `signature`, `notes`). The endpoint is
+  `.../desktop-latest/latest-{{target}}-{{arch}}.json`, which the plugin
+  fills in. Each build job writes its own manifest, so a platform whose
+  build failed keeps its previous file and its previous manifest, and
+  nothing merges. The first plan said one merged `latest.json`; the plugin
+  reads one `version` per manifest, so a merged file would send a shell
+  whose platform failed to build after its own old file at every check
+  and ask again every six hours. The script is
+  `src-tauri/tools/latest-json.sh` (jq), testable with a fake `.sig`.
+- **The updater artifacts** are the NSIS installer (`vrtti-setup.exe`),
+  the AppImage (`vrtti-linux-x86_64.AppImage`) and the app archive
+  (`vrtti-macos-universal.app.tar.gz`), each with its `.sig` next to it,
+  all under the fixed names the release already uses. The bare exe, the
+  deb and the dmg stay for hand installs. On Windows the updater replaces
+  an installed app, so the user installs once through `vrtti-setup.exe`
+  and runs it from the Start menu; a bare exe in a folder never updates
+  itself. `installMode: passive`.
+- **A copy that cannot replace itself makes no automatic check.** On
+  Windows that is a bare exe (no `uninstall.exe` beside it, which only the
+  NSIS install writes); on Linux the deb or the bare binary (no
+  `APPIMAGE` in the environment). The updater would otherwise install a
+  second copy elsewhere, or write the AppImage over the binary, and ask
+  again at every check. Help > Check for updates… explains instead.
+- **Check at launch and every six hours**, ten seconds after launch so
+  boot is not slowed, on a plain thread in `src-tauri/src/update.rs`.
+  A newer version is downloaded in the background first; only then a
+  native dialog asks "vrtti <version> is ready. Restart now?" with
+  "Restart now" and "Later". Later keeps the download in memory and asks
+  again at the next check (a newer release drops it). Restart saves the
+  window bounds, installs and relaunches; on Windows the plugin hands over
+  to the installer and exits the process itself. Every failure (offline,
+  a bad signature, a missing platform key) is one log line and no dialog,
+  because an editor must never nag about the network. One check runs at a
+  time: a click during the automatic check is logged and dropped.
+- **A Help menu** with "About vrtti" (the shell version, OS and
+  architecture, and the page build) and "Check for updates…", which runs
+  the same check by hand and, when there is nothing or the check fails,
+  says so in a dialog. This is the one place a check may speak when it
+  finds nothing.
+- **Env hooks, read once at startup** (goose §6): `VRTTI_NO_UPDATE=1`
+  disables the automatic check (the menu item still works),
+  `VRTTI_UPDATE_URL` replaces the endpoint and `VRTTI_UPDATE_PUBKEY` the
+  key, which is what lets a real-shell test serve its own signed
+  manifest.
+- **The page stays out of it.** No capability change: the plugin is used
+  from Rust only, like the dialog plugin. The one page change is that
+  `page_ready` now carries the page's commit id (`version.js`), so About
+  can name the page build; an older page sends none and About omits it.
+- **Local bundling** (`cargo tauri build`) now needs either the key in
+  `TAURI_SIGNING_PRIVATE_KEY` or
+  `--config '{"bundle":{"createUpdaterArtifacts":false}}'`; `cargo
+  build`, `check` and `test` are unaffected.
+
+### 18.1 Shell and CI (unit 1, built 2026-09-22)
+
+`tauri-plugin-updater` registered; `update.rs` with the check loop, the
+dialog, the install, the three hooks, and the Help menu items wired in
+lib.rs; `createUpdaterArtifacts: true` and the updater config in
+tauri.conf.json; desktop.yml signs when the secret exists, passes the
+version as `--config '{"version": …}'`, collects the installer, the
+AppImage and the app archive with their signatures, writes one manifest
+per platform key in the build job, and uploads the files before the
+manifests so a shell checking in between never sees a manifest for a
+file not there yet. Verified with cargo check, clippy, `cargo test`
+(four tests on the hooks and the installed-copy check), the Windows
+target, a shell run of `latest-json.sh` (a good manifest, four refused
+inputs), and a Playwright smoke of `page_ready` carrying the build. The
+user set the repository secret the same day.
+
+### 18.2 Real shell (unit 2)
+
+On Linux under Xvfb: build two AppImages on local disk, `0.1.0` and
+`0.1.999`, sign the second with a throwaway key, serve a
+`latest-linux-x86_64.json` for it from a local HTTP server, run the
+first with the three hooks set, and expect the dialog, the replaced
+AppImage after "Restart now", and the relaunched shell reporting
+`0.1.999`. A release build refuses an `http://` endpoint
+(`InsecureTransportProtocol`) unless the test builds carry
+`--config '{"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}'`;
+a debug build only warns. Then the next push publishes a signed release
+with the manifests, and the user installs `vrtti-setup.exe` once.

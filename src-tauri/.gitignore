@@ -2,3 +2,9 @@
 # will have compiled files and executables
 /target/
 /gen/schemas
+
+# The updater signing key (architecture.md §18). Private, never committed;
+# the public half is in tauri.conf.json. Losing it strands every installed
+# app on its current version.
+updater.key
+updater.key.pub

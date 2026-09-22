@@ -10,3 +10,6 @@ __pycache__/
 server/**/bin/
 server/**/obj/
 server/**/data/
+
+# Hand-downloaded shell builds for a test on this machine (never committed).
+/releases/

@@ -32,6 +32,9 @@ tauri-plugin-dialog = "2"
 # the message, which is what makes an `io` DiskError readable in a log
 # (desktop-wrapper-goose-patterns.md §4).
 fs-err = "3"
+# Shell auto-update (architecture.md §18). Used from Rust only, like the
+# dialog plugin: the page gets no updater permission in capabilities/.
+tauri-plugin-updater = "2"
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

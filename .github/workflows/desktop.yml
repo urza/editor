@@ -1,8 +1,9 @@
-# Desktop shell builds (src-tauri/, desktop-wrapper.md). Unsigned binaries for
-# Windows, Linux and macOS, uploaded to the "desktop-latest" prerelease so each
-# file keeps a stable download URL across builds. The page itself is not in
-# these binaries: the shell loads https://urza.github.io/editor/, which
-# pages.yml deploys.
+# Desktop shell builds (src-tauri/, desktop-wrapper.md). Binaries for
+# Windows, Linux and macOS, uploaded to the "desktop-latest" prerelease so
+# each file keeps a stable download URL across builds. The page itself is
+# not in these binaries: the shell loads https://urza.github.io/editor/,
+# which pages.yml deploys. An installed shell finds a new build through the
+# updater manifests written next to the files (architecture.md §18).
 name: desktop
 
 on:
@@ -19,6 +20,13 @@ permissions:
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # Every CI build outranks every local build (0.1.0), and a later run
+  # outranks an earlier one. Set at build time; Cargo.toml stays 0.1.0.
+  VRTTI_VERSION: 0.1.${{ github.run_number }}
+  # Where the release job puts the files. The manifests point back here.
+  VRTTI_DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/desktop-latest
 
 jobs:
   build:
@@ -40,6 +48,12 @@ jobs:
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
+    env:
+      # The updater's minisign key (src-tauri/updater.key on the user's
+      # machine, never in the repo). Without the secret the build skips the
+      # updater artifacts, and the release keeps its previous manifests.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -68,33 +82,60 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: |
+          config="{\"version\":\"$VRTTI_VERSION\"}"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not set: no updater artifacts"
+            config="{\"version\":\"$VRTTI_VERSION\",\"bundle\":{\"createUpdaterArtifacts\":false}}"
+          fi
           if [ -n "${{ matrix.target }}" ]; then
-            cargo tauri build --target "${{ matrix.target }}"
+            cargo tauri build --target "${{ matrix.target }}" --config "$config"
           else
-            cargo tauri build
+            cargo tauri build --config "$config"
           fi
 
       # One flat folder per OS with self-describing file names, because the
-      # release job merges all three and uploads them side by side.
+      # release job merges all three and uploads them side by side. The
+      # updater files (installer or archive, its .sig, one manifest per
+      # platform key) exist only in a signed build.
       - name: Collect
         shell: bash
         run: |
           mkdir -p dist
+          optional() {
+            if [ -f "$1" ]; then cp "$1" "dist/$2"; fi
+          }
+          manifest() {
+            if [ -f "$3" ]; then
+              src-tauri/tools/latest-json.sh "$VRTTI_VERSION" "$VRTTI_DOWNLOAD/$2" "$3" \
+                "Build $VRTTI_VERSION from ${GITHUB_SHA::7}" > "dist/latest-$1.json"
+              cp "$3" "dist/$2.sig"
+            fi
+          }
           case "${{ matrix.name }}" in
             windows)
+              b=src-tauri/target/release/bundle
               cp src-tauri/target/release/vrtti.exe dist/vrtti.exe
-              cp src-tauri/target/release/bundle/nsis/*-setup.exe dist/vrtti-setup.exe
+              cp $b/nsis/*-setup.exe dist/vrtti-setup.exe
+              manifest windows-x86_64 vrtti-setup.exe $b/nsis/*-setup.exe.sig
               ;;
             linux)
+              b=src-tauri/target/release/bundle
               cp src-tauri/target/release/vrtti dist/vrtti-linux-x86_64
-              cp src-tauri/target/release/bundle/deb/*.deb dist/vrtti-linux-x86_64.deb
-              cp src-tauri/target/release/bundle/appimage/*.AppImage dist/vrtti-linux-x86_64.AppImage
+              cp $b/deb/*.deb dist/vrtti-linux-x86_64.deb
+              cp $b/appimage/*.AppImage dist/vrtti-linux-x86_64.AppImage
+              manifest linux-x86_64 vrtti-linux-x86_64.AppImage $b/appimage/*.AppImage.sig
               ;;
             macos)
-              cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/vrtti-macos-universal.dmg
+              b=src-tauri/target/universal-apple-darwin/release/bundle
+              cp $b/dmg/*.dmg dist/vrtti-macos-universal.dmg
+              optional $b/macos/*.app.tar.gz vrtti-macos-universal.app.tar.gz
+              # The universal app serves both Mac architectures.
+              manifest darwin-aarch64 vrtti-macos-universal.app.tar.gz $b/macos/*.app.tar.gz.sig
+              manifest darwin-x86_64 vrtti-macos-universal.app.tar.gz $b/macos/*.app.tar.gz.sig
               ;;
           esac
           ls -la dist
+          cat dist/latest-*.json 2>/dev/null || echo "no manifest (unsigned build)"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,6 +146,7 @@ jobs:
   release:
     needs: build
     # Publish whatever built, so one broken OS does not hide the other two.
+    # A platform that failed keeps its previous file and manifest.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
@@ -123,7 +165,13 @@ jobs:
           if ! gh release view desktop-latest >/dev/null 2>&1; then
             gh release create desktop-latest --prerelease \
               --title "Desktop builds (latest main)" \
-              --notes "Unsigned builds of src-tauri/, replaced on every push to main that touches it. Windows and macOS warn on first launch."
+              --notes "Builds of src-tauri/, replaced on every push to main that touches it."
           fi
-          gh release upload desktop-latest dist/* --clobber
-          gh release edit desktop-latest --notes "Unsigned builds of src-tauri/ from ${GITHUB_SHA}, replaced on every push to main that touches it. Windows and macOS warn on first launch."
+          # Files first, manifests last: a shell that checks in between sees
+          # the old manifest with the old file, never a new manifest that
+          # names a file not uploaded yet.
+          files=$(ls dist/* | grep -v '/latest-' || true)
+          [ -z "$files" ] || gh release upload desktop-latest $files --clobber
+          manifests=$(ls dist/latest-*.json 2>/dev/null || true)
+          [ -z "$manifests" ] || gh release upload desktop-latest $manifests --clobber
+          gh release edit desktop-latest --notes "Builds of src-tauri/ (version ${VRTTI_VERSION}) from ${GITHUB_SHA}, replaced on every push to main that touches it. An installed shell updates itself from the latest-*.json manifests (architecture.md §18). Windows and macOS warn on the first launch of a hand install."

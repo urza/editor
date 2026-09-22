@@ -9,6 +9,7 @@ import { run } from "../commands/registry.js";
 import { isDesktop } from "../model/capabilities.js";
 import { on } from "../model/channel.js";
 import { MAIN_WORKSPACE } from "../storage/idb.js";
+import { BUILD } from "../version.js";
 
 // The keydown fallback for the chords the native menu carries
 // (src-tauri/src/lib.rs, CHORDS). Physical key codes, like ui/shortcuts.js.
@@ -125,8 +126,11 @@ export function mountDesktop({ workspaces, isBlankBuffer }) {
 
   // The ready handshake (desktop-wrapper-goose-patterns.md §1): the shell
   // queues a chord or a dissolve for this window until this call, so a key
-  // pressed during the boot is not lost.
-  invoke("page_ready", {}).catch((err) => console.log("[vrtti desktop] ready failed", err));
+  // pressed during the boot is not lost. The build id lets Help > About in
+  // the shell say which page it shows.
+  invoke("page_ready", { build: BUILD.commit }).catch((err) =>
+    console.log("[vrtti desktop] ready failed", err)
+  );
 
   window.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
