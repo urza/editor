@@ -153,14 +153,21 @@ fn forward_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<
 
 /// The page asks for a window: `workspace.new` made the record, this opens
 /// it. Also how main reopens every workspace at launch.
+///
+/// `async` is load-bearing: a synchronous command runs on the main thread,
+/// and on Windows the window builder deadlocks there (tauri's own note on
+/// `WebviewWindowBuilder::new`). The first build froze both windows exactly
+/// like that. An async command runs on the runtime's thread and the builder
+/// hops to the main thread by itself.
 #[tauri::command]
-fn open_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+async fn open_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
     open_workspace_window(&app, &id).map_err(|err| err.to_string())
 }
 
-/// A buffer is open in another window: that window comes forward.
+/// A buffer is open in another window: that window comes forward. Async for
+/// the same reason as `open_workspace`, although set_focus alone is safe.
 #[tauri::command]
-fn focus_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+async fn focus_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
     if !valid_workspace_id(&id) {
         return Err("invalid workspace id".into());
     }
