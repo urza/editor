@@ -1414,7 +1414,18 @@ permission always reads granted. The picker wait uses the plugin's
 callback API with a one-slot channel, not `blocking_*`: the plugin runs
 the dialog through `run_on_main_thread` and drops a refused dispatch
 silently, which would leave a blocking call waiting forever; "no answer"
-is folded into the cancel case instead. 17.3 (the real shell) is next.
+is folded into the cancel case instead.
+
+Unit 17.3 ran 2026-09-22 on the real shell on Linux (WebKitGTK under
+Xvfb, tauri-driver, the deployed page at cb9a257, hermetic XDG dirs,
+`VRTTI_TEST_PICK` and `VRTTI_CONFIG_DIR` set): the folder button lists
+the tree with the real path in the heading, a file opens, the debounce
+puts the edit on disk with no temp file left, Ctrl+S is harmless, an
+external overwrite reloads the clean buffer without a conflict copy,
+search in files finds the hit and skips `.git` and `.age`, a quit and a
+relaunch bring the folder back with no reconnect click, and a rename
+moves the file. Ten of ten, no Rust or page fault in the log. Left: the
+user's Windows run, and macOS when a Mac is at hand.
 
 ### Decisions
 
