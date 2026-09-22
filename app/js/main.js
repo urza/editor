@@ -31,6 +31,7 @@ import { askPassphrase, askText, choose, showBusy, showSecret } from "./ui/dialo
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
+import { mountTitle } from "./ui/title.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
 import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
 import { mountResizer } from "./ui/resizer.js";
@@ -572,6 +573,7 @@ async function start() {
   mountShell();
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
+  mountTitle(store);
   mountShortcuts();
   mountDesktop({
     workspaces,

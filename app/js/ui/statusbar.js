@@ -110,6 +110,10 @@ export function mountStatusbar(store, sync) {
   function renderTitle() {
     const record = store.activeId ? store.get(store.activeId) : undefined;
     statusTitle.textContent = record ? titleOf(record) : "";
+    statusTitle.title =
+      record?.kind === "file" && record.file
+        ? "On disk: " + (record.file.path || record.file.name)
+        : "";
     // The button offers a file to a buffer that has none. A file-backed buffer
     // is already written by the disk write-behind, so the button would only
     // invite a pointless second copy.

@@ -62,6 +62,22 @@ export function openWorkspaceWindow(id) {
  * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>}} deps
  */
 /**
+ * The native window title. A browser tab follows document.title on its own;
+ * the shell's window does not, so the page sets it through the core window
+ * API (capability: core:window:allow-set-title).
+ * @param {string} text
+ */
+export function setWindowTitle(text) {
+  if (!isDesktop) return;
+  const tauri = /** @type {any} */ (window).__TAURI__;
+  const current = tauri?.window?.getCurrentWindow?.();
+  if (!current) return;
+  Promise.resolve(current.setTitle(text)).catch((err) =>
+    console.log("[vrtti desktop] title failed", err)
+  );
+}
+
+/**
  * Close a workspace's window through the shell (§14.4). A browser can close
  * only a tab it opened itself.
  * @param {string} id

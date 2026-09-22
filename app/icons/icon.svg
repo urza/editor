@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#343a46"/>
+      <stop offset="1" stop-color="#22262e"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <!-- rounded square, the shape every platform's icon grid expects -->
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)"/>
+  <rect x="26" y="26" width="460" height="460" rx="102" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <!-- four lines of text, the editor's whole promise, and a live caret -->
+  <g stroke-linecap="round" stroke-width="44" fill="none">
+    <line x1="120" y1="150" x2="392" y2="150" stroke="#c99ad0"/>
+    <line x1="120" y1="222" x2="300" y2="222" stroke="#63c1bd"/>
+    <line x1="120" y1="294" x2="344" y2="294" stroke="#9fd68f"/>
+    <line x1="120" y1="366" x2="236" y2="366" stroke="#aab0bf"/>
+  </g>
+  <rect x="268" y="338" width="20" height="56" rx="8" fill="#f5a15a" opacity="0.55" filter="url(#glow)"/>
+  <rect x="270" y="340" width="16" height="52" rx="6" fill="#f7ad62"/>
+</svg>

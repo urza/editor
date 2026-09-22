@@ -219,6 +219,10 @@ export function mountSidebar(store, folders, sync) {
     // it is already gone.
     li.dataset.id = record.id;
     if (record.id === store.activeId) li.classList.add("active");
+    // Hover on the row: where the file sits, as far as the page can know it.
+    if (record.kind === "file" && record.file) {
+      li.title = "On disk: " + (record.file.path || record.file.name);
+    }
 
     // A file-backed row is marked, never labelled: the file name is already
     // the title, so the marker only has to say "this one is on disk". The
@@ -356,7 +360,11 @@ export function mountSidebar(store, folders, sync) {
         // Every file row opens, including binary-looking ones. Sublime lists
         // and opens everything; guessing which files "count" would be wrong
         // more often than useful.
-        run("folder.openFile", { handle: entry.handle, path: entry.path });
+        // The folder's name leads the path, so "docs/sub/notes.md" says
+        // which folder a file came from; the absolute path is not available
+        // to a page (architecture.md §2).
+        const folderName = folders.folders.get(folderId)?.name ?? "";
+        run("folder.openFile", { handle: entry.handle, path: folderName + "/" + entry.path });
         run("sidebar.autoclose");
         return;
       }
@@ -400,7 +408,9 @@ export function mountSidebar(store, folders, sync) {
     const name = document.createElement("span");
     name.className = "folder-name";
     name.textContent = folder.name;
-    name.title = folder.name;
+    // The browser hands the page a folder's name and nothing of its place on
+    // disk; the native disk backend will know (desktop-wrapper-goose-patterns.md §4).
+    name.title = folder.name + "\n(the full path is not available to the page)";
     head.appendChild(name);
 
     const stale = folders.needsReconnect(folder.id);

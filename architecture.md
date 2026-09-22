@@ -370,6 +370,22 @@ of this kind, so the pattern already exists in miniature.
 - **Open folder**: a folder section can hold hundreds of rows. Rendering
   stays plain replaceChildren until it measurably lags; virtualize only then.
 
+### Where a file is (2026-09-22, shipped)
+
+The user wants the full path on hover, as Sublime shows on a tab. A page
+cannot have it: the File System Access API hands over a handle with a name
+and no location, on purpose. What is known is shown: a file row and the
+status bar title carry "On disk: <folder>/<path>" for a file opened from a
+folder (the folder's name now leads `file.path`), or the file name for a
+picker-opened file; a folder heading says its name and that the full path
+is not available to the page. The native disk backend (goose patterns §4)
+knows real paths and will replace these. The window title is
+"<buffer> (<folder path>) — vrtti", set on the document and, in the shell,
+on the native window through the core window API, so the taskbar button
+says what is on screen. The icon was redrawn the same day: the four lines
+and the caret on a rounded square with a gradient, one SVG source in
+`app/icons/icon.svg` for the PWA and the desktop icon set.
+
 ### Sidebar collapse (agreed 2026-09-02, shipped)
 
 `ui/shell.js` owns one piece of state, "is the sidebar showing", and two

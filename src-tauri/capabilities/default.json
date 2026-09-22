@@ -17,6 +17,7 @@
     "allow-open-workspace",
     "allow-focus-workspace",
     "allow-close-workspace",
-    "allow-page-ready"
+    "allow-page-ready",
+    "core:window:allow-set-title"
   ]
 }
