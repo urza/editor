@@ -8,7 +8,8 @@
 // nothing to do with the text being typed.
 
 import { titleOf } from "../model/docs.js";
-import { hasFileSystemAccess } from "../model/capabilities.js";
+import { hasDisk } from "../model/capabilities.js";
+import { isNativeHandle } from "../storage/native.js";
 import { run } from "../commands/registry.js";
 import { openMenu } from "./menu.js";
 
@@ -45,10 +46,10 @@ export function mountSidebar(store, folders, sync) {
     run("settings.toggle");
   });
 
-  // The disk buttons stay hidden markup where the API is missing, so the
-  // commands they dispatch (registered only on the same condition) always
+  // The disk buttons stay hidden markup where no backend can reach disk, so
+  // the commands they dispatch (registered only on the same condition) always
   // exist.
-  if (hasFileSystemAccess) {
+  if (hasDisk) {
     const openFile = /** @type {HTMLElement} */ (document.getElementById("open-file"));
     const openFolder = /** @type {HTMLElement} */ (document.getElementById("open-folder"));
     openFile.hidden = false;
@@ -221,7 +222,7 @@ export function mountSidebar(store, folders, sync) {
     if (record.id === store.activeId) li.classList.add("active");
     // Hover on the row: where the file sits, as far as the page can know it.
     if (record.kind === "file" && record.file) {
-      li.title = "On disk: " + (record.file.path || record.file.name);
+      li.title = "On disk: " + store.diskPath(record);
     }
 
     // A file-backed row is marked, never labelled: the file name is already
@@ -231,7 +232,7 @@ export function mountSidebar(store, folders, sync) {
       const mark = document.createElement("span");
       mark.className = "buffer-mark";
       mark.textContent = "⛁";
-      mark.title = "On disk: " + (record.file.path || record.file.name);
+      mark.title = "On disk: " + store.diskPath(record);
       li.appendChild(mark);
     }
 
@@ -409,8 +410,11 @@ export function mountSidebar(store, folders, sync) {
     name.className = "folder-name";
     name.textContent = folder.name;
     // The browser hands the page a folder's name and nothing of its place on
-    // disk; the native disk backend will know (desktop-wrapper-goose-patterns.md §4).
-    name.title = folder.name + "\n(the full path is not available to the page)";
+    // disk; the native backend knows the real path (architecture.md §17).
+    const handle = folders.folders.get(folder.id)?.handle;
+    name.title = isNativeHandle(handle)
+      ? folder.name + "\n" + handle.fullPath
+      : folder.name + "\n(the full path is not available to the page)";
     head.appendChild(name);
 
     const stale = folders.needsReconnect(folder.id);
@@ -447,10 +451,10 @@ export function mountSidebar(store, folders, sync) {
   }
 
   function renderFolders() {
-    // Without the File System Access API the folder commands are not
-    // registered, so a section's buttons would dispatch into nothing. There is
-    // also nothing to draw: such a build can hold no directory handle.
-    if (!hasFileSystemAccess) return;
+    // Without a disk backend the folder commands are not registered, so a
+    // section's buttons would dispatch into nothing. There is also nothing to
+    // draw: such a build can hold no directory handle.
+    if (!hasDisk) return;
     folderSections.replaceChildren(...folders.openFolders().map(folderSection));
   }
 

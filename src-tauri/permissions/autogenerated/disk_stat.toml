@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-stat"
+description = "Enables the disk_stat command without any pre-configured scope."
+commands.allow = ["disk_stat"]
+
+[[permission]]
+identifier = "deny-disk-stat"
+description = "Denies the disk_stat command without any pre-configured scope."
+commands.deny = ["disk_stat"]

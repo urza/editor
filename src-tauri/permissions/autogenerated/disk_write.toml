@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-write"
+description = "Enables the disk_write command without any pre-configured scope."
+commands.allow = ["disk_write"]
+
+[[permission]]
+identifier = "deny-disk-write"
+description = "Denies the disk_write command without any pre-configured scope."
+commands.deny = ["disk_write"]

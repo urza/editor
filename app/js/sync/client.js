@@ -16,7 +16,7 @@
 import { getSetting, putSetting } from "../storage/idb.js";
 import { on, post } from "../model/channel.js";
 import { KEYRING_ID } from "../model/docs.js";
-import { hasFileSystemAccess } from "../model/capabilities.js";
+import { hasDisk } from "../model/capabilities.js";
 
 const CONFIG_KEY = "sync.config";
 const CURSOR_KEY = "sync.cursor";
@@ -310,7 +310,7 @@ export function createSyncClient({ store, keyring }) {
   function syncDefaultOn() {
     if (!isConfigured()) return false;
     if (typeof defaultOn === "boolean") return defaultOn;
-    return window.matchMedia("(pointer: coarse)").matches && !hasFileSystemAccess;
+    return window.matchMedia("(pointer: coarse)").matches && !hasDisk;
   }
 
   /** Flip it, and store the answer as an explicit choice from now on. */

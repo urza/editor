@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-read-bytes"
+description = "Enables the disk_read_bytes command without any pre-configured scope."
+commands.allow = ["disk_read_bytes"]
+
+[[permission]]
+identifier = "deny-disk-read-bytes"
+description = "Denies the disk_read_bytes command without any pre-configured scope."
+commands.deny = ["disk_read_bytes"]

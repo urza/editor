@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-pick-save"
+description = "Enables the disk_pick_save command without any pre-configured scope."
+commands.allow = ["disk_pick_save"]
+
+[[permission]]
+identifier = "deny-disk-pick-save"
+description = "Denies the disk_pick_save command without any pre-configured scope."
+commands.deny = ["disk_pick_save"]

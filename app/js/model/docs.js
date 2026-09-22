@@ -45,9 +45,12 @@ import {
   permissionState,
   readFile,
   readFileBytes,
+  sameEntry,
   saveFilePicker,
   writeFile,
 } from "../storage/fsa.js";
+import { isNativeHandle, pickFile } from "../storage/native.js";
+import { isDesktop } from "./capabilities.js";
 import * as codec from "./codec.js";
 import { deviceId } from "./device.js";
 import * as age from "../crypto/age.js";
@@ -352,13 +355,22 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * else, so a write that failed for another reason must not raise it.
    * @param {BufferRecord} record
    */
-  async function refreshPermissionFlag(record) {
+  /**
+   * @param {BufferRecord} record
+   * @param {any} [err] The failure that prompted the check, when there was one.
+   */
+  async function refreshPermissionFlag(record, err) {
     const handle = handleFor(record);
     if (!record.file || !handle) return;
     const handleId = record.file.handleId;
-    const granted =
-      (await permissionState(handle, "readwrite").catch(() => "granted")) ===
-      "granted";
+    // A native handle is always granted (the root record is the grant). Its
+    // one failure is a file that moved or vanished, which Rust answers with
+    // notFound; that gets the same reconnect marker, and the click re-picks
+    // the file (architecture.md §17).
+    const granted = isNativeHandle(handle)
+      ? !(err && err.name === "NotFoundError")
+      : (await permissionState(handle, "readwrite").catch(() => "granted")) ===
+        "granted";
     if (granted === !needsPermission.has(handleId)) return; // already right
     if (granted) needsPermission.delete(handleId);
     else needsPermission.add(handleId);
@@ -400,7 +412,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         console.log("[vrtti] disk write failed for", record.file.name, err);
       }
       if (id === activeId) emit("save", { status: "disk write failed" });
-      await refreshPermissionFlag(record);
+      await refreshPermissionFlag(record, err);
     }
   }
 
@@ -545,6 +557,19 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   }
 
   /**
+   * Where this buffer's file sits, for a hover. The native backend knows the
+   * absolute path; the browser API only ever told the page the folder-relative
+   * one (architecture.md §17).
+   * @param {BufferRecord | undefined} record @returns {string}
+   */
+  function diskPath(record) {
+    if (!record || !record.file) return "";
+    const handle = handleFor(record);
+    if (isNativeHandle(handle)) return handle.fullPath;
+    return record.file.path || record.file.name;
+  }
+
+  /**
    * Can this buffer's file be renamed where it sits? FileSystemFileHandle.move
    * is Chromium only. Nothing else can rename a picked file, so the UI asks
    * here before it offers a rename that could not work.
@@ -580,9 +605,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.file.path = record.file.path.slice(0, -previous.length) + next;
     }
     // The handle record carries the name for the stores that never load a
-    // buffer; keep it in step, and keep addedAt as it was.
+    // buffer; keep it in step, and keep addedAt as it was. The live handle
+    // goes back with it, not the stored copy: a native handle carries its own
+    // path and move() just changed it, so the copy in IndexedDB is one rename
+    // behind. An FSA handle follows its file by itself and does not care.
     const stored = await getHandle(record.file.handleId);
-    if (stored) await putHandle({ ...stored, name: next });
+    if (stored) await putHandle({ ...stored, handle, name: next });
     await persist({ ...record });
     // A new extension is a new language. "auto", so a syntax the user picked
     // by hand survives the rename.
@@ -733,7 +761,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       const known = handleFor(record);
       // isSameEntry, never a name match: two folders can hold two different
       // files called notes.md.
-      if (known && (await known.isSameEntry(handle))) return record;
+      if (await sameEntry(known, handle)) return record;
     }
     return null;
   }
@@ -1355,7 +1383,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       } catch (err) {
         // Unreadable: permission dropped, or the file is gone. A poll must
         // never throw, and only the first case earns a reconnect marker.
-        await refreshPermissionFlag(record);
+        await refreshPermissionFlag(record, err);
       }
     }
   }
@@ -1374,8 +1402,37 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const record = buffers.get(id);
     const handle = handleFor(record);
     if (!record || !record.file || !handle) return false;
-    if (!(await ensurePermission(handle, "readwrite"))) return false;
-    needsPermission.delete(record.file.handleId);
+    const handleId = record.file.handleId;
+    if (isDesktop) {
+      // In the shell a reconnect is always a fresh pick. Either the record is
+      // from before the native backend and holds a WebView2 handle, which
+      // cannot tell Rust which file it points at, or it is a native root whose
+      // file moved or vanished (architecture.md §17, "Mixed handles"). The
+      // picker runs from this click because a click is the only place a
+      // picker may open. Same handle id, so the buffer keeps its link and its
+      // text.
+      let picked;
+      try {
+        picked = await pickFile();
+      } catch (err) {
+        if (err && /** @type {any} */ (err).name === "AbortError") return false;
+        throw err;
+      }
+      handles.set(handleId, picked);
+      const stored = await getHandle(handleId);
+      await putHandle({
+        id: handleId,
+        kind: "file",
+        handle: picked,
+        name: picked.name,
+        addedAt: stored ? stored.addedAt : Date.now(),
+      });
+      record.file.name = picked.name;
+      await persist({ ...record });
+    } else if (!(await ensurePermission(handle, "readwrite"))) {
+      return false;
+    }
+    needsPermission.delete(handleId);
     await writeToDisk(id);
     await checkExternalChanges();
     return true;
@@ -1597,6 +1654,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     setTitle,
     canRenameFile,
     renameFile,
+    diskPath,
     createFromFile,
     saveAs,
     saveNow,

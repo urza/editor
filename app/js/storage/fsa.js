@@ -1,7 +1,11 @@
 // @ts-check
-// File System Access API, wrapped thinly (architecture.md §2). This module
-// knows nothing about buffers or records: it only turns handles into text and
-// text into files. model/docs.js owns the policy.
+// The disk facade (architecture.md §2, §17). Two backends live behind it: the
+// browser's File System Access API, wrapped thinly, and the desktop shell's
+// native backend (storage/native.js). Only the pickers differ; after a pick
+// both hand back a handle with the same twelve methods, so everything below
+// the pickers is one code path. This module knows nothing about buffers or
+// records: it only turns handles into text and text into files. model/docs.js
+// owns the policy.
 //
 // Two rules hold this layer together:
 //  - Every entry point is read off `window` at call time, never destructured at
@@ -10,15 +14,25 @@
 //    win.
 //  - Nothing is caught here. A denied permission, a deleted file, or a
 //    cancelled picker is a decision for the caller, not a silent failure.
+//    sameEntry() is the one exception, and says why at the catch.
+
+import { isDesktop } from "../model/capabilities.js";
+import { isNativeHandle, pickFile, pickFolder, pickSave } from "./native.js";
 
 /** @typedef {any} FileHandle FileSystemFileHandle; no lib.dom types without a build step. */
 /** @typedef {any} DirHandle FileSystemDirectoryHandle. */
 /** @typedef {{ name: string, kind: 'file'|'directory', handle: any }} DirEntry */
 
+// The three pickers test isDesktop before the browser API, never the other way
+// round: WebView2 on Windows has both, and the shell must take the native path
+// there too (architecture.md §17). It is the one place a backend is chosen; a
+// handle carries its own backend from then on.
+
 /**
  * @returns {Promise<FileHandle>} Rejects with AbortError when the user cancels.
  */
 export async function openFilePicker() {
+  if (isDesktop) return pickFile();
   const handles = await window.showOpenFilePicker({ multiple: false });
   return handles[0];
 }
@@ -27,6 +41,7 @@ export async function openFilePicker() {
  * @returns {Promise<DirHandle>} Rejects with AbortError when the user cancels.
  */
 export async function openDirectoryPicker() {
+  if (isDesktop) return pickFolder();
   // "readwrite" up front: the tree exists to open files for editing, and a
   // second prompt on the first save would be the worse moment to ask.
   return window.showDirectoryPicker({ mode: "readwrite" });
@@ -54,7 +69,27 @@ export async function listDirectory(dirHandle) {
 
 /** @param {string} suggestedName @returns {Promise<FileHandle>} */
 export async function saveFilePicker(suggestedName) {
+  if (isDesktop) return pickSave(suggestedName);
   return window.showSaveFilePicker({ suggestedName });
+}
+
+/**
+ * "Are these two handles the same file or folder?" A Windows shell can hold
+ * both families at once until a reconnect migrates the old records
+ * (architecture.md §17), and a native handle knows nothing about an FSA one,
+ * so a mixed pair is false without a call.
+ * @param {any} a @param {any} b @returns {Promise<boolean>}
+ */
+export async function sameEntry(a, b) {
+  if (!a || !b) return false;
+  if (isNativeHandle(a) !== isNativeHandle(b)) return false;
+  try {
+    return await a.isSameEntry(b);
+  } catch {
+    // The one place this layer swallows: isSameEntry throws for an entry that
+    // has vanished, and "not the same file" is the answer both callers want.
+    return false;
+  }
 }
 
 /** @param {FileHandle} handle @returns {Promise<{content: string, lastModified: number}>} */

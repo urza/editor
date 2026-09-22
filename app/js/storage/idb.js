@@ -99,6 +99,11 @@
  * @property {number} updatedAt
  */
 
+// The only import in this file: a stored native handle comes back as plain
+// data and has to become an adapter again before anyone calls a method on it
+// (architecture.md §17). reviveHandle passes a real FSA handle through.
+import { reviveHandle } from "./native.js";
+
 const DB_NAME = "vrtti";
 const DB_VERSION = 4;
 const STORE = "buffers";
@@ -297,6 +302,11 @@ export async function deleteWorkspace(id) {
 // Handles store (architecture.md §2). A FileSystemFileHandle survives here
 // across restarts; the permission attached to it may not, which is why every
 // disk access re-checks it (storage/fsa.js).
+//
+// A native handle survives as its descriptor, because structured clone keeps
+// data and drops the prototype: reviveHandle() on the way out is what makes it
+// a working handle again (architecture.md §17). This is one of the two revive
+// boundaries; the other is the "handle" channel message in model/folders.js.
 
 /** @param {HandleRecord} record */
 export async function putHandle(record) {
@@ -313,13 +323,21 @@ export async function putHandle(record) {
 /** @param {string} id @returns {Promise<HandleRecord | undefined>} */
 export async function getHandle(id) {
   const db = await openDb();
-  return request(db.transaction(HANDLES, "readonly").objectStore(HANDLES).get(id));
+  const record = await request(
+    db.transaction(HANDLES, "readonly").objectStore(HANDLES).get(id)
+  );
+  if (record) record.handle = reviveHandle(record.handle);
+  return record;
 }
 
 /** @returns {Promise<HandleRecord[]>} */
 export async function getAllHandles() {
   const db = await openDb();
-  return request(db.transaction(HANDLES, "readonly").objectStore(HANDLES).getAll());
+  const records = await request(
+    db.transaction(HANDLES, "readonly").objectStore(HANDLES).getAll()
+  );
+  for (const record of records) record.handle = reviveHandle(record.handle);
+  return records;
 }
 
 /** @param {string} id */

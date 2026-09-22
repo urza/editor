@@ -1382,3 +1382,186 @@ tab. A locked encrypted buffer is skipped with the note. A folder without
 permission shows the reconnect note. A `?ws=` tab sees only its own tabs
 and folders. Under 700px the button opens the view in the drawer and a
 hit closes the drawer. No console errors.
+
+## 17. Native disk backend (agreed 2026-09-22)
+
+Files and folders in the desktop shell go through Rust instead of the
+browser's File System Access API. WebKit on macOS and Linux has no such
+API at all (§15 spike log), and WebView2 on Windows forgets a stored
+handle's permission at every restart, so every folder window opens with a
+reconnect click. The research this unit applies: desktop-wrapper.md
+("Disk files are the real work item"), desktop-wrapper-tauri-vs-wails.md
+§4.4, and desktop-wrapper-goose-patterns.md §3 (the contract), §4 (the
+three file implementations), §6 (config dir, env override, temp plus
+rename), §8 (check the webview label on every command) and §9 (Windows
+path traps).
+
+Units 17.1 and 17.2 built 2026-09-22. The Rust side has ten cargo tests
+(the path table, a symlink out of the root, the atomic write keeping
+content and mode and leaving no temp file, a taken name on rename, the
+roots round trip, a stale root, prune). The page gate ran 19 checks in
+Chromium against a faked shell (pick, tree, open, the debounce reaching
+`disk_write`, clean and dirty external changes, rename surviving a
+reload, no reconnect row after a reload, prune with the live ids, a
+cancelled picker, a file root, search over a native folder, `.age`
+bytes, save-as through `disk_pick_save`, the plain browser build, two
+tabs) plus the search-in-files gate. Two things came out of the review:
+in the shell a reconnect is always a fresh pick, because the reconnect
+row has exactly two causes there (a WebView2 handle from before the
+backend, or a native root whose folder or file moved), and a native
+handle whose command answers `notFound` gets that row, since its
+permission always reads granted. The picker wait uses the plugin's
+callback API with a one-slot channel, not `blocking_*`: the plugin runs
+the dialog through `run_on_main_thread` and drops a refused dispatch
+silently, which would leave a blocking call waiting forever; "no answer"
+is folded into the cancel case instead. 17.3 (the real shell) is next.
+
+### Decisions
+
+- **One backend for all three systems in the shell.** Windows takes the
+  native path too, not `CreateWebFileSystemDirectoryHandle`: one code path
+  to test, real paths on every platform, and no permission clicks anywhere.
+  The browser PWA keeps the File System Access API unchanged.
+- **The page keeps talking to handles.** Every store and UI module calls
+  twelve methods on handle objects (`values`, `getDirectoryHandle`,
+  `getFile` with `text`/`arrayBuffer`/`size`/`lastModified`,
+  `createWritable` with `write`/`close`, `queryPermission`,
+  `requestPermission`, `isSameEntry`, `move`, plus `name` and `kind`), all
+  behind `storage/fsa.js`. The native backend is a class per handle kind
+  with exactly that surface over Tauri IPC, in `storage/native.js`.
+  `folders.js`, `docs.js`, `sidebar.js` and `search.js` do not change
+  their handle code. This was the gate's stub handle layer (§16), made
+  production.
+- **A native handle is plain data with methods on the prototype:**
+  `{ native: true, kind, name, root, rootPath, path }`. IndexedDB and the
+  BroadcastChannel structured-clone it into that descriptor by themselves;
+  the two read boundaries (`idb.js` handle reads, the `handle` channel
+  message in `folders.js`) pass values through one `reviveHandle()` that
+  turns a descriptor back into a live adapter. A real FSA handle passes
+  through untouched.
+- **Roots live on the Rust side.** The page never sends a path it did not
+  get from Rust: a root is a folder or file the user picked, registered
+  under an id in `roots.json` in the app config dir, written with the
+  temp-plus-rename pattern and a pid suffix (goose §6). Every command
+  names a root id and a relative path. Restart needs no click because
+  the grant is the root record itself. The page prunes roots it no
+  longer references once at boot (`disk_prune`), and Rust keeps any root
+  younger than a minute, so a pick in flight in another window survives.
+- **Paths are confined, medium weight** (goose §4: the openat walk is
+  for attacker-picked paths; ours are user-picked). A relative path is
+  validated without touching the disk (segments split on `/`; `.`, `..`,
+  empty, NUL, and a backslash inside a segment are rejected), joined under
+  the root, then the target's parent is canonicalized and must start with
+  the root's canonical path, which catches a symlink pointing out.
+  Canonical is compared to canonical, so Windows `\\?\` prefixes match.
+- **Writes are atomic** (goose §4): a temp file `.<name>.tmp-<pid>-<n>`
+  in the destination directory, write, `sync_all`, rename over the
+  canonical target. An existing file keeps its permissions on Unix. A
+  symlinked target is replaced through its one-hop resolution, so the
+  user's symlink survives.
+- **Errors are data** (goose §3): a command fails with
+  `{ code, message, path }`, codes `unknownRoot`, `outsideRoot`,
+  `notFound`, `permission`, `exists`, `io`. The adapter maps `notFound`
+  to a `NotFoundError` DOMException and `permission` to
+  `NotAllowedError`, because `folders.js` and `search.js` branch on those
+  names today. A cancelled picker throws `AbortError`, which `main.js`
+  reads as "user cancelled".
+- **Every command checks provenance** (goose §8): the webview label is
+  `main` or `ws-*`, on top of the capability's origin rule.
+- **Mixed handles are allowed in the Windows shell.** Records made before
+  this unit hold real WebView2 handles and keep working with the click.
+  Their reconnect row in the shell runs the native picker instead of
+  `requestPermission`, and the picked root replaces the handle under the
+  same record id, so the workspace and the buffers that point at it stay
+  intact. `isSameEntry` across the two families is `false` without a
+  call, through one `sameEntry(a, b)` helper in `fsa.js`.
+- **No file watching.** The mtime poll on focus and every 30 s stays
+  (§2); `getFile()` on a native handle is one stat, so the poll is cheap.
+  Directory trees still refresh on focus through the listing cache.
+- **Test hooks from day one** (goose §6): `VRTTI_CONFIG_DIR` relocates
+  `roots.json`, and `VRTTI_TEST_PICK=<path>` makes every picker return
+  that path without a dialog. Both are read once at startup and are
+  documented as test-only.
+- **The page still imports nothing from Tauri.** `native.js` reads
+  `window.__TAURI__.core.invoke` the way `ui/desktop.js` does. The
+  dialog plugin is used from Rust only, so the capability grants the
+  page nothing but our own `disk_*` commands.
+
+### The contract
+
+Rust commands, all `async`, camelCase payloads by `serde(rename_all)`:
+
+```
+disk_pick_folder()                 -> Root | null
+disk_pick_file()                   -> Root | null
+disk_pick_save(suggestedName)      -> Root | null       (file may not exist yet)
+disk_list(root, path)              -> [{ name, kind }]  (kind: "file" | "directory"; other types skipped)
+disk_stat(root, path)              -> { size, mtime }   (mtime in ms)
+disk_read(root, path)              -> { text }          (UTF-8, lossy like File.text())
+disk_read_bytes(root, path)        -> raw bytes         (tauri::ipc::Response)
+disk_write(root, path, text)       -> { mtime }         (atomic, creates the file)
+disk_rename(root, path, newName)   -> { path, name }    (same directory; `exists` when taken)
+disk_prune(keep: [rootId])         -> dropped count
+
+Root = { id, kind: "file" | "directory", name, path }   (path absolute, for display)
+```
+
+A file root (from `disk_pick_file` or `disk_pick_save`) allows only
+`path: ""` operations on itself. A folder picked twice returns the same
+root id, so `isSameEntry` on two picks is a field comparison.
+
+JS: `storage/native.js` exports `pickFolder()`, `pickFile()`,
+`pickSave(suggestedName)`, `reviveHandle(value)`, `isNativeHandle(value)`,
+`pruneRoots(keepIds)`. The adapters: `NativeDirectoryHandle` (`values()`
+lists through `disk_list` and yields child adapters; `getDirectoryHandle`
+is pure, no IPC, existence is checked at listing time) and
+`NativeFileHandle` (`getFile()` is one `disk_stat` and returns an object
+whose `text()` and `arrayBuffer()` read on demand, so search's 2 MB
+guard still runs before a read; `createWritable()` collects the string
+and commits on `close()` through `disk_write`; `move(newName)` renames
+and updates `name` and `path` in place, and the caller re-puts the handle
+record). `capabilities.js` gains `hasDisk = isDesktop ||
+hasFileSystemAccess`; every gate that today reads `hasFileSystemAccess`
+for "can this device see disk" reads `hasDisk`. `fsa.js` picker wrappers
+branch on `isDesktop` first, because WebView2 has both. A folder heading
+and the "On disk" hover show the real path for a native handle.
+
+### 17.1 Rust (unit 1)
+
+`src-tauri/src/disk.rs`: the roots store (load at setup, `Mutex` in
+managed state, `roots.json` with `{ version: 1, roots: [...] }`), path
+validation and confinement, the atomic write, the ten commands, the
+provenance check, `tauri-plugin-dialog` for the three pickers (Rust API
+only), `fs-err` so every error names its path. `build.rs` lists the
+commands, `capabilities/default.json` allows them. Before the first
+build, grep the vendored plugin for its documented traps (a blocking
+picker on the main thread, the `FilePath` type) and apply them. Cargo
+tests: path validation table, symlink escape in a temp dir, atomic write
+keeps content and permissions and leaves no temp file, rename refuses a
+taken name, roots round-trip through `VRTTI_CONFIG_DIR`.
+
+### 17.2 Page (unit 2)
+
+`storage/native.js`, the two revive boundaries, the `fsa.js` picker
+branch and `sameEntry`, `hasDisk`, the reconnect-to-native migration in
+both stores, the prune call at boot in the shell, the real path in the
+sidebar heading. Gate: Playwright in Chromium with a faked shell
+(`window.vrttiDesktop` plus a mock `__TAURI__.core.invoke` that serves
+the contract from an in-memory tree with mtimes), which also proves the
+Windows precedence since headless Chromium has the browser API too. The
+run: pick a folder, the tree lists, open a file, edit, the debounce
+reaches `disk_write` with the text, an mtime bump on disk reloads a clean
+buffer on focus and forks a dirty one, rename through the row menu,
+search in files over the native folder, close the folder, reload the
+page and the folder is back with no reconnect row, prune runs with the
+right ids, `.age` bytes read through `disk_read_bytes`, a cancelled
+picker logs nothing, and the plain browser suite of §14 stays green with
+the shell absent.
+
+### 17.3 Real shell
+
+Linux under Xvfb through tauri-driver (§15 spike log recipe) with
+`VRTTI_TEST_PICK` and `VRTTI_CONFIG_DIR` set: folder button, tree,
+edit, the text on disk after the debounce, rename, quit and relaunch
+with the folder back and no click. Then the user's Windows run, and
+macOS when a Mac is at hand.

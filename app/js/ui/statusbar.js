@@ -3,7 +3,7 @@
 // (commit + build time), so the user can tell which build the PWA is running.
 
 import { titleOf } from "../model/docs.js";
-import { hasFileSystemAccess } from "../model/capabilities.js";
+import { hasDisk } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
 import { detectedLanguages, events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
@@ -64,7 +64,7 @@ export function mountStatusbar(store, sync) {
   spellEvents.addEventListener("change", renderSpell);
   renderSpell();
 
-  if (hasFileSystemAccess) {
+  if (hasDisk) {
     statusSaveAs.addEventListener("click", () => run("file.saveAs"));
   }
 
@@ -111,14 +111,11 @@ export function mountStatusbar(store, sync) {
     const record = store.activeId ? store.get(store.activeId) : undefined;
     statusTitle.textContent = record ? titleOf(record) : "";
     statusTitle.title =
-      record?.kind === "file" && record.file
-        ? "On disk: " + (record.file.path || record.file.name)
-        : "";
+      record?.kind === "file" && record.file ? "On disk: " + store.diskPath(record) : "";
     // The button offers a file to a buffer that has none. A file-backed buffer
     // is already written by the disk write-behind, so the button would only
     // invite a pointless second copy.
-    statusSaveAs.hidden =
-      !hasFileSystemAccess || !record || record.kind === "file";
+    statusSaveAs.hidden = !hasDisk || !record || record.kind === "file";
   }
 
   store.events.addEventListener("change", renderTitle);

@@ -26,14 +26,25 @@ It exists for three chords a browser reserves: Ctrl+N, Ctrl+S, Ctrl+W
   from the shell side, so it works on any page build. The clipboard write is
   the one Tauri IPC the page origin may call (`capabilities/default.json`).
   Spike tooling; remove it with the devtools feature when done.
+- `src/disk.rs` is the native disk backend (architecture.md §17). The user
+  picks a folder or a file, Rust registers it as a root in `roots.json` in
+  the app config dir, and the page's ten `disk_*` commands name that root id
+  plus a relative path. Paths are confined against the root's canonical
+  path, writes go through a temp file and a rename, and a failure answers
+  `{ code, message, path }` instead of a transport error. Two test hooks,
+  read once at startup: `VRTTI_CONFIG_DIR` relocates `roots.json` (absolute
+  paths only) and `VRTTI_TEST_PICK` makes every picker return that path with
+  no dialog. `cargo test` covers the path rules, the symlink escape, the
+  atomic write and the roots round trip, with no Tauri runtime.
 - Window creation must never run on the main thread's event handlers or in
   a synchronous command: on Windows that deadlocks (tauri documents it on
   the window builders, and the first 14.4 build froze that way). The two
   page commands are async; other opens go through `open_or_focus`, which
   spawns on the async runtime.
-- Three plugins: single instance (a second launch focuses main and exits),
+- Four plugins: single instance (a second launch focuses main and exits),
   window state (bounds per label, saved on every close and exit request),
-  clipboard (the spike report). The ready handshake queues a forwarded
+  clipboard (the spike report), dialog (the three file pickers, called from
+  Rust only). The ready handshake queues a forwarded
   command per window until the page calls `page_ready`, with an eight
   second fallback for an older page that never does.
 - The folder is named `src-tauri` because the Tauri CLI looks for that name.

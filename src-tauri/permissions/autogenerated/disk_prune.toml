@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disk-prune"
+description = "Enables the disk_prune command without any pre-configured scope."
+commands.allow = ["disk_prune"]
+
+[[permission]]
+identifier = "deny-disk-prune"
+description = "Denies the disk_prune command without any pre-configured scope."
+commands.deny = ["disk_prune"]

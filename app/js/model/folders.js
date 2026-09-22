@@ -21,7 +21,10 @@ import {
   listDirectory,
   openDirectoryPicker,
   permissionState,
+  sameEntry,
 } from "../storage/fsa.js";
+import { isNativeHandle, pickFolder, reviveHandle } from "../storage/native.js";
+import { isDesktop } from "./capabilities.js";
 import { on, post } from "./channel.js";
 
 /** @typedef {import("../storage/idb.js").HandleRecord} FolderRecord */
@@ -108,10 +111,19 @@ export function createFolderStore({ workspaces }) {
    * permission gap: the marker's click can grant a permission and nothing else.
    * @param {FolderRecord} folder
    */
-  async function refreshPermissionFlag(folder) {
-    const granted =
-      (await permissionState(folder.handle, "readwrite").catch(() => "granted")) ===
-      "granted";
+  /**
+   * @param {FolderRecord} folder
+   * @param {any} [err] The failure that prompted the check, when there was one.
+   */
+  async function refreshPermissionFlag(folder, err) {
+    // A native handle is always granted (the root record is the grant). Its
+    // one failure is a root whose folder moved or vanished, which Rust answers
+    // with notFound; that gets the same reconnect marker, and the click
+    // re-picks the folder (architecture.md §17).
+    const granted = isNativeHandle(folder.handle)
+      ? !(err && err.name === "NotFoundError")
+      : (await permissionState(folder.handle, "readwrite").catch(() => "granted")) ===
+        "granted";
     if (granted === !needsPermission.has(folder.id)) return; // already right
     if (granted) needsPermission.delete(folder.id);
     else needsPermission.add(folder.id);
@@ -160,7 +172,7 @@ export function createFolderStore({ workspaces }) {
       // The directory is gone, or the grant lapsed. Drop the level, so the
       // tree shows the parent without children instead of stale rows.
       listings.delete(cacheKey);
-      await refreshPermissionFlag(folder);
+      await refreshPermissionFlag(folder, err);
       if (before) emit("listing", { folderId });
       return [];
     } finally {
@@ -193,7 +205,7 @@ export function createFolderStore({ workspaces }) {
     const handle = await openDirectoryPicker();
     for (const folder of folders.values()) {
       // isSameEntry, never a name match: two paths can both end in "notes".
-      if (await folder.handle.isSameEntry(handle)) {
+      if (await sameEntry(folder.handle, handle)) {
         // Known handle, maybe from another workspace: this one lists it too.
         await workspaces.addFolder(folder.id);
         emit("change");
@@ -262,6 +274,9 @@ export function createFolderStore({ workspaces }) {
     if (message.kind === "added") {
       /** @type {FolderRecord} */
       const record = message.record;
+      // The clone that crossed the channel is a descriptor again (§17); this
+      // is the second revive boundary, next to the one in storage/idb.js.
+      record.handle = reviveHandle(record.handle);
       folders.set(record.id, record);
       // A cloned handle carries the grant of its origin window, but check:
       // "prompt" here would list nothing and show the reconnect marker.
@@ -289,7 +304,26 @@ export function createFolderStore({ workspaces }) {
   async function reconnect(id) {
     const folder = folders.get(id);
     if (!folder) return false;
-    if (!(await ensurePermission(folder.handle, "readwrite"))) return false;
+    if (isDesktop) {
+      // In the shell a reconnect is always a fresh pick. Either the record is
+      // from before the native backend and holds a WebView2 handle, which
+      // cannot tell Rust which directory it points at, or it is a native root
+      // whose folder moved or vanished (architecture.md §17, "Mixed handles").
+      // The picker runs from this click because a click is the only place a
+      // picker may open. Same record id, so the workspace and its buffers
+      // stay attached.
+      try {
+        const handle = await pickFolder();
+        folder.handle = handle;
+        folder.name = handle.name;
+        await putHandle(folder);
+      } catch (err) {
+        if (err && /** @type {any} */ (err).name === "AbortError") return false;
+        throw err;
+      }
+    } else if (!(await ensurePermission(folder.handle, "readwrite"))) {
+      return false;
+    }
     needsPermission.delete(id);
     emit("change");
     await refresh(id);

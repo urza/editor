@@ -3,11 +3,18 @@
 // UI, start. All behavior lives in the modules (architecture.md §6).
 // Frameworkless on purpose.
 
-import { deleteBuffer, getSetting, openDb, putSetting } from "./storage/idb.js";
+import {
+  deleteBuffer,
+  getAllHandles,
+  getSetting,
+  openDb,
+  putSetting,
+} from "./storage/idb.js";
 import { openFilePicker } from "./storage/fsa.js";
+import { isNativeHandle, pruneRoots } from "./storage/native.js";
 import {
   checkForUpdate,
-  hasFileSystemAccess,
+  hasDisk,
   isDesktop,
   requestPersistence,
 } from "./model/capabilities.js";
@@ -107,11 +114,24 @@ async function start() {
   // peers follow the record itself and not the one command that writes it.
   store.events.addEventListener("system", refreshPeers);
 
-  // Built on every platform: without the File System Access API no directory
-  // handle can be stored, so the store loads nothing and the sidebar draws no
-  // section. Only its entry points are gated, below.
+  // Built on every platform: without a disk backend no directory handle can be
+  // stored, so the store loads nothing and the sidebar draws no section. Only
+  // its entry points are gated, below.
   const folders = createFolderStore({ workspaces });
   await folders.load();
+
+  // A root in Rust is a standing grant, and a folder this page closed (or a
+  // file it dropped) would leave one behind forever. Once at boot, after both
+  // stores have read the handle store, the page names the roots it still
+  // references and Rust drops the rest (architecture.md §17).
+  if (isDesktop) {
+    getAllHandles()
+      .then((records) => {
+        const roots = records.map((r) => r.handle).filter(isNativeHandle);
+        return pruneRoots([...new Set(roots.map((handle) => handle.root))]);
+      })
+      .catch((err) => console.log("[vrtti] root prune failed", err));
+  }
 
   register({
     id: "buffer.new",
@@ -141,7 +161,7 @@ async function start() {
       const target = id ?? store.activeId;
       if (!target) return;
       const record = store.get(target);
-      if (record?.kind === "file" || !hasFileSystemAccess) return store.saveNow(target);
+      if (record?.kind === "file" || !hasDisk) return store.saveNow(target);
       return run("file.saveAs", target);
     },
   });
@@ -481,9 +501,10 @@ async function start() {
     },
   });
 
-  // Desktop disk files (architecture.md §2). Registered only where the API
-  // exists, so a Firefox or iOS build has no command that could ever run.
-  if (hasFileSystemAccess) {
+  // Desktop disk files (architecture.md §2, §17). Registered only where some
+  // backend can reach disk, so a Firefox or iOS build has no command that
+  // could ever run.
+  if (hasDisk) {
     register({
       id: "file.open",
       title: "Open file…",

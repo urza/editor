@@ -12,7 +12,7 @@
 // a file line is arbitrary text and a <mark> is the only markup a row gets.
 
 import { run } from "../commands/registry.js";
-import { hasFileSystemAccess } from "../model/capabilities.js";
+import { hasDisk } from "../model/capabilities.js";
 import { titleOf } from "../model/docs.js";
 
 /**
@@ -330,9 +330,10 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
   /** @param {Run} run */
   async function scanFolders(run) {
-    // Without the API there is no directory handle to walk, and folder.openFile
-    // is not registered, so a hit row could dispatch into nothing.
-    if (!hasFileSystemAccess) return;
+    // Without a disk backend there is no directory handle to walk, and
+    // folder.openFile is not registered, so a hit row could dispatch into
+    // nothing.
+    if (!hasDisk) return;
     for (const folder of folders.openFolders()) {
       if (folders.needsReconnect(folder.id)) {
         run.notes.push({

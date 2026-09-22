@@ -12,6 +12,12 @@ export const hasFileSystemAccess = "showDirectoryPicker" in window;
 // build runs in a browser and in the shell.
 export const isDesktop = Boolean(/** @type {any} */ (window).vrttiDesktop);
 
+// "Can this device open files and folders at all?" Every gate about disk asks
+// this one, because the shell reaches disk through Rust and needs no browser
+// API (architecture.md §17). hasFileSystemAccess stays the narrower fact, and
+// only storage/fsa.js still asks it: which backend a picker uses.
+export const hasDisk = isDesktop || hasFileSystemAccess;
+
 // Dedicated module workers. Unlock runs scrypt in one, because scrypt is
 // synchronous and would freeze the UI for ~650 ms on the main thread
 // (architecture.md §5). js/crypto/unlock.js still falls back to the main thread

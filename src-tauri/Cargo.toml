@@ -24,6 +24,20 @@ tauri = { version = "2.11.6", features = ["devtools"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
+# The three file pickers of the native disk backend (architecture.md §17).
+# Used from Rust only: the page never gets a dialog permission, so a page
+# script cannot open a picker the user did not ask for.
+tauri-plugin-dialog = "2"
+# std::fs errors name no path. fs-err wraps every call and puts the path in
+# the message, which is what makes an `io` DiskError readable in a log
+# (desktop-wrapper-goose-patterns.md §4).
+fs-err = "3"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.dev.package."*"]
 # Dependencies without debug info: a smaller target/ and faster links

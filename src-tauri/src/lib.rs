@@ -6,6 +6,7 @@
 //! has the label "main" and the plain URL, the others "ws-<id>" and `?ws=<id>`.
 
 mod debug;
+mod disk;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -70,12 +71,26 @@ pub fn run() {
         // the trap goose fell into with a hand-written keeper).
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // The three file pickers of the native disk backend (architecture.md
+        // §17). Only src/disk.rs calls it: the capability grants the page no
+        // dialog permission, so a page script cannot open a picker by itself.
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(Shell::default()))
         .invoke_handler(tauri::generate_handler![
             open_workspace,
             focus_workspace,
             close_workspace,
-            page_ready
+            page_ready,
+            disk::disk_pick_folder,
+            disk::disk_pick_file,
+            disk::disk_pick_save,
+            disk::disk_list,
+            disk::disk_stat,
+            disk::disk_read,
+            disk::disk_read_bytes,
+            disk::disk_write,
+            disk::disk_rename,
+            disk::disk_prune
         ])
         .menu(build_menu)
         .on_menu_event(|app, event| {
@@ -111,6 +126,9 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            // The roots load before the first window, so a page that asks for
+            // its folder at boot finds the record already there.
+            app.manage(disk::Disk::load(app.handle()));
             open_workspace_window(app.handle(), MAIN)?;
             Ok(())
         })

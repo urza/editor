@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The page origin (GitHub Pages) gets the core defaults, clipboard write (Debug > Copy spike report), and the window commands of architecture.md \u00a714.4 (open, focus, close, ready).",
+  "description": "The page origin (GitHub Pages) gets the core defaults, clipboard write (Debug > Copy spike report), the window commands of architecture.md §14.4 (open, focus, close, ready), and the native disk backend of §17. The dialog plugin is deliberately absent: only Rust opens a picker, so a page script cannot.",
   "remote": {
     "urls": [
       "https://urza.github.io/*"
@@ -18,6 +18,16 @@
     "allow-focus-workspace",
     "allow-close-workspace",
     "allow-page-ready",
-    "core:window:allow-set-title"
+    "core:window:allow-set-title",
+    "allow-disk-pick-folder",
+    "allow-disk-pick-file",
+    "allow-disk-pick-save",
+    "allow-disk-list",
+    "allow-disk-stat",
+    "allow-disk-read",
+    "allow-disk-read-bytes",
+    "allow-disk-write",
+    "allow-disk-rename",
+    "allow-disk-prune"
   ]
 }
