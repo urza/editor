@@ -15,11 +15,18 @@ export function mountShortcuts() {
   // event.code, not event.key: Alt+N on a non-US layout can produce a
   // different character, but the physical key code stays KeyN.
   window.addEventListener("keydown", (event) => {
-    // Ctrl/Meta chords stay with the browser; Alt is our modifier space
-    // (Sublime's Ctrl+N/Ctrl+W are not interceptable in a browser).
-    if (event.ctrlKey || event.metaKey) return;
+    // Alt is our modifier space, because the browser owns most of the Ctrl set
+    // (Sublime's Ctrl+N/Ctrl+W are not interceptable in a browser). A command
+    // may still declare a "Ctrl+" chord for one the browser leaves alone, and
+    // only a declared one is taken: the lookup below runs first and every
+    // other Ctrl keydown falls through untouched, as it always did.
+    // Ctrl+Shift+F (search.inFiles) is unbound in Chrome, Edge and Firefox.
+    // Meta stands in for Ctrl, which is where a Mac puts the same chord.
     const chord =
-      (event.altKey ? "Alt+" : "") + (event.shiftKey ? "Shift+" : "") + event.code;
+      (event.ctrlKey || event.metaKey ? "Ctrl+" : "") +
+      (event.altKey ? "Alt+" : "") +
+      (event.shiftKey ? "Shift+" : "") +
+      event.code;
     const id = byChord.get(chord);
     if (!id) return;
     event.preventDefault();

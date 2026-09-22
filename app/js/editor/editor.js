@@ -250,11 +250,22 @@ export function createLockedState(text = LOCKED_TEXT) {
   });
 }
 
-// Editor controller. One view, many states: buffer switching is
-// view.setState(state), which keeps per-buffer undo history alive without a
-// second DOM tree. States are built lazily on first activation.
-// The controller only listens to store events; its one write back into the
-// store is updateContent, the editor's legitimate output.
+/**
+ * A place in a document, as search in files hands it over (architecture.md
+ * §16). Snapshot coordinates: the text may have moved since the search ran.
+ * @typedef {{id: string, line: number, col: number, len: number}} Reveal
+ */
+
+/**
+ * Editor controller. One view, many states: buffer switching is
+ * view.setState(state), which keeps per-buffer undo history alive without a
+ * second DOM tree. States are built lazily on first activation.
+ * The controller only listens to store events; its one write back into the
+ * store is updateContent, the editor's legitimate output.
+ *
+ * @returns {{view: EditorView, states: Map<string, EditorState>,
+ *            reveal: (id: string, at: {line: number, col: number, len: number}) => void}}
+ */
 export function mountEditor(host, store) {
   const view = new EditorView({ parent: host });
   const states = new Map(); // id -> EditorState
@@ -291,6 +302,12 @@ export function mountEditor(host, store) {
   // One unlock prompt per activation. Without it a cancelled prompt could be
   // re-opened by the next event, which is a dialog loop.
   let asking = false;
+  // The reveal waiting for a buffer's real state, or null (architecture.md
+  // §16). An encrypted buffer goes up as the locked placeholder first and its
+  // text arrives after the decode, so a reveal asked for now would select
+  // inside the word "Locked." instead of the document.
+  /** @type {Reveal | null} */
+  let pendingReveal = null;
 
   /** @param {string} id @param {string} text */
   function realState(id, text) {
@@ -367,6 +384,8 @@ export function mountEditor(host, store) {
         placeholderId = null;
         view.setState(state);
         view.focus();
+        // The document is finally up, so a search hit can be selected in it.
+        runPendingReveal(id);
       },
       (err) => {
         if (decodingId === id) decodingId = null;
@@ -390,6 +409,53 @@ export function mountEditor(host, store) {
     return createLockedState();
   }
 
+  /**
+   * Select the match and put it in the middle of the viewport.
+   * @param {Reveal} at
+   */
+  function selectMatch(at) {
+    const doc = view.state.doc;
+    // Results are a snapshot (architecture.md §16): the document may be
+    // shorter now than when it was searched, so the line is clamped instead
+    // of letting doc.line() throw on a row the user can still click.
+    const line = doc.line(Math.min(Math.max(at.line, 1), doc.lines));
+    const anchor = line.from + Math.min(at.col, line.length);
+    const head = Math.min(anchor + at.len, line.to);
+    view.dispatch({
+      selection: { anchor, head },
+      effects: EditorView.scrollIntoView(anchor, { y: "center" }),
+    });
+    view.focus();
+  }
+
+  /**
+   * Show a match. Waits when the view does not hold this buffer's text yet.
+   * @param {string} id @param {{line: number, col: number, len: number}} at
+   */
+  function reveal(id, at) {
+    if (id === store.activeId && placeholderId !== id) {
+      pendingReveal = null;
+      selectMatch({ id, ...at });
+      return;
+    }
+    // One pending reveal at a time: a second hit clicked while the first
+    // document is still decoding replaces it, it does not queue behind it.
+    pendingReveal = { id, ...at };
+  }
+
+  /** @param {string} id The state that just went on screen. */
+  function runPendingReveal(id) {
+    if (!pendingReveal) return;
+    // Still the placeholder of the very buffer that is waited for: the decode
+    // will call again with the document.
+    if (pendingReveal.id === id && placeholderId === id) return;
+    const at = pendingReveal;
+    pendingReveal = null;
+    // A reveal for a buffer the user has switched away from is dropped, never
+    // applied to whatever is on screen now.
+    if (at.id === id) selectMatch(at);
+  }
+
   store.events.addEventListener("active", (event) => {
     const { id, previousId } = /** @type {CustomEvent} */ (event).detail;
     if (previousId === id) {
@@ -404,6 +470,7 @@ export function mountEditor(host, store) {
     if (previousId && previousId !== placeholderId) states.set(previousId, view.state);
     view.setState(stateFor(id));
     view.focus();
+    runPendingReveal(id);
   });
 
   // The keyring locked (architecture.md §5). Every decoded state goes, which
@@ -475,5 +542,5 @@ export function mountEditor(host, store) {
     else states.set(id, transaction.state);
   });
 
-  return { view, states };
+  return { view, states, reveal };
 }

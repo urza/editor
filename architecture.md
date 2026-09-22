@@ -952,7 +952,7 @@ folder no other workspace lists loses its handle, so folder windows can
 come and go without piling up handles. Search in files, below, is the one
 piece of that workflow still missing.
 
-### Search in files (later, separate feature)
+### Search in files (planned in §16)
 
 Scope: the workspace tabs plus its folders. On Chromium the folder files
 are readable through the stored FSA handles. On macOS and Linux it waits
@@ -1266,3 +1266,119 @@ Spike log:
 
 After the spike: workspaces (§14) as the next unit, then the disk backend
 (desktop-wrapper-goose-patterns.md §4).
+
+## 16. Search in files (agreed 2026-09-22)
+
+The one piece of the folder workflow (§14, "The workflow this serves")
+still missing. Sublime's Ctrl+Shift+F, reduced to what a notes and
+documentation tool needs: plain text, one workspace, results in the
+sidebar, a click lands on the line.
+
+Shipped 2026-09-22. The gate ran 17 checks on Chromium with the stub handle
+layer (chord, Escape, grouping and counts over tabs and a seeded tree, the
+skips, the reconnect note, the case toggle, tab and folder hits with the
+selection set, the `?ws=` scope, the 390px drawer, the 1000-hit cap, a
+cancelled scan) plus 10 harness self-checks. Three rules came out of the
+review: `open()` runs a new `sidebar.show` command first, because a collapsed
+sidebar or a closed drawer is inert and focus() into it does nothing; a tab
+hit goes through `buffer.reopen`, never `buffer.activate`, because the rows
+are a snapshot and the tab may be closed by the time it is clicked; a file
+that fails to read (deleted since the listing) is skipped alone, not with its
+whole folder.
+
+### Rules
+
+- **Scope is the workspace**: its tabs, then every file under its folders,
+  in that order. Another workspace's tabs and folders are invisible, which
+  §14 promised when folders became workspace property.
+- **Plain text, case-insensitive by default**, one toggle for case. No
+  regular expressions and no replace in this unit; both are cheap to add
+  later and expensive to get wrong now.
+- **Enter runs the search**, typing does not. The buffers are in memory,
+  but the folders are disk reads through the File System Access API, and
+  a live search would scan the tree on every keystroke. A new Enter
+  cancels the running scan.
+- **Locked documents stay out** (§5: search and spellcheck only see
+  unlocked docs). An encrypted buffer is searched only while the store is
+  unlocked. A LockedError on the way is the courier case: skip the
+  document silently, never prompt.
+- **A file that is an open tab is searched as the tab**, never twice: the
+  tab holds the unsaved text, the disk holds the old one. The match key is
+  the `file.path` string the sidebar builds, `<folder name>/<path>`.
+- **Folder files are read on demand and filtered by content, not by
+  name**: skip dot-directories (`.git`, `.obsidian`), skip `*.age` by name
+  (§5, never attempt a decode), skip a file over 2 MB by `file.size`
+  before reading, skip a file with a NUL byte in its first kilobyte (a
+  binary). An extension list would be wrong for someone's notes; the NUL
+  test is what grep does.
+- **The folder listing cache is the truth**: `folders.entries()` without
+  `force`, so search sees the tree the sidebar shows and never rebuilds
+  it. A folder that needs the reconnect click lists nothing; the results
+  say so per folder and offer the click. They never report zero hits for
+  it.
+- **Results are a snapshot.** Edits after the search do not move the rows;
+  a stale line number lands nearby. The list is capped at 1000 hits and
+  the summary says when the cap cut it.
+- **Open at line goes through the commands** (`buffer.activate`,
+  `folder.openFile`), never the store, so the one-workspace rule of §14
+  holds: a hit whose buffer another window owns focuses that window.
+
+### Where it lives
+
+- The sidebar switches to a search view; the lists come back on Escape or
+  the close button. The sidebar is the app's list column and is resizable,
+  and under 700px it is the drawer, so a phone gets the same view and the
+  drawer closes when a hit opens (`sidebar.autoclose`), as the rows do
+  today.
+- `ui/search.js`, `mountSearch({ store, folders, workspaces, editor })`
+  returns `{ open, close, isOpen }`. It owns `#search-view` inside
+  `#sidebar-scroll` and toggles the class `searching` on `#sidebar`;
+  `app.css` hides the list sections under that class. `ui/sidebar.js`
+  does not know the view exists.
+- Command `search.inFiles`, chord `Ctrl+Shift+KeyF`. Open is idempotent:
+  open and focus the field, never toggle. In the shell the chord can
+  arrive twice, as a menu event on Linux and macOS and as a keydown on
+  Windows (§15), and a toggle would open and close.
+- `ui/shortcuts.js` learns `Ctrl+` chords. Today it returns on every
+  Ctrl/Meta keydown, because the browser owns most of them. A chord
+  declared with `Ctrl+` is matched; every other Ctrl chord still passes
+  through. Ctrl+Shift+F is unbound in Chrome, Edge and Firefox. Meta
+  stands in for Ctrl on macOS.
+- The shell gets "Find in Files…" on `CmdOrCtrl+Shift+F`: one tuple in
+  the `CHORDS` table of `src-tauri/src/lib.rs`, forwarded like the rest.
+  The bridge's keydown fallback in `ui/desktop.js` stays out of it. It
+  ignores codes outside its tables, and the page's own chord does the
+  work on Windows.
+- A "search" button in `#open-actions`, visible everywhere, for touch.
+- The editor grows `reveal(id, { line, col, len })` on the controller
+  that `mountEditor` returns; main.js finally keeps that return value. It
+  selects the match and scrolls it to the centre once the view holds the
+  state of that buffer. An encrypted buffer's state arrives after the
+  decode, so the reveal waits for it instead of selecting inside the
+  locked placeholder.
+
+### View
+
+Query field, an "Aa" toggle (`aria-pressed`), a Go button for touch, a
+status line, then the list: one heading per file (the buffer title or the
+folder path), one row per matching line with the line number and the
+trimmed line, the first match wrapped in `<mark>`. Groups append as each
+file finishes, so a slow folder shows its first hits early. The status
+line ends with "N hits in M files", plus "K locked documents skipped" and
+one "needs reconnect" line per such folder. Escape in the field closes
+the view and returns focus to the editor.
+
+### Gate
+
+Playwright on Chromium with the stand-in handle layer (§14.1 gate notes).
+The chord opens the view with focus in the field; Escape closes it and
+the editor has focus. Two buffers with hits group and count correctly;
+the case toggle changes the count. A hit click activates the buffer and
+the editor's active line is the hit. A seeded folder tree with a nested
+directory, a dot-directory, an `.age` file, a NUL-byte file and a 3 MB
+file yields only the text hits, with folder paths; a click opens the file
+as a tab at the line; a file already open as a tab is listed once, as the
+tab. A locked encrypted buffer is skipped with the note. A folder without
+permission shows the reconnect note. A `?ws=` tab sees only its own tabs
+and folders. Under 700px the button opens the view in the drawer and a
+hit closes the drawer. No console errors.

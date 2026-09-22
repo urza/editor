@@ -84,10 +84,31 @@
            padding belong on this div, not on #sidebar, or the pinned buttons
            would scroll away with the lists. -->
       <div id="sidebar-scroll">
-        <!-- Disk entry points. Hidden in the markup and unhidden by ui/sidebar.js
-             only where the File System Access API exists: Firefox and phones must
-             never see a button that cannot work. -->
+        <!-- Search in files (architecture.md §16), filled by ui/search.js. First
+             in the scroller, so the results replace the lists in place; the
+             class `searching` on #sidebar hides everything below while it is
+             open. Hidden here, because the sidebar opens on the lists. -->
+        <section id="search-view" hidden aria-label="Search in files">
+          <div class="search-head">
+            <h2 class="sidebar-heading">Search</h2>
+            <button id="search-close" type="button" title="Close search (Esc)">×</button>
+          </div>
+          <!-- A form, so Enter in the field and the Go button are one path
+               (architecture.md §16: typing does not search, Enter does). -->
+          <form id="search-form" class="search-form">
+            <input id="search-query" type="text" placeholder="Find in files" autocomplete="off" spellcheck="false">
+            <button id="search-case" type="button" title="Match case" aria-pressed="false">Aa</button>
+            <button id="search-go" type="submit" title="Search (Enter)">Go</button>
+          </form>
+          <div id="search-status" class="search-status" aria-live="polite"></div>
+          <ul id="search-results" class="search-results"></ul>
+        </section>
+        <!-- Disk entry points. The two disk buttons are hidden in the markup and
+             unhidden by ui/sidebar.js only where the File System Access API
+             exists: Firefox and phones must never see a button that cannot work.
+             The row itself always shows; search works without the API. -->
         <div id="open-actions">
+          <button id="search-open" type="button" title="Find in files (Ctrl+Shift+F)">search</button>
           <button id="open-file" type="button" title="Open a file from disk" hidden>file</button>
           <button id="open-folder" type="button" title="Open a folder from disk" hidden>folder</button>
           <button id="new-window" type="button" title="New window (Alt+Shift+N)">window</button>

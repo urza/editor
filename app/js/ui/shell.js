@@ -74,6 +74,14 @@ export function mountShell() {
     keys: "Alt+KeyB",
     run: () => toggle(),
   });
+  // Search in files lives inside the sidebar (ui/search.js), so its chord has
+  // to bring a collapsed sidebar or a closed drawer back before it can focus
+  // the field: a hidden sidebar is inert, and focus() on it does nothing.
+  register({
+    id: "sidebar.show",
+    title: "Show sidebar",
+    run: () => set(true),
+  });
   register({
     id: "sidebar.autoclose",
     title: "Close the sidebar drawer",

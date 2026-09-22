@@ -28,11 +28,12 @@ const MAIN: &str = "main";
 /// (app/js/commands/registry.js). The menu handler forwards them verbatim and
 /// never knows what a command does, so a new chord is one line here and one
 /// command on the page side. `CmdOrCtrl` gives Cmd on macOS and Ctrl elsewhere.
-const CHORDS: [(&str, &str, &str); 4] = [
+const CHORDS: [(&str, &str, &str); 5] = [
     ("buffer.new", "New", "CmdOrCtrl+N"),
     ("workspace.new", "New Window", "CmdOrCtrl+Shift+N"),
     ("buffer.save", "Save", "CmdOrCtrl+S"),
     ("buffer.close", "Close", "CmdOrCtrl+W"),
+    ("search.inFiles", "Find in Files…", "CmdOrCtrl+Shift+F"),
 ];
 
 /// Shell-side menu item: closes the focused window natively, which the page

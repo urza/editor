@@ -284,9 +284,9 @@ body {
   margin: 0 8px 8px;
 }
 
-/* The hidden attribute would lose to the display:flex above, and the row is
-   hidden exactly where the File System Access API is missing. Keep both rules
-   together. */
+/* The hidden attribute would lose to the display:flex above. The row itself
+   always shows (its search and window buttons work everywhere); only the two
+   disk buttons inside it hide where the File System Access API is missing. */
 #open-actions[hidden] { display: none; }
 
 #open-actions button {
@@ -445,6 +445,180 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Search in files (architecture.md §16, ui/search.js). The view is the first
+   block of the scroller; the class below hides the lists while it is open, so
+   the results take the whole column instead of sitting on top of it. */
+#sidebar.searching #sidebar-scroll > .sidebar-heading,
+#sidebar.searching #open-actions,
+#sidebar.searching #open-list,
+#sidebar.searching #folder-sections,
+#sidebar.searching #recent-list {
+  display: none;
+}
+
+.search-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The heading brings the margins of every other sidebar heading with it. */
+.search-head .sidebar-heading { flex: 1; }
+
+#search-close {
+  flex: 0 0 auto;
+  margin-right: 8px;
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-icon-lg);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+#search-close:hover { opacity: 1; }
+
+.search-form {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 6px;
+}
+
+#search-query {
+  flex: 1;
+  /* Without it the field refuses to shrink and pushes the two buttons out of
+     a 320px drawer. */
+  min-width: 0;
+  height: calc(22px * var(--ui-scale));
+  padding: 0 6px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: var(--ui-sm);
+}
+
+/* The same quiet look as the #open-actions row above: both are secondary
+   controls in the same column. */
+#search-case,
+#search-go {
+  flex: 0 0 auto;
+  height: calc(22px * var(--ui-scale));
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+#search-case:hover,
+#search-go:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+/* The pressed state is the whole feedback for case sensitivity, so it uses the
+   caret orange rather than another shade of grey. */
+#search-case[aria-pressed="true"] {
+  background: var(--st-sidebar-selected);
+  color: var(--st-caret);
+  opacity: 1;
+}
+
+.search-status {
+  margin: 0 10px 6px;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  /* A folder name has no spaces to break at, and the drawer is 320px wide. */
+  overflow-wrap: anywhere;
+}
+
+.search-note { margin-top: 3px; }
+
+.search-reconnect {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* One heading per file with hits: a sidebar heading, smaller, and cut with an
+   ellipsis because a folder path is as long as the tree is deep. No
+   text-transform though, unlike .sidebar-heading: a path is data, and upper
+   casing it would misspell one on a case-sensitive file system. */
+.search-file {
+  margin: 8px 10px 2px;
+  font-size: var(--ui-xs);
+  letter-spacing: 0.04em;
+  color: var(--st-sidebar-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* As dense as a tree row: a search can list a thousand of them. */
+.search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: var(--ui-md);
+  color: var(--st-text-fg);
+}
+
+.search-hit:hover { background: #2A2F34; }
+.search-hit:focus-visible {
+  background: var(--st-sidebar-selected);
+  outline: none;
+}
+
+/* A fixed slot, so the line texts line up however wide the numbers get. */
+.hit-line {
+  flex: 0 0 calc(26px * var(--ui-scale));
+  text-align: right;
+  font-size: var(--ui-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--st-sidebar-label);
+}
+
+.hit-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The editor's own search-match colors (FIND_HIGHLIGHT in js/editor/editor.js).
+   Mariana has no token for them in :root, and a hit must look the same in the
+   sidebar as it does once the document opens. */
+.search-results mark {
+  background: #FAC761;
+  color: #333333;
+  border-radius: 2px;
 }
 
 /* Rename box, in place of .buffer-title while a rename runs (ui/sidebar.js). */

@@ -28,6 +28,7 @@ import { mountEditor } from "./editor/editor.js";
 import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import { askPassphrase, askText, choose, showBusy, showSecret } from "./ui/dialog.js";
+import { mountSearch } from "./ui/search.js";
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
@@ -557,7 +558,9 @@ async function start() {
   }
 
   const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
-  mountEditor(host, store);
+  // Kept, unlike before: search in files reveals a hit through this controller
+  // (architecture.md §16).
+  const editor = mountEditor(host, store);
 
   // Mounted before its command, because the command dispatches into the
   // controller the mount returns. The sidebar button below dispatches the id.
@@ -566,6 +569,17 @@ async function start() {
     id: "settings.toggle",
     title: "Settings",
     run: () => settings.toggle(),
+  });
+
+  const search = mountSearch({ store, folders, workspaces, editor });
+  register({
+    id: "search.inFiles",
+    title: "Find in files…",
+    // The one Ctrl chord the page takes (ui/shortcuts.js). In the shell it can
+    // arrive twice, as a menu event and as a keydown, so open() is idempotent
+    // and never a toggle (architecture.md §16).
+    keys: "Ctrl+Shift+KeyF",
+    run: () => search.open(),
   });
 
   // Before the sidebar: its rows dispatch sidebar.autoclose, and before
