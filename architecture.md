@@ -384,7 +384,11 @@ knows real paths and will replace these. The window title is
 on the native window through the core window API, so the taskbar button
 says what is on screen. The icon was redrawn the same day: the four lines
 and the caret on a rounded square with a gradient, one SVG source in
-`app/icons/icon.svg` for the PWA and the desktop icon set.
+`app/icons/icon.svg` for the PWA and the desktop icon set. On 2026-09-23
+the user rejected that drawing and picked the caret alone from nine
+ideas; the four candidates kept (caret, whirl, whirl on orange, loop)
+live in `design/icons/` and `design/icons/build.sh <name>` regenerates
+every icon file from one of them.
 
 ### Sidebar collapse (agreed 2026-09-02, shipped)
 
