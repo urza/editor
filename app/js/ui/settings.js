@@ -290,7 +290,7 @@ const SECTIONS = [
         type: "action",
         key: "crypto-setup",
         label: "Set up encryption",
-        hint: "Generates a device key and a recovery key. The recovery key is shown once.",
+        hint: "Generates a device key and a recovery key. The recovery key is shown once. On a second device, set the sync server first, so it joins the keyring your other devices use.",
         button: "set up",
         visible: () => !keyring?.isSetUp,
         act: () => run("crypto.setup"),

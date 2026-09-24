@@ -242,7 +242,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // The keyring resolves "all my devices" against this record, so whoever
     // holds the keyring has to re-read it whenever it is written, here or by a
     // pull. One event for both paths (architecture.md §13.3).
-    if (record.kind === "keyring") emit("system", { id: record.id });
+    if (record.kind === "keyring") {
+      emit("system", { id: record.id });
+      // After the event: main.js refreshes the peers in its listener, and
+      // the check below reads them.
+      void reencryptStale();
+    }
     emit("change");
     return record;
   }
@@ -676,9 +681,66 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   keyring.addEventListener("change", () => {
     if (keyringUnlocked === keyring.isUnlocked) return;
     keyringUnlocked = keyring.isUnlocked;
-    if (keyringUnlocked) emit("unlock");
-    else lockAll();
+    if (keyringUnlocked) {
+      emit("unlock");
+      // A keyring change that arrived while locked could not re-wrap
+      // anything; now it can.
+      void reencryptStale();
+    } else lockAll();
   });
+
+  /**
+   * Was this document wrapped for fewer recipients than its preset resolves
+   * to now? Fewer means a device joined since the last save; more means a
+   * keyring this window has not pulled yet, and nothing here ever takes a
+   * recipient away (architecture.md §20).
+   * @param {BufferRecord} record
+   */
+  function needsMoreRecipients(record) {
+    if (!record.enc || !keyring.isSetUp || !age.isArmored(record.content)) return false;
+    return age.countRecipients(record.content) < keyring.recipientsFor(record.enc.preset).length;
+  }
+
+  /**
+   * Re-wrap every readable encrypted document for the keyring as it is now
+   * (architecture.md §20). A document saved before a device joined is a
+   * locked row on that device until a device that can read it saves it
+   * again; this is that save, without waiting for a keystroke. Runs after a
+   * keyring write and after an unlock. Limited to what this window may
+   * write (its tabs and Recent), and skips a courier document (the decode
+   * throws), a document with a save already pending (that save re-wraps
+   * with the current keyring anyway) and, above all, a document with more
+   * recipients than this window knows.
+   */
+  async function reencryptStale() {
+    if (!keyring.isUnlocked) return;
+    const mine = new Set(workspaces.current().tabs);
+    const open = workspaces.openSet();
+    let changed = false;
+    for (const record of [...buffers.values()]) {
+      const id = record.id;
+      if (!isDocument(record) || !record.enc) continue;
+      if (open.has(id) && !mine.has(id)) continue;
+      if (saveTimers.has(id) || !needsMoreRecipients(record)) continue;
+      let text;
+      try {
+        text = await textOf(id);
+      } catch {
+        continue;
+      }
+      // The keyring may have locked while the decode ran (lockAll cleared
+      // the map): stop, and the next unlock runs this again.
+      if (!keyring.isUnlocked) return;
+      record.content = await codec.encode(text, record.enc, keyring);
+      markDirty(record);
+      await persist({ ...record });
+      // A `.age` file on disk is wrapped the same way (§19).
+      diskSoon(id);
+      changed = true;
+      console.log("[vrtti] re-encrypted for the current keyring:", id);
+    }
+    if (changed) emit("change");
+  }
 
   /**
    * Can this file change between plaintext and `.age` on disk? Both
@@ -1720,6 +1782,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (contentChanged) plain.delete(id);
     if (record.kind === "keyring") {
       emit("system", { id });
+      void reencryptStale();
       emit("change");
       return;
     }
@@ -1832,6 +1895,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     encrypt,
     decrypt,
     lockAll,
+    reencryptStale,
     // Exported for the sync client (architecture.md §13.6): a pull that meets
     // a dirty local record forks it before it adopts the incoming one.
     forkConflict,

@@ -1801,3 +1801,70 @@ and decrypted in place, Save to disk proposing `.md.age` and appending
 `.age` to a plain picked name, the plain rename, scratch encryption in a
 browser context, the disabled item without `move()`, and lock/unlock on
 the file doc. The user's run on the real shell is open.
+
+## 20. A device joins: re-encrypt and the join order (agreed 2026-09-24)
+
+A document encrypted to "all my devices" is wrapped for the devices the
+keyring listed at save time (§5, the preset resolves at encrypt time). A
+device that joins later cannot read a document saved before it joined: it
+is a courier for that document and shows a locked row, until a device that
+can read it saves it again. Two small rules close that gap.
+
+### Decisions
+
+- **Re-wrap on a keyring write and on unlock** (`reencryptStale` in
+  model/docs.js). The trigger is the store's own keyring write
+  (`putSystemRecord`, which setup and a pull merge both use) and the
+  `buffer` message that carries another window's keyring write; a change
+  that arrives while locked waits for the next unlock. No new event, no new
+  state.
+- **Stale means fewer recipients than the preset resolves to now.** The
+  count is read off the age header, one `->` stanza per recipient
+  (`countRecipients` in crypto/age.js), so nothing is stored per document
+  and the header still says nothing about who the recipients are. A
+  document with *more* stanzas than this window knows is left alone: that
+  is a newer keyring this window has not pulled, and re-wrapping it here
+  would take a device away and start a ping-pong with the device that
+  added it. Nothing in this rule ever removes a recipient; device removal
+  stays a later phase.
+- **Only what this window may write**: its own tabs and Recent, never a
+  tab of another live window (the single-writer rule, §14). Two windows
+  may both re-wrap a Recent document; both results are valid ciphertext
+  and the second write wins, so that is noise and not a fault. A courier
+  document (the decode throws) and a document with a save pending are
+  skipped; the pending save re-wraps with the current keyring anyway. A
+  `.age` file is rewritten on disk through the usual disk debounce (§19).
+- **Join order.** A device that sets up encryption before it has pulled
+  the keyring mints a second recovery key, and the union merge keeps both
+  for ever (§13.3). So `crypto.setup`, with a server configured and no
+  keyring record here, runs one sync first and waits for it (`syncOnce`:
+  the leader's own run, or the relayed status in a mirror window). The
+  record then arrives and setup joins that keyring, or the server has none
+  and this is the first device. Only an unreachable server leaves it open:
+  a chooser offers "Set up later" and "Set up anyway", and says what the
+  second one costs. The settings hint for "Set up encryption" says to set
+  the server first on a second device.
+- **Sync of the re-wrapped documents** is a normal dirty push per
+  document. The keyring goes first in every push (§13.3), and a pull
+  applies changes in seq order, so a device that receives the re-wrapped
+  revision has the new keyring by then.
+
+### 20.1 Store and setup (unit 1, built 2026-09-24)
+
+`crypto/age.js`: `countRecipients`. `model/docs.js`:
+`needsMoreRecipients`, `reencryptStale`, the three call sites. `main.js`:
+`syncOnce` and the guard at the top of `crypto.setup`. `ui/settings.js`:
+the hint. Gate: 14 Playwright checks. A device added by a keyring change
+re-wraps the "all-devices" documents (two to three stanzas, readable by the
+new device's identity) and leaves a "this-device" document alone; a second
+identical change re-wraps nothing; a document with more stanzas than the
+keyring resolves to stays as it is; a courier document stays as it is; a
+change that arrives while locked waits for the unlock; a `.age` file on a
+fake shell is rewritten on disk; and, over a mock server with two contexts
+as two devices, the second device's setup pulls first and joins with one
+recovery recipient, the first device re-wraps the shared document at its
+next sync and pushes it, the second device then reads it, an unreachable
+server shows the chooser with both outcomes, and an empty server takes the
+first-device path with no chooser. Note from the gate: the sidebar's 🔒
+mark says "encrypted" on every row with `enc`, so a courier row looks the
+same as a readable one; the difference shows only when the row is opened.

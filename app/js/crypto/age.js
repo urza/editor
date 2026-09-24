@@ -116,4 +116,24 @@ export function isAgeFile(content) {
   return head === BINARY_HEAD;
 }
 
+/**
+ * How many recipients an armored age file was encrypted to, read off its
+ * header: one `->` stanza per recipient, and the header ends at the `---`
+ * line. It says nothing about who they are, which is the point of the
+ * format; model/docs.js compares the count with the keyring to find a
+ * document wrapped before a device joined (architecture.md §20).
+ * @param {string} armored
+ */
+export function countRecipients(armored) {
+  const bytes = armor.decode(armored);
+  // The header is ASCII and short; this is far more than any header we write.
+  const head = new TextDecoder().decode(bytes.subarray(0, 65536));
+  let count = 0;
+  for (const line of head.split("\n")) {
+    if (line.startsWith("---")) break;
+    if (line.startsWith("-> ")) count++;
+  }
+  return count;
+}
+
 export { armor };

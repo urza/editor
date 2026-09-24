@@ -261,11 +261,70 @@ async function start() {
 
   // Encryption (architecture.md §5, §13.2). No keyboard shortcuts: setup runs
   // once in a lifetime and unlock is dispatched by whatever needs a key.
+  /**
+   * One sync run, awaited through the status: the leader resolves its own
+   * run, a mirror window hears the leader's status over the channel
+   * (architecture.md §14.3). Resolves with the final state, or "timeout".
+   * @returns {Promise<string>}
+   */
+  function syncOnce() {
+    return new Promise((resolve) => {
+      /** @param {Event} event */
+      const done = (event) => {
+        const state = /** @type {CustomEvent} */ (event).detail?.state;
+        if (state === "syncing") return;
+        finish(state ?? "unknown");
+      };
+      /** @param {string} state */
+      const finish = (state) => {
+        sync.events.removeEventListener("status", done);
+        clearTimeout(timer);
+        resolve(state);
+      };
+      const timer = setTimeout(() => finish("timeout"), 15000);
+      sync.events.addEventListener("status", done);
+      void sync.syncNow();
+    });
+  }
+
   register({
     id: "crypto.setup",
     title: "Set up encryption",
     run: async () => {
       if (keyring.isSetUp) return false;
+      // The join-order guard (architecture.md §20). A device that sets up
+      // before it has pulled the keyring mints a second recovery key, and
+      // the merge keeps both for ever. So with a server configured and no
+      // keyring record here, one sync runs first; the record then arrives or
+      // the server has none. Only an unreachable server leaves it open, and
+      // then the user decides.
+      if (sync.isConfigured && !store.keyringRecord()) {
+        const busy = showBusy("Looking for a keyring on the server…");
+        let state = "";
+        try {
+          state = await syncOnce();
+        } finally {
+          busy.close();
+        }
+        if (!store.keyringRecord() && state !== "idle") {
+          const answer = await choose({
+            title: "The server could not be reached",
+            options: [
+              {
+                id: "later",
+                label: "Set up later",
+                hint: "If another device already uses encryption, set up after a sync so this device joins that keyring.",
+              },
+              {
+                id: "anyway",
+                label: "Set up anyway",
+                hint: "Creates a new keyring and a second recovery key. The keyrings merge later, and both recovery keys stay valid.",
+              },
+            ],
+          });
+          if (answer !== "anyway") return false;
+        }
+      }
       const deviceName = await askText({
         title: "Set up encryption",
         label: "Device name",
