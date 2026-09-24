@@ -65,15 +65,16 @@ export function mountSidebar(store, folders, sync) {
   newWindow.hidden = matchMedia("(max-width: 700px)").matches;
   newWindow.addEventListener("click", () => run("workspace.new"));
 
+  const recentBlock = /** @type {HTMLElement} */ (document.getElementById("recent"));
   const recentHeading = /** @type {HTMLElement} */ (document.getElementById("recent-heading"));
 
   // Closed buffers must not clutter the sidebar (user decision, 2026-09-01):
-  // Recent is collapsed by default and only the heading with a count shows.
-  const COLLAPSED_KEY = "vrtti.recentCollapsed";
-  let recentCollapsed = localStorage.getItem(COLLAPSED_KEY) !== "0";
+  // Recent is collapsed and only the heading with a count shows. A click opens
+  // it for this window's lifetime and nothing remembers that (2026-09-24):
+  // every window starts with it closed, whatever the last one did.
+  let recentCollapsed = true;
   recentHeading.addEventListener("click", () => {
     recentCollapsed = !recentCollapsed;
-    localStorage.setItem(COLLAPSED_KEY, recentCollapsed ? "1" : "0");
     render();
   });
 
@@ -469,14 +470,12 @@ export function mountSidebar(store, folders, sync) {
     );
 
     const closed = store.closedBuffers();
-    recentHeading.hidden = closed.length === 0;
+    recentBlock.hidden = closed.length === 0;
     recentHeading.textContent =
       (recentCollapsed ? "▸" : "▾") + " Recent (" + closed.length + ")";
-    recentList.hidden = recentCollapsed || closed.length === 0;
+    recentList.hidden = recentCollapsed;
     recentList.replaceChildren(
-      ...(recentList.hidden
-        ? []
-        : closed.map((b) => makeRow(b, { closable: false })))
+      ...(recentCollapsed ? [] : closed.map((b) => makeRow(b, { closable: false })))
     );
   }
 

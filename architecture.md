@@ -390,6 +390,31 @@ ideas; the four candidates kept (caret, whirl, whirl on orange, loop)
 live in `design/icons/` and `design/icons/build.sh <name>` regenerates
 every icon file from one of them.
 
+### Recent (user decision, 2026-09-24, shipped)
+
+The sidebar stays simple; the only organization change for now is what
+Recent does.
+
+- **Pinned above settings.** `#recent` is a block of its own under the
+  scroller, next to the settings button, not the last section of the
+  lists: the heading is always in the same place, whatever the tabs and
+  folders above it take. Expanded, the list scrolls inside the block,
+  capped at half the sidebar, so the Open list stays in view.
+- **Closed unless opened.** The disclosure starts closed in every window
+  and nothing stores the state (the old `vrtti.recentCollapsed` key is
+  gone). A click opens it for the window's lifetime.
+- **An empty document never reaches Recent.** Empty means a scratch
+  buffer with no text (whitespace counts as none), no user title, not
+  encrypted. Closing one deletes the record; a synced one that the server
+  holds goes as a `deleted` tombstone and is removed once the push lands,
+  hidden from Recent meanwhile, and a newer text from another device
+  brings it back as that text instead of a conflict copy. The same rule
+  runs once at start over every closed record (the rows that piled up
+  before the rule existed) and over the tabs of a dissolved workspace
+  (the untouched first buffer of a folder window). Nothing sweeps on
+  other workspace changes: a buffer another window has persisted but not
+  tabbed yet would look closed and empty for a moment.
+
 ### Sidebar collapse (agreed 2026-09-02, shipped)
 
 `ui/shell.js` owns one piece of state, "is the sidebar showing", and two

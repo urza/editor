@@ -77,9 +77,10 @@ body {
   min-height: 0;  /* lets the editor pane scroll instead of stretching the page */
 }
 
-/* Column of three: "+" on top, the scroller taking the free height, settings
-   at the bottom. The scroll and the 8px padding moved off #sidebar onto its
-   parts, so a long buffer list can never push a pinned button out of sight. */
+/* Column of four: "+" on top, the scroller taking the free height, Recent and
+   settings at the bottom. The scroll and the 8px padding moved off #sidebar
+   onto its parts, so a long buffer list can never push a pinned part out of
+   sight. */
 #sidebar {
   width: var(--sidebar-width, var(--ui-sidebar-width));
   flex: 0 0 var(--sidebar-width, var(--ui-sidebar-width));
@@ -138,8 +139,23 @@ body {
   color: var(--st-sidebar-heading);
 }
 
-/* Recent is a disclosure: closed buffers stay out of sight until expanded. */
+/* Recent is a disclosure pinned under the scroller, above settings (user
+   decision, 2026-09-24): closed buffers stay out of sight until expanded, and
+   the heading never scrolls away behind a long list of tabs. Expanded, the
+   list scrolls inside the block; the cap keeps the Open list in view. */
+#recent {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
+  max-height: 50%;
+}
+#recent[hidden] { display: none; }  /* the display: flex above would beat the attribute */
 #recent-heading { cursor: pointer; }
+#recent-list {
+  min-height: 0;
+  overflow-y: auto;
+}
 
 /* Header row: the collapse toggle and the primary action side by side. The
    8px top is what #sidebar's padding used to give the "+", before the scroller
@@ -454,7 +470,7 @@ body {
 #sidebar.searching #open-actions,
 #sidebar.searching #open-list,
 #sidebar.searching #folder-sections,
-#sidebar.searching #recent-list {
+#sidebar.searching #recent {
   display: none;
 }
 

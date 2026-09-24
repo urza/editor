@@ -69,10 +69,10 @@
 <body>
   <div id="app">
     <aside id="sidebar">
-      <!-- Three-part column: the primary action on top, one scroller in the
-           middle, settings pinned at the bottom (architecture.md §9). The "+"
-           stays outside the scroller on purpose, so neither the app's main
-           action nor settings can scroll out of reach. -->
+      <!-- Four-part column: the primary action on top, one scroller in the
+           middle, Recent and settings pinned at the bottom (architecture.md
+           §9). The "+" stays outside the scroller on purpose, so neither the
+           app's main action nor the pinned parts can scroll out of reach. -->
       <div id="sidebar-top">
         <!-- Collapses the sidebar. The twin of this button, #sidebar-open,
              takes over once the sidebar is gone (ui/shell.js). -->
@@ -118,7 +118,14 @@
         <!-- One section per opened folder, filled by ui/sidebar.js. Stays empty
              where the File System Access API is missing. -->
         <div id="folder-sections"></div>
-        <h2 class="sidebar-heading" id="recent-heading" hidden></h2>
+      </div>
+      <!-- Recent sits under the scroller, above settings, not at the end of
+           the lists (user decision, 2026-09-24): one closed heading that is
+           always in the same place. Hidden until a closed document exists;
+           expanded, the list scrolls on its own inside the block (app.css).
+           ui/sidebar.js owns both hidden attributes. -->
+      <div id="recent" hidden>
+        <h2 class="sidebar-heading" id="recent-heading"></h2>
         <ul id="recent-list" class="buffer-list" hidden></ul>
       </div>
       <button id="sidebar-settings" type="button" title="Settings">⚙ settings</button>

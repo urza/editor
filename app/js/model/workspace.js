@@ -7,6 +7,8 @@
 //
 // Events on store.events:
 //   "change"          { id, foreign? }  a workspace record was written or removed.
+//   "dissolved"       { tabs }  this window dissolved a workspace; its tabs are
+//                     in Recent now, and model/docs.js discards the empty ones
 //   "folders-dropped" { ids }  a dissolve removed folder handles no workspace
 //                     lists any more; model/folders.js forgets them
 //             `foreign` marks a change the doc store did not ask for itself:
@@ -204,6 +206,9 @@ export function createWorkspaces({ id }) {
     }
     if (dropped.length > 0) emit("folders-dropped", { ids: dropped });
     emit("change", { id: wsId, foreign: true });
+    // After the change: the doc store first moves its active buffer off the
+    // dropped tabs, then hears which tabs fell into Recent.
+    emit("dissolved", { tabs: record.tabs });
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------

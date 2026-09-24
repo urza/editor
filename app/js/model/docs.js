@@ -206,11 +206,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     return open;
   }
 
-  // Recent is global: every document open in no workspace at all.
+  // Recent is global: every document open in no workspace at all. A record
+  // waiting for its `deleted` tombstone to be pushed (discard) is already
+  // gone as far as the user is concerned.
   function closedBuffers() {
     const open = workspaces.openSet();
     return [...buffers.values()]
-      .filter((b) => !open.has(b.id) && isDocument(b))
+      .filter((b) => !open.has(b.id) && isDocument(b) && b.sync?.tombstone !== "deleted")
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
@@ -1077,6 +1079,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       return;
     }
     // A tombstone push is the last thing this record ever says to the server.
+    // A discard (deleted) ends here in the removal; a detach in a local copy.
+    if (record.sync.tombstone === "deleted") return forget(id);
     if (record.sync.tombstone) return clearSync(id);
     record.sync.rev = rev;
     record.sync.dirty =
@@ -1248,6 +1252,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if ((change.kind === "deleted" || change.kind === "detached") && freshAttach) {
       return;
     }
+    // Discarded here as empty, the tombstone not pushed yet (discard). Its
+    // dirty flag carries no text worth a fork: a delete from elsewhere just
+    // applies, and a newer text below means the document is not empty any
+    // more, so it comes back as that text (adoptRemote replaces `sync`, and
+    // the tombstone with it).
+    const discarded = Boolean(record && record.sync?.tombstone === "deleted");
 
     if (change.kind === "deleted") {
       // A record without `sync` is a local document, whatever the server
@@ -1256,7 +1266,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       if (!record || !record.sync) return;
       // Deleted elsewhere while this device still held unpushed text. The text
       // survives as a local copy; the record itself goes.
-      if (record.sync?.dirty) await forkConflict(record);
+      if (record.sync?.dirty && !discarded) await forkConflict(record);
       buffers.delete(id);
       plain.delete(id);
       await remove(id);
@@ -1307,7 +1317,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (record.sync) {
       // The incoming version wins and the local text forks. Nothing is lost
       // and nothing prompts (architecture.md §3).
-      if (record.sync.dirty) await forkConflict(record);
+      if (record.sync.dirty && !discarded) await forkConflict(record);
     } else if (record.content !== change.content) {
       // Detached here, then edited on either side. Re-attaching must not drop
       // the local text; equal content needs no fork, which is what makes a
@@ -1438,17 +1448,85 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     return true;
   }
 
+  /**
+   * An empty scratch buffer never reaches Recent (user decision, 2026-09-24):
+   * a Recent full of "untitled" rows with nothing in them is noise. Empty
+   * means no text, no name of its own, not on disk and readable: a locked
+   * doc's content is ciphertext, and a blank file is still a file.
+   * @param {BufferRecord} record
+   */
+  function isEmpty(record) {
+    return (
+      isDocument(record) &&
+      record.kind !== "file" &&
+      !record.enc &&
+      !record.title &&
+      record.content.trim() === ""
+    );
+  }
+
+  /**
+   * Drop a record for good. One the server holds (pushed at least once) goes
+   * as a `deleted` tombstone, so the other devices drop their copy too
+   * (architecture.md §3); afterPush turns the landed push into the removal,
+   * and closedBuffers() hides the record until then. Anything else is
+   * removed on the spot. Callers take the record out of the tabs themselves.
+   * @param {BufferRecord} record
+   */
+  async function discard(record) {
+    if (record.sync && record.sync.rev > 0) {
+      record.sync.tombstone = "deleted";
+      record.sync.dirty = true;
+      record.updatedAt = Date.now();
+      await persist({ ...record });
+      emit("change");
+      return;
+    }
+    await forget(record.id);
+  }
+
+  /** The record is gone: from memory, IndexedDB and the other windows. @param {string} id */
+  async function forget(id) {
+    buffers.delete(id);
+    plain.delete(id);
+    await remove(id);
+    emit("change");
+  }
+
+  /**
+   * Discard the empty documents among these ids that are open nowhere. Runs
+   * once at start over everything closed (the rows that piled up before the
+   * rule existed, and the tabs of windows quit mid-way), and over a dissolved
+   * workspace's tabs, which is how a folder window's untouched first buffer
+   * would otherwise land in Recent. Only ids handed in are looked at: a sweep
+   * over every closed record on each workspace change could hit a buffer
+   * another window has persisted but not tabbed yet.
+   * @param {string[]} ids
+   */
+  async function discardEmpty(ids) {
+    const open = workspaces.openSet();
+    for (const id of ids) {
+      const record = buffers.get(id);
+      if (!record || open.has(id) || record.sync?.tombstone === "deleted") continue;
+      if (isEmpty(record)) await discard(record);
+    }
+  }
+
   // The point of the whole app: closing never asks anything. Close means
   // "leave this workspace": the buffer goes to Recent, and the tab beside it
-  // takes the screen (architecture.md §14).
+  // takes the screen (architecture.md §14). An empty buffer goes nowhere.
   /** @param {string} id */
   async function close(id) {
     const record = buffers.get(id);
     const index = workspaces.current().tabs.indexOf(id);
     if (!record || index < 0) return;
-    record.updatedAt = Date.now();
     emit("evict", { id });
-    await persist({ ...record });
+    if (isEmpty(record)) {
+      await discard(record);
+    } else {
+      record.updatedAt = Date.now();
+      await persist({ ...record });
+    }
     await workspaces.removeTab(id);
 
     if (id === activeId) {
@@ -1576,9 +1654,17 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     emit("change");
   });
 
+  // A workspace this window dissolved (its window is gone): its tabs are in
+  // Recent now, and the empty ones do not belong there.
+  workspaces.events.addEventListener("dissolved", (event) => {
+    const tabs = /** @type {CustomEvent} */ (event).detail?.tabs ?? [];
+    void discardEmpty(tabs);
+  });
+
   // Separate from load(): UI modules mount between the two, so they are
   // subscribed before the first "active" event fires.
   async function start() {
+    await discardEmpty(closedBuffers().map((b) => b.id));
     let first = openBuffers()[0];
     if (!first) {
       first = newBufferRecord();
