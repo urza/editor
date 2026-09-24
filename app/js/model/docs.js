@@ -76,6 +76,8 @@ const DISK_DELAY = 1000;
 // Slow poll for external edits. Window focus is the responsive trigger; this
 // only covers a window that stays focused while another program writes.
 const WATCH_INTERVAL = 30000;
+// How long a trashed record stays restorable (architecture.md §22).
+const TRASH_KEEP = 30 * 24 * 60 * 60 * 1000;
 const TITLE_MAX = 40;
 
 /**
@@ -212,8 +214,52 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   function closedBuffers() {
     const open = workspaces.openSet();
     return [...buffers.values()]
-      .filter((b) => !open.has(b.id) && isDocument(b) && b.sync?.tombstone !== "deleted")
+      .filter(
+        (b) => !open.has(b.id) && isDocument(b) && !b.trashedAt && b.sync?.tombstone !== "deleted"
+      )
       .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  // ---- Trash (architecture.md §22) ---------------------------------------
+
+  /** The trashed documents, newest first. */
+  function trashed() {
+    return [...buffers.values()]
+      .filter((b) => isDocument(b) && b.trashedAt)
+      .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
+  }
+
+  /**
+   * Keep a record instead of removing it: a `deleted` tombstone reached it.
+   * `sync` goes with it, so the note is a local one from here on and the
+   * same tombstone cannot reach it again after a restore. The caller takes
+   * it out of the tabs and moves the editor on, as for a removal.
+   * @param {BufferRecord} record
+   */
+  async function trash(record) {
+    record.trashedAt = Date.now();
+    delete record.sync;
+    plain.delete(record.id);
+    await persist({ ...record });
+  }
+
+  /** Back into Recent, as a local document. @param {string} id */
+  async function restore(id) {
+    const record = buffers.get(id);
+    if (!record || !record.trashedAt) return null;
+    delete record.trashedAt;
+    record.updatedAt = Date.now();
+    await persist({ ...record });
+    emit("change");
+    return record;
+  }
+
+  /** Once at start: what has sat in the trash for thirty days goes for good. */
+  async function emptyOldTrash() {
+    const limit = Date.now() - TRASH_KEEP;
+    for (const record of trashed()) {
+      if ((record.trashedAt ?? 0) < limit) await forget(record.id);
+    }
   }
 
   /**
@@ -722,7 +768,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     let changed = false;
     for (const record of [...buffers.values()]) {
       const id = record.id;
-      if (!isDocument(record) || !record.enc) continue;
+      if (!isDocument(record) || !record.enc || record.trashedAt) continue;
       if (open.has(id) && !mine.has(id)) continue;
       if (saveTimers.has(id) || !needsMoreRecipients(record)) continue;
       let text;
@@ -973,6 +1019,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   async function createFromFile(handle, options = {}) {
     const existing = await bufferForHandle(handle);
     if (existing) {
+      // The file never left the disk, so a trashed record for it is simply
+      // the record again (architecture.md §22).
+      if (existing.trashedAt) await restore(existing.id);
       // reopen() knows the three cases: a tab here, a tab in another window,
       // or Recent.
       await reopen(existing.id);
@@ -1438,11 +1487,16 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       // elsewhere. Same rule as the detached branch below.
       if (!record || !record.sync) return;
       // Deleted elsewhere while this device still held unpushed text. The text
-      // survives as a local copy; the record itself goes.
+      // survives as a local copy; the record itself goes to the trash
+      // (architecture.md §22), or away for good when there is nothing in it.
       if (record.sync?.dirty && !discarded) await forkConflict(record);
-      buffers.delete(id);
-      plain.delete(id);
-      await remove(id);
+      if (isEmpty(record) || discarded) {
+        buffers.delete(id);
+        plain.delete(id);
+        await remove(id);
+      } else {
+        await trash(record);
+      }
       await workspaces.removeTab(id);
       emit("evict", { id });
       if (id === activeId) {
@@ -1837,6 +1891,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   // Separate from load(): UI modules mount between the two, so they are
   // subscribed before the first "active" event fires.
   async function start() {
+    await emptyOldTrash();
     await discardEmpty(closedBuffers().map((b) => b.id));
     let first = openBuffers()[0];
     if (!first) {
@@ -1877,6 +1932,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     },
     openBuffers,
     closedBuffers,
+    trashed,
+    restore,
     putSystemRecord,
     keyringRecord,
     load,

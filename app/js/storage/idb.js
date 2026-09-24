@@ -66,6 +66,9 @@
  *                            so the editor detects it again on open.
  * @property {'auto' | 'user'} [langSource]  Who decided `lang`. A 'user' choice is
  *                            never overwritten by detection (architecture.md §9).
+ * @property {number} [trashedAt]  Set when a `deleted` tombstone reached this
+ *                            record (architecture.md §22): out of every list,
+ *                            restorable for thirty days, then removed.
  */
 
 /**

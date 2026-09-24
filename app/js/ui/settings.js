@@ -13,6 +13,7 @@ import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
+import { titleOf } from "../model/docs.js";
 
 /**
  * The keyring the Security section reports on, handed in by mountSettings.
@@ -30,6 +31,12 @@ let keyring = null;
  * @type {ReturnType<import("../sync/client.js").createSyncClient> | null}
  */
 let sync = null;
+
+/**
+ * The document store the Trash section lists (architecture.md §22).
+ * @type {ReturnType<import("../model/docs.js").createDocStore> | null}
+ */
+let store = null;
 
 /** Result of the last "Test connection" click, shown on that row. */
 let testResult = "";
@@ -372,6 +379,26 @@ const SECTIONS = [
     ],
   },
   {
+    title: "Trash",
+    items: [
+      {
+        type: "list",
+        key: "trash",
+        label: "Deleted notes",
+        hint: "A note a delete reached stays here for 30 days. Restore puts it back into Recent as a local note (architecture.md §22).",
+        visible: () => (store?.trashed().length ?? 0) > 0,
+        rows: () =>
+          (store?.trashed() ?? []).map((record) => ({
+            key: "trash-" + record.id,
+            label: titleOf(record),
+            value: "deleted " + new Date(record.trashedAt ?? 0).toLocaleString(),
+            button: "restore",
+            act: () => store?.restore(record.id),
+          })),
+      },
+    ],
+  },
+  {
     title: "About",
     items: [
       { type: "note", text: "vrtti — scratchpad editor" },
@@ -672,6 +699,7 @@ function makeRow(item, refresh) {
 export function mountSettings(deps = {}) {
   keyring = deps.keyring ?? null;
   sync = deps.sync ?? null;
+  store = deps.store ?? null;
   const panel = /** @type {HTMLElement} */ (document.getElementById("settings-panel"));
 
   const head = document.createElement("div");
@@ -691,10 +719,21 @@ export function mountSettings(deps = {}) {
 
   /** @type {(() => void)[]} */
   const painters = [];
+  /** @type {HTMLElement[]} */
+  const sections = [];
 
   // Hoisted on purpose: the rows below take it as their repaint hook.
   function refresh() {
     for (const paint of painters) paint();
+    // A row's visible() answers in a microtask; the sections are judged
+    // after that. A section whose rows are all hidden (the Trash while it
+    // is empty, §22) hides with them, heading included.
+    setTimeout(() => {
+      for (const element of sections) {
+        const rows = [...element.children].filter((el) => el.tagName !== "H3");
+        element.hidden = rows.length > 0 && rows.every((el) => el.hidden);
+      }
+    }, 0);
   }
 
   /** @type {HTMLElement[]} */
@@ -703,6 +742,7 @@ export function mountSettings(deps = {}) {
   for (const section of SECTIONS) {
     const element = document.createElement("section");
     element.className = "settings-section";
+    sections.push(element);
     const heading = document.createElement("h3");
     heading.textContent = section.title;
     element.appendChild(heading);
@@ -731,6 +771,12 @@ export function mountSettings(deps = {}) {
   // on the network. The status row would otherwise sit at whatever it said
   // when the panel opened.
   sync?.events.addEventListener("status", () => {
+    if (!panel.hidden) refresh();
+  });
+
+  // A tombstone can trash a note while the panel is open; the Trash rows
+  // follow the store (architecture.md §22).
+  store?.events.addEventListener("change", () => {
     if (!panel.hidden) refresh();
   });
 

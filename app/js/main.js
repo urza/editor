@@ -798,7 +798,7 @@ async function start() {
 
   // Mounted before its command, because the command dispatches into the
   // controller the mount returns. The sidebar button below dispatches the id.
-  const settings = mountSettings({ keyring, sync });
+  const settings = mountSettings({ keyring, sync, store });
   register({
     id: "settings.toggle",
     title: "Settings",
@@ -884,6 +884,8 @@ async function start() {
     sync,
     applyRemote: (change) => store.applyRemote(change),
     dirtyRecords: () => store.dirtyRecords(),
+    trashed: () => store.trashed(),
+    restore: (id) => store.restore(id),
     settings: { get: getSetting, put: putSetting },
     // Spellcheck surface for the checks (architecture.md §11): the language
     // the last pass found, and the detector itself for table-driven cases.

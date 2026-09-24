@@ -1968,3 +1968,55 @@ travelling to a second window and clearing on lock, and the scratch
 round trip unchanged. Two findings fixed on the way: a confirm did not
 re-wrap (no record write), and a re-keyed device could not replace its
 stale recovery self-approval.
+
+## 22. Local trash (agreed 2026-09-24)
+
+A `deleted` tombstone from the server removed the record on every device
+at once. A forged tombstone (a server in the wrong hands, §21's threat
+list) or a mistaken one therefore wiped a note everywhere, with the disk
+file as the only survivor. The trash keeps the record for 30 days.
+
+### Decisions
+
+- **A record is trashed, not removed.** The `deleted` branch of
+  `applyRemote` sets `trashedAt` on the record, drops `sync` (the server
+  is done with it, and a restored note must be a local note the same
+  tombstone cannot reach again), clears its plaintext cache, removes it
+  from this window's tabs and moves the editor on, exactly as the removal
+  did. Dirty local text still forks first. A record that is empty by
+  §9's rule (an empty document discarded elsewhere) is removed outright:
+  there is nothing to restore.
+- **Trashed means nowhere.** `closedBuffers` (Recent), the re-wrap of §20
+  and the empty sweep of §9 skip trashed records. Search in files never
+  saw Recent. A trashed file-backed record is revived by opening its
+  file again (`createFromFile` restores it before it reopens), because
+  the file on disk never left.
+- **Restore** clears `trashedAt`, stamps `updatedAt` and persists: the
+  note is in Recent again, local, with no sync target. The user turns
+  sync back on by hand if wanted.
+- **Thirty days**, checked once at start: older trash is removed for
+  good. No manual "empty trash" in this unit.
+- **Settings › Trash** lists the trashed notes (title, deleted when) with
+  a "restore" button each, through the `list` row of §21; the section
+  hides while the trash is empty. The row count follows the store's
+  "change" event while the panel is open.
+- **Other windows** learn of a trash or a restore through the ordinary
+  `buffer` message: the record travels with its `trashedAt`.
+
+### 22.1 Store and settings (unit 1)
+
+`storage/idb.js` (`trashedAt` on the record), `model/docs.js` (`trash`,
+`restore`, `trashed`, `emptyOldTrash` at start, the `deleted` branch,
+the three skips, `createFromFile`), `ui/settings.js` (a `store`
+dependency and the Trash section; a settings section whose rows are all
+hidden now hides with its heading), `main.js` (the dependency and the
+test hooks). Built 2026-09-24. Gate: 9 Playwright checks over the
+stateful mock server: a tombstone on the active tab trashes the record,
+drops `sync`, closes the tab and moves the editor; Settings lists it and
+restore puts it back into Recent with its text; a second tombstone leaves
+the restored local note alone; dirty text forks a conflict copy before
+the trash; an empty document is removed outright; a 31-day-old trash
+entry is gone at start and a 1-day-old one stays; a second window sees
+the trash and the restore at once; a trashed file-backed record is
+restored by a click on its file, with no duplicate; the §9 empty close
+still removes outright.
