@@ -325,11 +325,21 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    */
   async function saveNow(id) {
     if (!buffers.has(id)) return;
+    dropTimers(id);
+    if (await persistNow(id)) await writeToDisk(id);
+  }
+
+  /**
+   * Cancel both debounces of a buffer. For a caller that is about to write
+   * the record and the file itself: a timer firing in between would put the
+   * text the record held a moment ago back on disk.
+   * @param {string} id
+   */
+  function dropTimers(id) {
     clearTimeout(saveTimers.get(id));
     saveTimers.delete(id);
     clearTimeout(diskTimers.get(id));
     diskTimers.delete(id);
-    if (await persistNow(id)) await writeToDisk(id);
   }
 
   /** @param {BufferRecord} [record] @returns {any} */
@@ -599,6 +609,23 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (/[\\/]/.test(next)) return false;
     if (!(await ensurePermission(handle, "readwrite"))) return false;
 
+    await moveFile(record, handle, next);
+    await persist({ ...record });
+    // A new extension is a new language. "auto", so a syntax the user picked
+    // by hand survives the rename.
+    await setLang(id, detectFromName(next), "auto");
+    emit("change");
+    return true;
+  }
+
+  /**
+   * Rename the file on disk and follow it in the record and the handle store.
+   * The record is not persisted here: the callers change more than the name
+   * in one go and write it once. Rejects from handle.move() reach the caller.
+   * @param {BufferRecord} record @param {any} handle @param {string} next
+   */
+  async function moveFile(record, handle, next) {
+    if (!record.file) return;
     const previous = record.file.name;
     await handle.move(next);
     record.file.name = next;
@@ -613,12 +640,6 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // behind. An FSA handle follows its file by itself and does not care.
     const stored = await getHandle(record.file.handleId);
     if (stored) await putHandle({ ...stored, handle, name: next });
-    await persist({ ...record });
-    // A new extension is a new language. "auto", so a syntax the user picked
-    // by hand survives the rename.
-    await setLang(id, detectFromName(next), "auto");
-    emit("change");
-    return true;
   }
 
   async function create() {
@@ -660,10 +681,41 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   });
 
   /**
+   * Can this file change between plaintext and `.age` on disk? Both
+   * directions rename the file (architecture.md §19), so a handle that cannot
+   * move gets neither; the row menu says so instead of offering half of it.
+   * @param {BufferRecord} record
+   */
+  function canEncryptFile(record) {
+    return record.kind !== "file" || canRenameFile(record);
+  }
+
+  /**
+   * The name a file takes when its content turns into age ciphertext, and
+   * the name it takes back (architecture.md §19). `.age` is appended, never
+   * substituted: `notes.md.age` still says what is inside, and lang.js strips
+   * the envelope when it looks for the language.
+   * @param {string} name
+   */
+  function encryptedName(name) {
+    return name + ".age";
+  }
+
+  /** @param {string} name */
+  function decryptedName(name) {
+    const plain = name.replace(/\.age$/i, "");
+    // A file called just ".age" keeps its name: an empty one is no name.
+    return plain || name;
+  }
+
+  /**
    * Turn a plaintext doc into an encrypted one.
    *
-   * Scratch docs only this round: encrypting a file-backed doc means renaming
-   * it to `.age` on disk, which is a later unit (architecture.md §13.4).
+   * A file-backed doc changes on disk too: the file is renamed to `.age`
+   * first and the ciphertext written second, so the disk never holds age
+   * bytes under a plain name (readFileForRecord would take them for text).
+   * A failed write renames back, best effort, and the error reaches the
+   * caller with the record untouched (architecture.md §19).
    *
    * @param {string} id @param {'all-devices' | 'this-device'} preset
    * @param {string} [label] The plaintext name to store; "" clears the title,
@@ -676,9 +728,33 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // The command asks for setup and unlock before it gets here; a throw is
     // for a caller that skipped that, and must not be swallowed.
     if (!keyring.isUnlocked) throw new Error("encrypt: the keyring is locked");
-    if (record.kind === "file") throw new Error("encrypt: files come in a later unit");
+    if (!canEncryptFile(record)) throw new Error("encrypt: this file cannot be renamed");
 
     const text = record.content;
+    const enc = codec.newEncMeta(preset);
+    const content = await codec.encode(text, enc, keyring);
+
+    const handle = handleFor(record);
+    if (record.file && handle) {
+      // The record already holds the latest text (updateContent), so a
+      // pending debounce has nothing to add and would only race the writes.
+      dropTimers(id);
+      if (!(await ensurePermission(handle, "readwrite"))) {
+        throw new Error("encrypt: permission not granted");
+      }
+      const previous = record.file.name;
+      await moveFile(record, handle, encryptedName(previous));
+      try {
+        await writeFile(handle, content);
+      } catch (err) {
+        await moveFile(record, handle, previous).catch(() => {});
+        // Whatever the file is called now, the record says the same.
+        await persist({ ...record });
+        throw err;
+      }
+      record.file.lastSyncAt = Date.now();
+    }
+
     // The label is the one plaintext the server ever sees for this doc (§5),
     // so it is never derived here behind the user's back: the command asks,
     // prefilled with the first line, and the user decides what stays readable.
@@ -688,10 +764,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       else delete record.title;
     }
     plain.set(id, text);
-    record.enc = codec.newEncMeta(preset);
+    record.enc = enc;
     // Immediately, not through persistSoon: the plaintext must not sit in
     // IndexedDB for another 300 ms once the user asked for this.
-    record.content = await codec.encode(text, record.enc, keyring);
+    record.content = content;
     if (record.sync) {
       // The server still holds the plaintext history of this doc, and old
       // plaintext revisions defeat the whole conversion (architecture.md §5).
@@ -703,12 +779,36 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     return record;
   }
 
-  /** @param {string} id @returns {Promise<BufferRecord | null>} */
+  /**
+   * The way back. On disk the order is the mirror of encrypt(): the plaintext
+   * is written first and the `.age` suffix dropped second, so a failed rename
+   * leaves a plain file under an `.age` name, which the reader takes for what
+   * it is (architecture.md §19).
+   * @param {string} id @returns {Promise<BufferRecord | null>}
+   */
   async function decrypt(id) {
     const record = buffers.get(id);
     if (!record || !record.enc) return null;
     if (!keyring.isUnlocked) throw new Error("decrypt: the keyring is locked");
+    if (!canEncryptFile(record)) throw new Error("decrypt: this file cannot be renamed");
     const text = await textOf(id);
+
+    const handle = handleFor(record);
+    if (record.file && handle) {
+      dropTimers(id);
+      if (!(await ensurePermission(handle, "readwrite"))) {
+        throw new Error("decrypt: permission not granted");
+      }
+      await writeFile(handle, text);
+      record.file.lastSyncAt = Date.now();
+      // The rename is the lesser half: the file holds plaintext now whatever
+      // it is called, and the record below must follow the file. A taken
+      // name is logged, and the `.age` name stays until the user renames it.
+      await moveFile(record, handle, decryptedName(record.file.name)).catch((err) => {
+        console.log("[vrtti] decrypt: the file keeps its name", record.file?.name, err);
+      });
+    }
+
     delete record.enc;
     record.content = text;
     plain.delete(id);
@@ -839,7 +939,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // Characters no common file system accepts; the picker still lets the user
     // rename, this is only the proposal.
     const base = titleOf(record).replace(/[\\/:*?"<>|]+/g, "-").trim();
-    return (base || "untitled") + ".md";
+    const name = (base || "untitled") + ".md";
+    // An encrypted buffer is written as ciphertext, and only an `.age` name
+    // is read back as such (architecture.md §19).
+    return record.enc ? encryptedName(name) : name;
   }
 
   /** @param {string} id Write a buffer to a picked file, then keep it linked. */
@@ -849,6 +952,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const handle = await saveFilePicker(suggestedName(record));
     await writeFile(handle, record.content);
     await linkFile(record, handle);
+    // The user can type any name into the picker. An encrypted buffer under a
+    // plain name would open as a page of armor next time, so the suffix goes
+    // back on where the handle allows it.
+    if (record.enc && record.file && !/\.age$/i.test(handle.name) && canRenameFile(record)) {
+      await moveFile(record, handle, encryptedName(handle.name));
+    }
     await persist({ ...record });
     // The buffer now has a file name, and a file name decides the language.
     // "auto", so a syntax the user picked by hand survives the save.
@@ -1739,6 +1848,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     setLang,
     setTitle,
     canRenameFile,
+    canEncryptFile,
     renameFile,
     diskPath,
     createFromFile,

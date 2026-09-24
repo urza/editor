@@ -220,9 +220,7 @@ async function start() {
         console.log("[vrtti] rename failed", name, err);
         return false;
       }
-      // An open folder section still lists the old name. Re-listing costs one
-      // directory read per open folder, and only a real rename pays it.
-      for (const folderId of [...folders.folders.keys()]) await folders.refresh(folderId);
+      await refreshFolders(record);
       return true;
     },
   });
@@ -397,17 +395,30 @@ async function start() {
       if (!preset) return false;
       // The label is plaintext everywhere, server included (architecture.md
       // §5). Prefilled with the first line, so the user sees exactly what will
-      // stay readable and can change it before it leaves the device.
+      // stay readable and can change it before it leaves the device. A file
+      // is prefilled with its name instead: the name is plaintext on disk
+      // already, and it is what the other devices see, because a file-backed
+      // doc syncs as a scratch doc (§13.5).
       const record = store.get(target);
       const label = await askText({
         title: "Name for the encrypted document",
         label: "Plaintext name",
-        value: record?.title || firstLineTitle(record?.content),
+        value:
+          record?.title ||
+          (record?.file ? record.file.name : firstLineTitle(record?.content)),
         hint: "Shown in the sidebar and stored unencrypted, also on the sync server. Leave it empty for no name.",
         allowEmpty: true,
       });
       if (label === null) return false;
-      await store.encrypt(target, /** @type {any} */ (preset), label);
+      try {
+        await store.encrypt(target, /** @type {any} */ (preset), label);
+      } catch (err) {
+        // A file that cannot be renamed to `.age` (a taken name, a lost
+        // permission) stays as it was; the record was not touched.
+        console.log("[vrtti] encrypt failed", err);
+        return false;
+      }
+      await refreshFolders(record);
       return true;
     },
   });
@@ -420,10 +431,28 @@ async function start() {
       // Decrypting needs the key as much as reading does: the plaintext comes
       // out of the ciphertext, and nothing else holds it.
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
-      await store.decrypt(target);
+      const record = store.get(target);
+      try {
+        await store.decrypt(target);
+      } catch (err) {
+        console.log("[vrtti] decrypt failed", err);
+        return false;
+      }
+      await refreshFolders(record);
       return true;
     },
   });
+
+  /**
+   * An open folder section still lists a file's old name after a rename on
+   * disk. Re-listing costs one directory read per open folder, and only a
+   * file-backed doc pays it.
+   * @param {import("./storage/idb.js").BufferRecord | undefined} record
+   */
+  async function refreshFolders(record) {
+    if (record?.kind !== "file") return;
+    for (const folderId of [...folders.folders.keys()]) await folders.refresh(folderId);
+  }
 
   // Sync (architecture.md §3, §13.6). Registered on every platform: sync is a
   // server target, and every platform can hold one. The client stays inert

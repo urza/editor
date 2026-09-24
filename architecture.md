@@ -682,6 +682,10 @@ Decided (2026-09-01):
   `desktop-latest` prerelease.
 
 Open: none.
+- Encrypting a file-backed doc renames it on disk, `.age` appended and
+  never substituted, rename before write on the way in and write before
+  rename on the way out, so the disk never holds age bytes under a plain
+  name (2026-09-24, §19). Both directions need a handle that can rename.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
@@ -787,7 +791,8 @@ and holds one device. The sidebar, Recent, and search filter it out by kind.
 - Commands `doc.encrypt` (preset chooser, requires unlock, asks for the
   plaintext label prefilled with the first line, sets `enc`, re-encodes, sets
   `sync.purge` when synced) and `doc.decrypt` (keeps the label). This round they apply to scratch docs only.
-  Encrypting a file-backed doc (rename to `.age` on disk) is a later unit.
+  Encrypting a file-backed doc (rename to `.age` on disk) is a later unit
+  (done: §19, 2026-09-24).
 - `.age` files opened from disk: `readFile` gains a bytes path. Armored text
   stays as is; binary age gets armored into the record. The doc gets
   `enc: { v: 1, preset: "all-devices" }` and decodes on open. Writes go back
@@ -1726,3 +1731,73 @@ AppImage after "Restart now", and the relaunched shell reporting
 `--config '{"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}'`;
 a debug build only warns. Then the next push publishes a signed release
 with the manifests, and the user installs `vrtti-setup.exe` once.
+
+## 19. Encrypting file-backed documents (agreed 2026-09-24)
+
+§5 says a file-backed secret doc is a standard `.age` file, and §13.4 built
+the read side: a `.age` file from disk opens as an encrypted doc and is
+written back armored. The write side stayed open, and the row menu said
+"Files: later". This closes it: `doc.encrypt` and `doc.decrypt` work on a
+file-backed doc, and the file on disk follows.
+
+### Decisions
+
+- **`.age` is appended, never substituted.** `notes.md` becomes
+  `notes.md.age` and back. The inner extension keeps saying what is in the
+  file, for the user and for the age CLI, and `lang.js` already strips the
+  envelope when it looks for the language, so the syntax survives both
+  ways. Decrypt strips one trailing `.age`; a file called `.age` alone keeps
+  its name, because an empty name is no name.
+- **The disk never holds age bytes under a plain name.** `readFileForRecord`
+  reads a plain name as text, so a plaintext-named file full of armor would
+  flip the record into a page of base64 at the next poll. The order of the
+  two disk steps follows from that: encrypt renames first and writes the
+  ciphertext second; decrypt writes the plaintext first and drops the
+  suffix second. When the second step fails, encrypt renames back (best
+  effort) and throws with the record untouched; decrypt leaves plaintext
+  under an `.age` name, which the reader takes for what it is, and the
+  record is plaintext all the same.
+- **Both directions need a handle that can rename** (`canRenameFile`: a
+  native handle always can, a Chromium FSA handle has `move()`). Where it
+  is missing, the row menu disables the item with "This browser cannot
+  rename files". One rule for both directions on purpose: a doc that could
+  be encrypted but never decrypted back in place would be a trap.
+- **A taken name is a refusal, not an overwrite.** Rust answers `exists`
+  for a target that is there; for an FSA handle the browser's `move()`
+  decides. The command logs the error and returns false, and nothing
+  changed.
+- **Pending debounces are dropped first.** The record already holds the
+  latest text (`updateContent`), so a timer firing between the two disk
+  steps could only put the old text back on disk.
+- **The label is asked as for a scratch doc**, prefilled with the file
+  name instead of the first line: the name is plaintext on disk already,
+  and the label is what the other devices see, because a file-backed doc
+  syncs as a scratch doc (§13.5).
+- **Save to disk of an encrypted scratch buffer** proposes
+  `<label>.md.age`; a picked name without `.age` gets the suffix appended
+  after the write, where the handle can rename, so the file opens as what
+  it is next time.
+- **Unchanged:** `sync.purge` on conversion (§5), the courier case, the
+  lock placeholder, the external change poll (a changed `.age` file takes
+  the replace path and the record follows the file in both directions,
+  §13.4), and interop: `age -d -i wrapped.age notes.md.age` reads the file.
+  Open folder trees re-list after the rename, as after "Rename file…".
+
+### 19.1 Store, menu, commands (unit 1, built 2026-09-24)
+
+`model/docs.js`: `canEncryptFile`, `encryptedName`, `decryptedName`,
+`moveFile` (the disk half of `renameFile`, now shared), `dropTimers`
+(shared with `saveNow`), the file branches in `encrypt` and `decrypt`,
+`suggestedName` and `saveAs`. `ui/sidebar.js`: the Encrypt item follows
+`canEncryptFile`. `main.js`: the two commands catch a disk refusal and
+re-list open folders through one `refreshFolders`, shared with the rename
+command. Gate: 13 Playwright checks against a fake shell (an in-memory
+`disk_*` tree behind `__TAURI__.core.invoke`, the §17 pattern): encrypt
+and decrypt through the row menu and the dialogs, the label prefill, the
+tree re-list, autosave into the `.age` file, a taken name refused with
+nothing changed, a failed write rolled back, a refused rename on the way
+back leaving plaintext under the `.age` name, a real `.age` file opened
+and decrypted in place, Save to disk proposing `.md.age` and appending
+`.age` to a plain picked name, the plain rename, scratch encryption in a
+browser context, the disabled item without `move()`, and lock/unlock on
+the file doc. The user's run on the real shell is open.

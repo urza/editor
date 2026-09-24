@@ -138,9 +138,9 @@ export function mountSidebar(store, folders, sync) {
   /**
    * The row menu (architecture.md §9). Sync is a per-document server target
    * (§3); with no server configured the item is disabled and says where to set
-   * one, rather than claiming to sync into nothing. Encrypt is live for scratch
-   * buffers; a file-backed doc means renaming it to `.age` on disk, which is
-   * a later unit (architecture.md §13.4).
+   * one, rather than claiming to sync into nothing. Encrypt on a file-backed
+   * doc renames it to `.age` on disk (architecture.md §19), so it is disabled
+   * where the browser cannot rename a file.
    *
    * @param {BufferRecord} record @param {{closable: boolean}} opts
    * @returns {import("./menu.js").MenuItem[]}
@@ -188,18 +188,18 @@ export function mountSidebar(store, folders, sync) {
       items.push({ label: "History…", act: () => run("doc.history", record.id) });
     }
     items.push(
-      record.kind === "file"
+      store.canEncryptFile(record)
         ? {
-            label: "Encrypt",
-            checked: Boolean(record.enc),
-            disabled: true,
-            hint: "Files: later",
-          }
-        : {
             label: "Encrypt",
             checked: Boolean(record.enc),
             // One item, both directions: the check mark says which way it goes.
             act: () => run(record.enc ? "doc.decrypt" : "doc.encrypt", record.id),
+          }
+        : {
+            label: "Encrypt",
+            checked: Boolean(record.enc),
+            disabled: true,
+            hint: "This browser cannot rename files",
           }
     );
     items.push({ separator: true });
