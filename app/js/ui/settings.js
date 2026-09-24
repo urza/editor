@@ -38,7 +38,7 @@ let testResult = "";
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
- * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper"} type
+ * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper" | "list"} type
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a toggle, info or action row.
@@ -58,7 +58,15 @@ let testResult = "";
  * @property {string} [button]                           action: button label.
  * @property {() => any} [act]                           action: dispatch the action.
  * @property {string} [text]                             note: one paragraph.
+ * @property {() => ListRow[]} [rows]                    list: the rows, read on every paint.
  * @property {{ text: string, href: string }[]} [links]  note: external links.
+ */
+
+/**
+ * One row of a `list` item: a label with a value line under it, and an
+ * optional button. Read fresh on every paint, so a list follows its source.
+ * @typedef {{ key: string, label: string, value: string, hint?: string,
+ *            button?: string, act?: () => any }} ListRow
  */
 
 /** @typedef {{ title: string, items: Item[] }} Section */
@@ -274,9 +282,57 @@ const SECTIONS = [
         type: "info",
         key: "device-key",
         label: "Device key",
-        hint: "Public. Add it to another device to share encrypted documents.",
+        hint: "Public. Your other devices encrypt to it once they approve this device.",
         visible: () => Boolean(keyring?.isSetUp),
         value: () => keyring?.deviceRecipient ?? "",
+      },
+      {
+        type: "info",
+        key: "pairing-code",
+        label: "Pairing code",
+        hint: "Type it on a device that already uses this keyring to approve this one. The fingerprint next to it is what the other device shows you to confirm.",
+        visible: () => Boolean(keyring?.isSetUp && keyring.pairingCode),
+        value: () => keyring?.pairingCode + "   ·   fingerprint " + keyring?.fingerprint(),
+      },
+      {
+        type: "list",
+        key: "devices",
+        label: "Devices",
+        hint: "Every device in the keyring, and whether this device trusts it (architecture.md §21).",
+        visible: () => Boolean(keyring?.isSetUp),
+        rows: () =>
+          (keyring?.deviceRows() ?? []).map((row) => {
+            const when = new Date(row.addedAt).toLocaleDateString();
+            const fp = row.fingerprint ? " · " + row.fingerprint : "";
+            const base = { key: "device-" + row.id, label: row.name + fp, value: "" };
+            switch (row.state) {
+              case "this device":
+                return { ...base, value: "this device · added " + when };
+              case "trusted":
+                return { ...base, value: "trusted · added " + when };
+              case "approved you":
+                return {
+                  ...base,
+                  value: "approved this device · confirm that it is yours",
+                  button: "confirm",
+                  act: () => run("crypto.confirm", row.id),
+                };
+              case "needs update":
+                return { ...base, value: "needs its update · unlock it once, then approve it here" };
+              case "not confirmed":
+                return {
+                  ...base,
+                  value: "not confirmed · approve this device from it, then confirm it here",
+                };
+              default:
+                return {
+                  ...base,
+                  value: "waiting for approval · type its pairing code",
+                  button: "approve",
+                  act: () => run("crypto.approve", row.id),
+                };
+            }
+          }),
       },
       {
         type: "info",
@@ -516,6 +572,51 @@ function makeRow(item, refresh) {
     });
     input.addEventListener("blur", commit);
     row.appendChild(input);
+  }
+
+  if (item.type === "list") {
+    // The rows sit under the label, not beside it: a list is a column.
+    row.classList.add("settings-row-list");
+    const list = document.createElement("div");
+    list.className = "settings-list";
+    row.appendChild(list);
+    paintOwn = () => {
+      const rows = item.rows ? item.rows() : [];
+      list.replaceChildren(
+        ...rows.map((entry) => {
+          const line = document.createElement("div");
+          line.className = "settings-list-row";
+          line.dataset.key = entry.key;
+          const text = document.createElement("div");
+          text.className = "settings-list-text";
+          const label = document.createElement("div");
+          label.textContent = entry.label;
+          text.appendChild(label);
+          const value = document.createElement("div");
+          value.className = "settings-hint";
+          value.textContent = entry.value;
+          text.appendChild(value);
+          line.appendChild(text);
+          if (entry.button && entry.act) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "settings-button";
+            button.textContent = entry.button;
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              try {
+                await entry.act?.();
+              } finally {
+                // The answer changed what the whole panel reports.
+                refresh();
+              }
+            });
+            line.appendChild(button);
+          }
+          return line;
+        })
+      );
+    };
   }
 
   if (item.type === "info" || (item.type === "action" && item.value)) {

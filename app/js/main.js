@@ -101,18 +101,84 @@ async function start() {
 
   // Peers are read after store.load(), because the keyring resolves "all
   // devices" against the hidden keyring record the store just read (§13.3).
-  /** Point the keyring at the device list in the hidden record. */
+  /** Point the keyring at the hidden record: it resolves trust from it (§21). */
   function refreshPeers() {
-    const content = readKeyringContent(store.keyringRecord());
-    // Peers are the OTHER devices; this one is already in every recipient set.
-    keyring.setPeers(
-      (content ? content.devices : []).filter((d) => d.id !== keyring.deviceId)
-    );
+    keyring.setContent(readKeyringContent(store.keyringRecord()));
   }
   refreshPeers();
   // The record also changes when a pull merges another device into it, so the
   // peers follow the record itself and not the one command that writes it.
   store.events.addEventListener("system", refreshPeers);
+
+  /**
+   * Write a new keyring content into the hidden record (architecture.md
+   * §13.3, §21). Dirty when synced, so the other devices learn of it.
+   * @param {import("./crypto/keyring.js").KeyringContent} content
+   */
+  async function writeKeyring(content) {
+    const previous = store.keyringRecord();
+    const now = Date.now();
+    /** @type {import("./storage/idb.js").BufferRecord} */
+    const record = {
+      id: KEYRING_ID,
+      kind: "keyring",
+      createdAt: now,
+      ...previous,
+      content: JSON.stringify(content),
+      updatedAt: now,
+    };
+    if (record.sync) record.sync = { ...record.sync, dirty: true };
+    await store.putSystemRecord(record);
+  }
+
+  /**
+   * After an unlock: the record learns this device's signing key and its
+   * self-approved recovery keys, once (architecture.md §21). A device from
+   * before the unit gets its key in the same unlock.
+   */
+  async function ensureOwnEntry() {
+    if (!keyring.isUnlocked) return;
+    const next = keyring.selfUpdate();
+    if (next) await writeKeyring(next);
+  }
+
+  // Dialogs a cancelled answer must not repeat in this session; the Settings
+  // device list keeps a button for each.
+  /** @type {Set<string>} */
+  const dismissedJoins = new Set();
+  /** @type {Set<string>} */
+  const dismissedApprovers = new Set();
+  let offering = false;
+
+  /**
+   * The two questions of §21, asked where they can be answered: this window
+   * has focus, the keyring is unlocked, and no other dialog is open. One
+   * question at a time; the record write after each answer runs this again.
+   */
+  async function offerApprovals() {
+    if (offering || !keyring.isUnlocked || !document.hasFocus()) return;
+    if (document.querySelector("dialog[open]")) return;
+    offering = true;
+    try {
+      const approver = keyring.pendingApprovers().find((d) => !dismissedApprovers.has(d.id));
+      if (approver) {
+        if (!(await run("crypto.confirm", approver.id))) dismissedApprovers.add(approver.id);
+        return;
+      }
+      const join = keyring.pendingJoins().find((d) => !dismissedJoins.has(d.id));
+      if (join) {
+        if (!(await run("crypto.approve", join.id))) dismissedJoins.add(join.id);
+      }
+    } finally {
+      offering = false;
+    }
+  }
+  store.events.addEventListener("system", () => void offerApprovals());
+  keyring.addEventListener("change", () => {
+    if (!keyring.isUnlocked) return;
+    void ensureOwnEntry().then(offerApprovals);
+  });
+  window.addEventListener("focus", () => void offerApprovals());
 
   // Built on every platform: without a disk backend no directory handle can be
   // stored, so the store loads nothing and the sidebar draws no section. Only
@@ -350,7 +416,7 @@ async function start() {
         const existing = readKeyringContent(previous);
         ({ recoveryIdentity } = await keyring.setup(passphrase, {
           deviceName,
-          existingRecovery: existing ? existing.recovery : undefined,
+          joining: Boolean(existing),
         }));
         const now = Date.now();
         /** @type {import("./storage/idb.js").BufferRecord} */
@@ -421,6 +487,65 @@ async function start() {
     id: "crypto.lock",
     title: "Lock encryption",
     run: () => keyring.lock(),
+  });
+  // The two sides of a join (architecture.md §21). Both take a device id from
+  // the record; offerApprovals() dispatches them, and the Settings device
+  // list has a button for each.
+  register({
+    id: "crypto.approve",
+    title: "Approve a device",
+    run: async (id) => {
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const device = keyring.content?.devices.find((d) => d.id === id);
+      if (!device) return false;
+      let message = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const code = await askText({
+          title: "“" + device.name + "” wants to join",
+          label: "Pairing code",
+          hint:
+            (message ? message + " " : "") +
+            "Type the six digits shown under Settings › Security on that device. A code that does not match means the entry did not come from your device.",
+          placeholder: "000 000",
+        });
+        if (code === null) return false;
+        const next = keyring.approve(id, code);
+        if (next) {
+          await writeKeyring(next);
+          return true;
+        }
+        message = "The code does not match.";
+      }
+      return false;
+    },
+  });
+  register({
+    id: "crypto.confirm",
+    title: "Confirm an approving device",
+    run: async (id) => {
+      const device = keyring.content?.devices.find((d) => d.id === id);
+      if (!device || !device.signKey) return false;
+      const answer = await choose({
+        title: "Approved by “" + device.name + "”",
+        options: [
+          {
+            id: "yes",
+            label: "Yes, that is my device",
+            hint:
+              "Its fingerprint is " + keyring.fingerprint(device.signKey) +
+              ". The same fingerprint stands under Settings › Security on that device.",
+          },
+          {
+            id: "no",
+            label: "No",
+            hint: "This device keeps trusting only itself. Ask again from the device list in Settings.",
+          },
+        ],
+      });
+      if (answer !== "yes") return false;
+      await keyring.confirm(id);
+      return true;
+    },
   });
 
   // Per-document encryption (architecture.md §13.4). The commands own the

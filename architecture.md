@@ -1868,3 +1868,103 @@ server shows the chooser with both outcomes, and an empty server takes the
 first-device path with no chooser. Note from the gate: the sidebar's 🔒
 mark says "encrypted" on every row with `enc`, so a courier row looks the
 same as a readable one; the difference shows only when the row is opened.
+
+## 21. Signed keyring: who may be a reader (agreed 2026-09-24)
+
+Today the keyring record is plaintext JSON merged by union, and the only
+gate in front of it is the server's bearer token. Anyone with the token, or
+anyone who controls the server, can append a device entry, and every
+device then encrypts to it (§20 even re-wraps at once). The proposal page
+(claude.ai artifact "Signed Keyring Proposal", 2026-09-24) has the
+diagrams; this section is the binding record.
+
+### Decisions
+
+- **Two keys per device.** Next to the X25519 identity each device holds
+  an Ed25519 signing key (`crypto/sign.js` over the vendored noble
+  `ed25519`). The secret half is wrapped with the same passphrase in its
+  own age blob (`wrappedSigning`), unwrapped at unlock into memory as hex,
+  and shared over the channel with the identity. The public half
+  (`signKey`, hex) is in the device's keyring entry. A device set up
+  before this unit gets its signing key at its next unlock (the passphrase
+  is at hand then), writes `signKey` into its own entry, and self-approves
+  the recovery recipients it stored at setup.
+- **The record grows, v1 readers keep working.** Device entries gain
+  `signKey` and `approvals: [{ by, sig }]`; recovery approvals live in a
+  separate `recoveryApprovals: { [recipient]: [{ by, sig }] }` so
+  `recovery` stays a list of strings. A signature covers
+  `vrtti-device\n<id>\n<name>\n<recipient>\n<signKey>\n<addedAt>` or
+  `vrtti-recovery\n<recipient>`. The merge stays a union: devices by id,
+  approvals by signer, recovery by recipient. The server can add entries
+  and approvals; it cannot make a valid signature.
+- **Trust is computed, per device, from the record.** The trusted set
+  starts with this device and the device ids the user confirmed by hand on
+  this device (`trusted` in the stored keyring). It grows by every device
+  whose entry carries an approval signed by a device already in the set,
+  verified against that signer's `signKey`, until nothing changes. A
+  recovery recipient is trusted when it is in this device's own stored
+  list (the first device generated it; older devices adopted it before
+  this unit) or carries an approval by a trusted device. `recipientsFor`
+  resolves "all-devices" to the trusted devices and "this-device" to this
+  one, plus the trusted recovery recipients. Everything else is inert.
+- **The join.** A new device sets up as today, but a joining device (a
+  keyring record exists) adopts no recovery recipients into its own
+  stored list; they become trusted through approvals after step 6. Its
+  entry lands with no approvals. Settings shows its pairing code, six
+  digits from SHA-256 of its `signKey`. An unlocked old device that has
+  focus shows "<name> wants to join. Type the code shown on it."; the
+  typed code is compared with the code of the entry's key, and only a
+  match signs the entry (`crypto.approve`). The new device, on seeing an
+  approval on its own entry by a device it does not trust, shows
+  "Approved by <name>, fingerprint <8 hex>. Is this your device?"
+  (`crypto.confirm`); the same fingerprint stands in Settings on the old
+  device. Yes adds that device to the local `trusted` list, and the chain
+  follows from there. A cancelled dialog is not asked again in that
+  session; the Settings device list keeps an "approve" or "confirm"
+  button for it. Dialogs run only in the window that has focus, one at a
+  time, never over another dialog. A device is only ever asked to approve
+  entries younger than its own: the device being vetted must not be asked
+  to vet its elders, those reach it through "Approved by …". Two keyrings
+  that never met resolve the same way, the older device approves and the
+  younger confirms. An approval this device made with a key it no longer
+  has (it re-keyed at unlock) counts as none, and the merge lets a
+  re-signed approval replace a stale server copy with the same signer.
+- **Documents follow.** §20's re-wrap now runs on every keyring
+  "change" (a record write or pull, a confirmed device) and after an
+  unlock, so a confirmation re-wraps at once without a record write. A document saved on a
+  device before it was approved is wrapped for that device alone until
+  then. Nothing removes a recipient (still §20).
+- **Settings.** The Security section lists every device in the record:
+  name, fingerprint, added date, and its state on this device: this
+  device, trusted, waiting for approval (button "approve", younger
+  entries), not confirmed (an elder that has to approve this device
+  first), approved you (button "confirm"), or "needs its update" for an
+  entry with no `signKey`. Plus a "Pairing code" row for this device.
+- **Later, not here:** device removal as a signed statement, signed
+  revisions, per-device server tokens, the local trash.
+
+### 21.1 Keys, record, trust, dialogs (unit 1)
+
+`crypto/sign.js`; `crypto/keyring.js` (stored v2, `setContent`,
+`trustedIds`, `recipientsFor`, `approve`, `confirm`, `pendingJoins`,
+`pendingApprovers`, `deviceRows`, `pairingCode`, `fingerprint`, unlock
+migration); `crypto/unlock.worker.js` unchanged (it wraps any string);
+`model/docs.js` merge of approvals; `main.js` (`ensureOwnEntry` after
+unlock, `offerApprovals` on the keyring record events, commands
+`crypto.approve` and `crypto.confirm`); `ui/settings.js` (a `list` row
+type and the device list). Built 2026-09-24. Gate: 11 Playwright checks,
+two and three contexts as devices over a stateful mock server: the first
+device's self-approved recovery key, the join with the pull-first path
+and no recovery dialog, a joining device trusting only itself, the
+"wants to join" dialog with a wrong code refused and the right code
+signing, the "Approved by" dialog with "No" then "Yes" through the
+Settings button, the re-wrap of both devices' documents, an unsigned
+injected device staying inert, forged approvals (random bytes, and a
+self-signature) staying inert on both devices, a fabricated keyring
+served to a joining device leaving it trusting itself alone and its
+"No" to a fake approver, the re-key migration replacing the stale
+self-approval and re-offering the younger device, the signing secret
+travelling to a second window and clearing on lock, and the scratch
+round trip unchanged. Two findings fixed on the way: a confirm did not
+re-wrap (no record write), and a re-keyed device could not replace its
+stale recovery self-approval.

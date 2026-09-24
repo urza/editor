@@ -242,12 +242,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // The keyring resolves "all my devices" against this record, so whoever
     // holds the keyring has to re-read it whenever it is written, here or by a
     // pull. One event for both paths (architecture.md §13.3).
-    if (record.kind === "keyring") {
-      emit("system", { id: record.id });
-      // After the event: main.js refreshes the peers in its listener, and
-      // the check below reads them.
-      void reencryptStale();
-    }
+    // The keyring follows this through main.js (setContent), and its
+    // "change" event is what runs the §20 re-wrap.
+    if (record.kind === "keyring") emit("system", { id: record.id });
     emit("change");
     return record;
   }
@@ -679,7 +676,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   // is a keyring command and knows nothing about documents.
   let keyringUnlocked = keyring.isUnlocked;
   keyring.addEventListener("change", () => {
-    if (keyringUnlocked === keyring.isUnlocked) return;
+    if (keyringUnlocked === keyring.isUnlocked) {
+      // Not a lock or an unlock: the record was written or pulled, or the
+      // user confirmed a device (§21). The resolved sets may have grown.
+      if (keyring.isUnlocked) void reencryptStale();
+      return;
+    }
     keyringUnlocked = keyring.isUnlocked;
     if (keyringUnlocked) {
       emit("unlock");
@@ -705,8 +707,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * Re-wrap every readable encrypted document for the keyring as it is now
    * (architecture.md §20). A document saved before a device joined is a
    * locked row on that device until a device that can read it saves it
-   * again; this is that save, without waiting for a keystroke. Runs after a
-   * keyring write and after an unlock. Limited to what this window may
+   * again; this is that save, without waiting for a keystroke. Runs on every
+   * keyring change (a record write or pull, a confirmed device) and after an
+   * unlock. Limited to what this window may
    * write (its tabs and Recent), and skips a courier document (the decode
    * throws), a document with a save already pending (that save re-wraps
    * with the current keyring anyway) and, above all, a document with more
@@ -1317,14 +1320,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     };
     next.content = JSON.stringify(merged);
     next.updatedAt = now;
-    // Dirty exactly when the union added something the server does not have,
-    // so the other devices learn about this one. Comparing the lengths is
-    // enough: the merge only ever appends to the incoming list.
+    // Dirty exactly when the union added something the server does not have
+    // (a device, an approval, a recovery key), so the other devices learn
+    // about it. The remote goes through the same merge alone, so the two
+    // strings differ only by what the local copy added (§21).
     next.sync = {
       rev: change.rev,
-      dirty:
-        merged.devices.length !== (remote?.devices.length ?? 0) ||
-        merged.recovery.length !== (remote?.recovery.length ?? 0),
+      dirty: JSON.stringify(merged) !== JSON.stringify(mergeKeyringContent(null, remote)),
     };
     await putSystemRecord(next);
   }
@@ -1782,7 +1784,6 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (contentChanged) plain.delete(id);
     if (record.kind === "keyring") {
       emit("system", { id });
-      void reencryptStale();
       emit("change");
       return;
     }

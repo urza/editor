@@ -14,6 +14,7 @@
 //   setting           { key }               a settings row changed
 //   focus             { ws }                bring that workspace's window forward
 //   window-closed     { ws }                a browser tab went away (pagehide)
+//   unlock            { identity, kind, signing }  a window's unlocked keys (§14.3, §21)
 
 const NAME = "vrtti";
 
