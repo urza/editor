@@ -13,6 +13,8 @@
 // ids in two files, where they could drift apart.
 
 import { Compartment } from "@codemirror/state";
+import { StreamLanguage } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { markdown } from "@codemirror/lang-markdown";
 import {
   javascript,
@@ -24,6 +26,22 @@ import {
 import { html, htmlLanguage } from "@codemirror/lang-html";
 import { css, cssLanguage } from "@codemirror/lang-css";
 import { json, jsonLanguage } from "@codemirror/lang-json";
+import { csharp } from "@codemirror/legacy-modes/mode/clike";
+
+// C# has no Lezer grammar, so it runs on CodeMirror's legacy stream
+// tokenizer: keywords, types, strings, numbers and comments, which is what a
+// pasted snippet needs. One instance for the app, like the Lezer languages
+// above: a StreamLanguage is one small object, and the fence table and the
+// whole-document mode share it.
+//
+// The legacy mode reports `true`, `false` and `null` as "atom", a tag the
+// Mariana style does not color. The mapping lives here and not in the style:
+// CSS value names and Markdown task markers are atoms too, and a style rule
+// would paint those red as well.
+const csharpLanguage = StreamLanguage.define({
+  ...csharp,
+  tokenTable: { atom: tags.bool },
+});
 
 // The app's default. Markdown is the right fallback for unknown text: it
 // colors links, headings and fenced code, and leaves plain prose plain.
@@ -45,6 +63,9 @@ const FENCE_LANGUAGES = {
   html: htmlLanguage,
   css: cssLanguage,
   json: jsonLanguage,
+  cs: csharpLanguage,
+  csharp: csharpLanguage,
+  "c#": csharpLanguage,
 };
 
 /** @param {string} info The word after the opening fence, e.g. "json". */
@@ -68,6 +89,7 @@ const MODES = {
   html: () => html(),
   css: () => css(),
   json: () => json(),
+  csharp: () => csharpLanguage,
 };
 
 /** Language ids a picker (command palette, settings row) may offer. */
@@ -112,6 +134,7 @@ const BY_EXTENSION = {
   htm: "html",
   css: "css",
   json: "json",
+  cs: "csharp",
 };
 
 /**
@@ -173,6 +196,68 @@ function looksJsonFamily(text) {
   return hits / lines.length >= SHAPE_SHARE;
 }
 
+// A line end that prose does not have: a statement ends with `;`, a block
+// opens or closes with a brace, an argument list breaks after `(` or `,`, a
+// lambda body follows `=>`, a `case` label ends with `:`. Prose ends with a
+// period or a word. Hard-wrapped prose ends the odd line with a comma, and
+// SHAPE_SHARE absorbs that.
+const CODE_ROW_END = /(?:[;{}(),\]:]|=>)\s*$/;
+// Or the whole line is a comment.
+const CODE_COMMENT_ROW = /^\s*(?:\/\/|\/\*|\*)/;
+
+/**
+ * Does the text end its lines the way code does? This is the guard that keeps
+ * a note *about* code in Markdown: prose fails it on nearly every line, so
+ * the language marks below can be plain words.
+ * @param {string} text Trimmed.
+ * @returns {boolean}
+ */
+function codeShaped(text) {
+  const lines = text.split("\n").filter((line) => line.trim());
+  if (!lines.length) return false;
+  const hits = lines.filter(
+    (line) => CODE_ROW_END.test(line) || CODE_COMMENT_ROW.test(line)
+  ).length;
+  return hits / lines.length >= SHAPE_SHARE;
+}
+
+// Spellings only C# uses. Java writes `import` and `String`, TypeScript puts
+// the type after the name, PHP writes `foreach ($x as $y)`, JavaScript has no
+// `foreach` at all. Each mark is one line of a real snippet, so a method body
+// pasted without its class still hits two of them.
+const CSHARP_MARKS = [
+  /^\s*using\s+(?:static\s+)?[A-Z]\w*(?:\.\w+)*\s*;/m, // using System.Threading;
+  /^\s*namespace\s+[A-Z]\w*(?:\.\w+)*\s*[{;]?\s*$/m, // namespace App.Models;
+  /\b(?:public|private|protected|internal)\s+(?:(?:static|sealed|abstract|partial|readonly)\s+)*(?:class|struct|record|interface|enum)\s+[A-Z]\w*/,
+  /\b(?:async\s+)?(?:Task|ValueTask)(?:<[^>\n]*>)?\s+[A-Z]\w*(?:<[^>\n]*>)?\s*\(/, // async Task RunAsync<T>(
+  /\bforeach\s*\(.*?\sin\s/, // foreach (var item in items)
+  /\bCancellationToken\b/,
+  /\{\s*get;\s*(?:(?:set|init);\s*)?\}/, // { get; set; }
+  /\bConsole\.Write(?:Line)?\(/,
+  /\$@?"[^"\n]*\{/, // $"Hello {name}"
+  /\b(?:string|object|decimal)\??\s+[A-Za-z_]\w*\s*[=;,)]/, // string name =
+];
+// Two marks, not one: a lone `CancellationToken` is also a VS Code extension
+// in TypeScript, and a lone `namespace` line is TypeScript too.
+const CSHARP_MARKS_NEEDED = 2;
+
+// A Markdown note is never C#, whatever its code lines say. A fence means the
+// code is a quoted block inside prose, and the Markdown mode already colors
+// it through FENCE_LANGUAGES. `#if` and `#region` have no space after the
+// hash, so they are not headings.
+const MARKDOWN_ROW = /^(?:```|~~~|#{1,6}\s)/m;
+
+/**
+ * @param {string} text Trimmed.
+ * @returns {boolean} Is this a C# source file or a snippet of one?
+ */
+function looksCSharp(text) {
+  if (MARKDOWN_ROW.test(text)) return false;
+  if (!codeShaped(text)) return false;
+  const hits = CSHARP_MARKS.filter((mark) => mark.test(text)).length;
+  return hits >= CSHARP_MARKS_NEEDED;
+}
+
 /**
  * Content sniffing for scratch buffers. Deliberately conservative: shapes
  * that cannot be mistaken for prose, and Markdown for everything else. A wrong
@@ -184,6 +269,11 @@ function looksJsonFamily(text) {
  * mode would paint every comment as invalid, and Markdown turns indented rows
  * into gray code blocks that read as a ghost selection (user report,
  * 2026-09-02).
+ *
+ * C# is the one language recognized by its words rather than its first
+ * character (user report, 2026-09-25: a pasted method stayed Markdown). The
+ * words alone would flip a note about C#, so the code-shape test above gates
+ * them.
  *
  * @param {string} [content]
  * @returns {string} A language id.
@@ -205,6 +295,8 @@ export function sniff(content) {
 
   const head = text.slice(0, SNIFF_PREFIX).toLowerCase();
   if (head.startsWith("<!doctype") || head.startsWith("<html")) return "html";
+
+  if (looksCSharp(text)) return "csharp";
 
   return DEFAULT_LANG;
 }

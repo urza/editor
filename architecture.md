@@ -487,11 +487,19 @@ would delete the input box.
 
 Paste JSON, see JSON colors; paste markdown, see markdown. Rules:
 
-- File-backed buffers: the file extension decides (md, js/ts, html, css, json).
+- File-backed buffers: the file extension decides (md, js/ts, html, css, json,
+  cs).
 - Scratch buffers: content sniffing, conservative on purpose. Trimmed text
   starting with `{` or `[` that JSON.parse accepts is JSON. Text starting
-  with `<!doctype` or `<html` is HTML. Everything else stays Markdown, which
-  already colors fenced code blocks.
+  with `<!doctype` or `<html` is HTML. C# (added 2026-09-25) is the one
+  language found by its words: two of a short list of spellings only C# uses
+  (`using System...;`, `foreach (x in y)`, `Task Name(`, `{ get; set; }`,
+  `Console.WriteLine`, ...) and, as the guard, most lines must end the way
+  code lines end (`;`, a brace, a comma, `=>`). A note *about* C# fails the
+  guard and stays Markdown; a note with a fence or a heading is Markdown by
+  definition. Everything else stays Markdown, which already colors fenced
+  code blocks (` ```csharp ` included; C# runs on the CodeMirror legacy
+  stream mode, since it has no Lezer grammar).
 - Detection runs when a buffer opens and after a paste. Never per keystroke.
 - The result is stored on the record as `lang`, so it sticks across restarts.
   A "set syntax" command can override it by hand later.

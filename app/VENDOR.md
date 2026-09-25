@@ -32,6 +32,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `@codemirror/lang-javascript` | 6.2.5 | `dist/index.js` | 20,788 |
 | `@codemirror/lang-json` | 6.0.2 | `dist/index.js` | 1,876 |
 | `@codemirror/lang-markdown` | 6.5.2 | `dist/index.js` | 21,741 |
+| `@codemirror/legacy-modes` | 6.5.4 | `mode/clike.js` (kept at that path, see below) | 38,933 |
 | `@codemirror/language` | 6.12.4 | `dist/index.js` | 102,129 |
 | `@codemirror/lint` | 6.9.7 | `dist/index.js` | 36,579 |
 | `@codemirror/search` | 6.7.2 | `dist/index.js` | 48,927 |
@@ -50,7 +51,7 @@ Each file is saved as `vendor/<package>/index.js`, whatever its upstream name.
 | `style-mod` | 4.1.3 | `src/style-mod.js` | 6,935 |
 | `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
 
-**24 packages, 24 files, 1,496,893 raw bytes (1.43 MiB).**
+**25 packages, 25 files, 1,535,826 raw bytes (1.46 MiB).**
 
 `@codemirror/lint` was added on **2026-09-01** for the Harper spellcheck
 (architecture.md §11), after the other 21. It was fetched by hand, at the same
@@ -68,6 +69,19 @@ is the only new transitive package; `@lezer/json`'s own dependencies
 (`@lezer/common`, `@lezer/highlight`, `@lezer/lr`) were already vendored. Both
 files are tiny, because the grammar tables are the bulk of a language pack and
 JSON's grammar is small.
+
+`@codemirror/legacy-modes` was added on **2026-09-25** for C# (a pasted C#
+method stayed Markdown, user report). CodeMirror has no Lezer grammar for C#;
+the legacy package carries the CodeMirror 5 stream tokenizers, and
+`mode/clike.js` holds the C-family ones (`c`, `cpp`, `java`, `csharp`, `kotlin`,
+`dart`, ...). The package has no root entry, only `./mode/*` exports, so the
+one file is saved at its upstream path, `vendor/@codemirror/legacy-modes/mode/clike.js`,
+and the import map entry is the full specifier
+`@codemirror/legacy-modes/mode/clike`. The file imports nothing; its one
+dependency, `@codemirror/language` (`StreamLanguage`), was already in the tree.
+Fetched by hand at the same URL shape `tools/vendor.py` uses, for the reason
+above, and because the script fetches one root entry per package and would not
+find this one.
 
 ## Twemoji SVG assets
 
@@ -314,9 +328,10 @@ disk and zero requests, and a partial list would break after an upgrade.
   `@codemirror/lang-javascript`.
 - `@codemirror/autocomplete`, `@codemirror/lang-html`, `@codemirror/lang-css`,
   `@lezer/*`, `crelt`, `style-mod` and `w3c-keyname` arrive transitively.
-- `@codemirror/lint` and `@codemirror/lang-json` were added later, by hand, and
-  are not in `START` in `tools/vendor.py`. A re-run of the script would drop
-  them; add them to `START` first, or fetch them again the same way.
+- `@codemirror/lint`, `@codemirror/lang-json` and `@codemirror/legacy-modes`
+  were added later, by hand, and are not in `START` in `tools/vendor.py`. A
+  re-run of the script would drop them; add the first two to `START` first,
+  and fetch `legacy-modes` again by hand (the script cannot, see above).
 - `@marijn/find-cluster-break` is a dependency of `@codemirror/state` 6.7.2 that
   the plan's expected list did not name. It is required; the graph does not
   close without it.
