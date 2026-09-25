@@ -752,6 +752,24 @@ async function start() {
       run: (id) => store.reconnect(id),
     });
     register({
+      id: "file.unlink",
+      title: "Unlink file",
+      // The note becomes an internal one with the file's text; the file on
+      // disk stays as it is (architecture.md §23).
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        if (!target) return false;
+        try {
+          return Boolean(await store.unlinkFile(target));
+        } catch (err) {
+          // A file that cannot be read has no text to keep: refuse, and the
+          // record stays linked with its marker.
+          console.log("[vrtti] unlink refused", err);
+          return false;
+        }
+      },
+    });
+    register({
       id: "folder.open",
       title: "Open folder…",
       run: async () => {
@@ -827,7 +845,7 @@ async function start() {
     workspaces,
     isBlankBuffer: (id) => {
       const record = store.get(id);
-      return !record || (record.kind !== "file" && !record.enc && !record.content.trim());
+      return !record || (record.kind !== "file" && !record.enc && !(record.content ?? "").trim());
     },
   });
   mountResizer();
@@ -876,6 +894,13 @@ async function start() {
     age,
     keyringRecord: () => store.keyringRecord(),
     textOf: (id) => store.textOf(id),
+    // One body per note (architecture.md §23).
+    body: (id) => store.body(id),
+    unlinkFile: (id) => store.unlinkFile(id),
+    stampRecentFiles: () => store.stampRecentFiles(),
+    checkExternalChanges: () => store.checkExternalChanges(),
+    saveNow: (id) => store.saveNow(id),
+    reopen: (id) => store.reopen(id),
     encrypt: (id, preset) => store.encrypt(id, preset),
     decrypt: (id) => store.decrypt(id),
     forkConflict: (id) => store.forkConflict(store.get(id)),

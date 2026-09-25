@@ -13,14 +13,19 @@
 //   "lock"    { ids }                          -> editor drops those states, shows the placeholder
 //   "unlock"                                   -> editor re-activates a placeholder
 //   "system"  { id }                            -> the hidden keyring record was written
+//   "available" { id }                          -> a file came back (reconnect): re-read it
 //
 // Persistence: every mutation writes through to IndexedDB, content edits with
-// a debounce. This is the first stage of the write pipeline (architecture.md
-// §1); the disk stage is a second debounce behind it, sync attaches later.
+// a debounce (architecture.md §1). That one stage writes the body to where it
+// lives: the IndexedDB row for a scratch record, the file for a file-backed
+// one, whose row is then an index without `content` (§23).
 //
-// Disk is the source of truth for a file-backed buffer, IndexedDB its journal:
-// a denied permission or a vanished file costs the user nothing, because the
-// text is already durable before the disk write is even attempted.
+// One body per note (§23): a record with `file` keeps its body in the file and
+// nowhere else. `record.content` in memory is the working copy this window
+// holds (every scratch record, this window's file tabs once read, and a
+// record whose file write failed: `file.unwritten`). Every reader of a body
+// goes through body() or textOf(); a `record.content` read outside this file
+// is a bug.
 //
 // Encryption sits between the editor and the record (architecture.md §5,
 // §13.4): for a doc with `enc`, `record.content` is age ciphertext and the
@@ -70,9 +75,6 @@ import { on, post } from "./channel.js";
 // merges one keyring instead of forking one per device (architecture.md §13.3).
 export const KEYRING_ID = "keyring";
 const SAVE_DELAY = 300;
-// Second debounce, behind the IndexedDB one: a disk write is slower and more
-// fragile, and nothing is lost by batching a few more keystrokes into it.
-const DISK_DELAY = 1000;
 // Slow poll for external edits. Window focus is the responsive trigger; this
 // only covers a window that stays focused while another program writes.
 const WATCH_INTERVAL = 30000;
@@ -94,6 +96,26 @@ export function firstLineTitle(text) {
     }
   }
   return "";
+}
+
+/**
+ * A file-backed body that cannot be read right now (architecture.md §23). The
+ * editor shows it in the placeholder frame, search and push skip the record,
+ * and nothing else happens: no empty document, no conflict copy. Read by its
+ * `name` elsewhere, like LockedError, so the UI never imports this file for
+ * an instanceof.
+ */
+export class UnavailableError extends Error {
+  name = "UnavailableError";
+  /**
+   * @param {'permission' | 'missing' | 'error'} reason
+   * @param {string} message @param {any} [cause] The disk error behind it.
+   */
+  constructor(reason, message, cause) {
+    super(message);
+    this.reason = reason;
+    this.cause = cause;
+  }
 }
 
 /** @param {BufferRecord} record @returns {string} */
@@ -140,8 +162,6 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   const plain = new Map();
   /** @type {Map<string, number>} */
   const saveTimers = new Map();
-  /** @type {Map<string, number>} */
-  const diskTimers = new Map();
   // Live handles, keyed by handleId. IndexedDB holds the durable copy; this is
   // the one the app actually calls, loaded once at start.
   /** @type {Map<string, any>} */
@@ -154,6 +174,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   // instead of once per keystroke.
   /** @type {Set<string>} */
   const diskFailed = new Set();
+  // Buffers whose file could not be read for a re-wrap. Same reason.
+  /** @type {Set<string>} */
+  const readFailed = new Set();
   // Buffers whose save was skipped because the keyring locked mid-debounce.
   // Same "log once, not once per keystroke" reason as diskFailed.
   /** @type {Set<string>} */
@@ -174,8 +197,38 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * @param {BufferRecord} record
    */
   async function persist(record) {
-    await putBuffer(record);
-    post("buffer", { record });
+    // The one place a file-backed body is kept out of the row and out of the
+    // message (§23): its body is the file, and a second copy here is the
+    // two-bodies bug §23 removed. A copy, never a delete on the argument:
+    // some callers hand in the live record, whose `content` is the working
+    // copy of an open tab. `unwritten` is the exception: the file write
+    // failed, so the row is the only place the text survives a crash.
+    const row =
+      record.file && !record.file.unwritten ? withoutBody(record) : record;
+    await putBuffer(row);
+    post("buffer", { record: row });
+  }
+
+  /** @param {BufferRecord} record @returns {BufferRecord} */
+  function withoutBody(record) {
+    const { content, ...index } = record;
+    return index;
+  }
+
+  /** Is this one of this window's tabs? Only those hold a file body in memory. @param {string} id */
+  function isMyTab(id) {
+    return workspaces.current().tabs.includes(id);
+  }
+
+  /**
+   * Forget the working copy of a record that left this window's tabs (§23): a
+   * record in Recent has no body in memory in any window. An `unwritten` body
+   * stays, because the file does not hold it yet.
+   * @param {BufferRecord} record
+   */
+  function dropBody(record) {
+    plain.delete(record.id);
+    if (record.file && !record.file.unwritten) delete record.content;
   }
 
   /** @param {string} id */
@@ -334,38 +387,47 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     clearTimeout(saveTimers.get(id));
     saveTimers.set(
       id,
-      setTimeout(async () => {
+      setTimeout(() => {
         saveTimers.delete(id);
-        // Disk is stage two: it starts only once the text is durable.
-        if (await persistNow(id)) diskSoon(id);
+        void persistNow(id);
       }, SAVE_DELAY)
     );
   }
 
   /**
-   * Stage one of the write pipeline (architecture.md §1): encode and put the
-   * record. Returns false when the keyring is locked and nothing was written.
+   * The one write stage (architecture.md §1, §23): encode, write the body to
+   * where it lives, put the index row. For a file-backed record the body is
+   * the file, and the row goes without `content` (persist strips it). Returns
+   * false when nothing reached storage: the keyring locked, or the file write
+   * failed (the row then holds the text as `file.unwritten`), or the file
+   * changed on disk and won.
    * @param {string} id
    */
   async function persistNow(id) {
     const record = buffers.get(id);
     if (!record) return false;
+    // A file body this window never read has nothing to write. Only a
+    // Ctrl+S on a "File not available" placeholder gets here.
+    if (record.file && typeof record.content !== "string") return false;
     if (!(await encodeForRecord(record))) {
       // Say so, or the indicator hangs at "…": nothing more happens for
       // this buffer until the keyring is unlocked again.
       if (id === activeId && !saveTimers.has(id)) emit("save", { status: "locked" });
       return false;
     }
+    // writeBody reports its own status: the file write is the one that
+    // matters for a file-backed doc, and a failure must not read "saved".
+    const written = record.file ? await writeBody(record) : true;
     await persist({ ...record });
     // Only claim "saved" if no newer keystroke started another debounce.
-    if (id === activeId && !saveTimers.has(id)) {
+    if (!record.file && id === activeId && !saveTimers.has(id)) {
       emit("save", { status: "saved" });
     }
-    return true;
+    return written;
   }
 
   /**
-   * Ctrl+S (desktop-wrapper-tauri-vs-wails.md §11): both debounces, now. An
+   * Ctrl+S (desktop-wrapper-tauri-vs-wails.md §11): the debounce, now. An
    * autosaving editor has nothing else to save. A buffer without a disk file
    * lands in IndexedDB and reports "saved"; the caller decides whether that
    * case should open the file picker instead.
@@ -374,20 +436,18 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   async function saveNow(id) {
     if (!buffers.has(id)) return;
     dropTimers(id);
-    if (await persistNow(id)) await writeToDisk(id);
+    await persistNow(id);
   }
 
   /**
-   * Cancel both debounces of a buffer. For a caller that is about to write
-   * the record and the file itself: a timer firing in between would put the
-   * text the record held a moment ago back on disk.
+   * Cancel the persist debounce of a buffer. For a caller that is about to
+   * write the record and the file itself: a timer firing in between would put
+   * the text the record held a moment ago back on disk.
    * @param {string} id
    */
   function dropTimers(id) {
     clearTimeout(saveTimers.get(id));
     saveTimers.delete(id);
-    clearTimeout(diskTimers.get(id));
-    diskTimers.delete(id);
   }
 
   /** @param {BufferRecord} [record] @returns {any} */
@@ -396,26 +456,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     return handles.get(record.file.handleId) || null;
   }
 
-  /** @param {string} id */
-  function diskSoon(id) {
-    if (!handleFor(buffers.get(id))) return;
-    clearTimeout(diskTimers.get(id));
-    diskTimers.set(
-      id,
-      setTimeout(() => {
-        diskTimers.delete(id);
-        writeToDisk(id);
-      }, DISK_DELAY)
-    );
-  }
-
   /**
    * Set or clear the reconnect marker for one file, and only for a real
    * permission gap: the marker's click can grant a permission and nothing
    * else, so a write that failed for another reason must not raise it.
-   * @param {BufferRecord} record
-   */
-  /**
    * @param {BufferRecord} record
    * @param {any} [err] The failure that prompted the check, when there was one.
    */
@@ -423,6 +467,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const handle = handleFor(record);
     if (!record.file || !handle) return;
     const handleId = record.file.handleId;
+    // The disk error behind a failed read, which is what this rule reads.
+    if (err instanceof UnavailableError) err = err.cause;
     // A native handle is always granted (the root record is the grant). Its
     // one failure is a file that moved or vanished, which Rust answers with
     // notFound; that gets the same reconnect marker, and the click re-picks
@@ -437,12 +483,118 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     emit("change");
   }
 
-  /** @param {string} id */
-  async function writeToDisk(id) {
-    const record = buffers.get(id);
+  /**
+   * Read a file-backed body (architecture.md §23). Every failure becomes an
+   * UnavailableError with a reason the editor can show, and the row gets its
+   * reconnect marker where a click can help.
+   * @param {BufferRecord} record
+   * @returns {Promise<{content: string, mtime: number, enc?: import("../storage/idb.js").EncMeta}>}
+   */
+  async function readBody(record) {
     const handle = handleFor(record);
-    if (!record || !record.file || !handle) return;
+    const name = record.file ? record.file.name : record.id;
+    if (!record.file || !handle) throw new UnavailableError("missing", "no handle for " + name);
     try {
+      const { content, lastModified, enc } = await readFileForRecord(handle, record.file.name);
+      return { content, mtime: lastModified, enc };
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") {
+        if (!needsPermission.has(record.file.handleId)) {
+          needsPermission.add(record.file.handleId);
+          emit("change");
+        }
+        throw new UnavailableError("permission", name + ": permission needed", err);
+      }
+      await refreshPermissionFlag(record, err);
+      const missing = err && (err.name === "NotFoundError" || err.code === "notFound");
+      throw new UnavailableError(missing ? "missing" : "error", name + ": " + err, err);
+    }
+  }
+
+  /**
+   * A body read from the file becomes this record's working copy. The file
+   * decides whether the doc is encrypted (a `.age` file replaced by plain
+   * text on disk stops being encrypted, and the other way round), but not the
+   * preset: the file cannot say "this-device", so a record that already knows
+   * its preset keeps it.
+   * @param {BufferRecord} record
+   * @param {{content: string, mtime: number, enc?: import("../storage/idb.js").EncMeta}} disk
+   */
+  function takeDisk(record, disk) {
+    record.content = disk.content;
+    if (!disk.enc) delete record.enc;
+    else if (!record.enc) record.enc = disk.enc;
+    // The old decoded text belongs to the old ciphertext.
+    plain.delete(record.id);
+    if (record.file) {
+      record.file.mtime = disk.mtime;
+      // The body is the file again; a text the file never took went to a
+      // conflict copy before any caller got here.
+      delete record.file.unwritten;
+    }
+  }
+
+  /**
+   * The pre-write check (architecture.md §23): stat the file before a write.
+   * null means write: the stamp is the one this device last saw, or there is
+   * nothing to compare against yet (`mtime` unknown after the v5 migration).
+   * Otherwise the file holds text this device never saw, and the caller's own
+   * rule decides what wins. Throws when the file cannot be reached.
+   * @param {BufferRecord} record @param {any} handle
+   * @param {number | undefined} [expected] The stamp of the caller's read.
+   */
+  async function movedOnDisk(record, handle, expected = record.file?.mtime) {
+    const stat = await lastModified(handle);
+    if (expected === undefined || stat === expected) return null;
+    return readBody(record);
+  }
+
+  /**
+   * Write a loaded file body, checked first (architecture.md §23). The
+   * keystroke rule: when the file changed under us, the file wins. The local
+   * text forks into a conflict copy, the buffer takes the file, and nothing
+   * is written this round (§2). Returns true when the file holds the record's
+   * text.
+   * @param {BufferRecord} record @returns {Promise<boolean>}
+   */
+  async function writeBody(record) {
+    const handle = handleFor(record);
+    try {
+      if (!record.file || !handle) {
+        throw new UnavailableError("missing", "no handle for " + record.id);
+      }
+      const disk = await movedOnDisk(record, handle);
+      if (disk && disk.content !== record.content) {
+        await forkConflict(record);
+        await replaceFromDisk(record.id, disk);
+        return false;
+      }
+      if (disk) {
+        // Same bytes: a touch. Nothing to write; the new stamp stops this
+        // file from looking changed on every write after it.
+        record.file.mtime = disk.mtime;
+        wrote(record);
+        return true;
+      }
+    } catch (err) {
+      await failWrite(record, err);
+      return false;
+    }
+    return writeFileNow(record);
+  }
+
+  /**
+   * The write half of writeBody, with no check: the pull and the re-wrap run
+   * their own check first, each with its own rule (§23). A failure leaves the
+   * text held in the record as `unwritten`, so nothing is lost.
+   * @param {BufferRecord} record @returns {Promise<boolean>}
+   */
+  async function writeFileNow(record) {
+    const handle = handleFor(record);
+    try {
+      if (!record.file || !handle) {
+        throw new UnavailableError("missing", "no handle for " + record.id);
+      }
       // A handle restored from IndexedDB can be back in the "prompt" state.
       // Asking here works when a gesture is still in flight; when it is not,
       // the row's reconnect marker gives the user a click that does work.
@@ -453,27 +605,54 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       // record already holds age ciphertext. A `.age` file opened as binary
       // therefore comes back armored, which is still standard age and still
       // opens with the CLI (architecture.md §13.4).
-      await writeFile(handle, record.content);
-      record.file.lastSyncAt = Date.now();
-      needsPermission.delete(record.file.handleId);
-      diskFailed.delete(id);
-      // Persist lastSyncAt, or a reload would see the buffer as dirty against
-      // its own file and fork a conflict copy out of nothing.
-      await persist({ ...record });
-      // Clears a "disk write failed" left by an earlier attempt; without this
-      // the failure would stay on screen until the next keystroke.
-      if (id === activeId && !saveTimers.has(id)) emit("save", { status: "saved" });
-      emit("change");
+      await writeFile(handle, record.content ?? "");
+      // One stat after the write, not a stamp from the write itself: the FSA
+      // writable reports none. Another program writing between the two calls
+      // would be taken for our own write; that window is milliseconds and is
+      // accepted, as the poll's own window is (§23).
+      record.file.mtime = await lastModified(handle);
+      wrote(record);
+      return true;
     } catch (err) {
-      if (!diskFailed.has(id)) {
-        // Once per buffer, not once per keystroke: a file that stays denied
-        // would otherwise fill the console while the user keeps typing.
-        diskFailed.add(id);
-        console.log("[vrtti] disk write failed for", record.file.name, err);
-      }
-      if (id === activeId) emit("save", { status: "disk write failed" });
-      await refreshPermissionFlag(record, err);
+      await failWrite(record, err);
+      return false;
     }
+  }
+
+  /** The file holds the record's text: clear every failure mark. @param {BufferRecord} record */
+  function wrote(record) {
+    if (!record.file) return;
+    const id = record.id;
+    delete record.file.unwritten;
+    needsPermission.delete(record.file.handleId);
+    diskFailed.delete(id);
+    // Clears a "disk write failed" left by an earlier attempt; without this
+    // the failure would stay on screen until the next keystroke.
+    if (id === activeId && !saveTimers.has(id)) emit("save", { status: "saved" });
+    emit("change");
+  }
+
+  /**
+   * A file write failed (a denied permission, a vanished file, a full disk).
+   * The record keeps its text and is persisted with it (§23): `unwritten`
+   * is what tells persist() to keep `content` in the row, and readers to take
+   * it over the file, until the next write attempt lands.
+   * @param {BufferRecord} record @param {any} err
+   */
+  async function failWrite(record, err) {
+    if (!record.file) return;
+    const id = record.id;
+    record.file.unwritten = true;
+    if (!diskFailed.has(id)) {
+      // Once per buffer, not once per keystroke: a file that stays denied
+      // would otherwise fill the console while the user keeps typing.
+      diskFailed.add(id);
+      console.log("[vrtti] disk write failed for", record.file.name, err);
+    }
+    if (id === activeId) emit("save", { status: "disk write failed" });
+    await refreshPermissionFlag(record, err);
+    // The row shows the reconnect marker for an unwritten record.
+    emit("change");
   }
 
   /** @param {string} id */
@@ -498,29 +677,83 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   }
 
   /**
+   * The encoded body of a record (architecture.md §23): ciphertext for an
+   * encrypted doc, the text for any other. `record.content` when this window
+   * holds it (a scratch record, a loaded tab, an `unwritten` one), else the
+   * file. A read for one of this window's tabs stays as its working copy; a
+   * read for anything else (Recent, another window's tab) keeps nothing, so
+   * no second body builds up in memory. Never persists: a read changes no
+   * stored fact except the stamp, which the next write carries anyway.
+   * Rejects with UnavailableError when the file cannot be read.
+   * @param {string} id
+   * @returns {Promise<{content: string, mtime?: number, enc?: import("../storage/idb.js").EncMeta}>}
+   *   `mtime` is the stamp this body matches, for a caller that writes the
+   *   file back or pushes it; `enc` is the file's say for a body read fresh.
+   */
+  async function bodyOf(id) {
+    const record = buffers.get(id);
+    if (!record) return { content: "" };
+    if (typeof record.content === "string") {
+      return { content: record.content, mtime: record.file?.mtime, enc: record.enc };
+    }
+    if (!record.file) return { content: "" };
+    const disk = await readBody(record);
+    // Re-tested after the await: a second read that raced this one must not
+    // replace a copy the user has typed into since.
+    if (isMyTab(id) && typeof record.content !== "string") {
+      takeDisk(record, disk);
+      // The record's `enc` after takeDisk, not the file's: the file can only
+      // say "encrypted", and the preset the record knows stays (§23).
+      return { ...disk, enc: record.enc };
+    }
+    return disk;
+  }
+
+  /** The encoded body, as a string. @param {string} id @returns {Promise<string>} */
+  async function body(id) {
+    return (await bodyOf(id)).content;
+  }
+
+  /**
    * The editor text of a buffer.
    *
-   * A string for a plaintext doc and for an encrypted one whose text is
-   * already decoded; a Promise only when a decode really has to run. The split
-   * is deliberate: the plaintext path is every doc in the app, and awaiting it
-   * would show an empty editor for a frame on every buffer switch.
+   * A string for a loaded plaintext doc and for an encrypted one whose text
+   * is already decoded; a Promise when a file read or a decode really has to
+   * run. The split is deliberate: the loaded plaintext path is most switches,
+   * and awaiting it would show an empty editor for a frame on each of them.
    *
    * The Promise rejects with LockedError when the keyring is locked or this
-   * device is not a recipient. The caller decides what to do about it; the
-   * editor shows the locked placeholder and asks for the passphrase.
+   * device is not a recipient, and with UnavailableError when the file cannot
+   * be read. The caller decides what to do about it; the editor shows the
+   * placeholder, and asks for the passphrase for the first.
    *
    * @param {string} id @returns {string | Promise<string>}
    */
   function textOf(id) {
     const record = buffers.get(id);
     if (!record) return "";
+    if (typeof record.content !== "string") {
+      return bodyOf(id).then(({ content, enc }) =>
+        enc ? decodeText(id, content, enc) : content
+      );
+    }
     if (!record.enc) return record.content;
     const cached = plain.get(id);
     if (cached !== undefined) return cached;
-    return codec.decode(record.content, record.enc, keyring).then((text) => {
+    return decodeText(id, record.content, record.enc);
+  }
+
+  /**
+   * @param {string} id @param {string} content @param {import("../storage/idb.js").EncMeta} enc
+   * @returns {Promise<string>}
+   */
+  function decodeText(id, content, enc) {
+    return codec.decode(content, enc, keyring).then((text) => {
       // Not if the user locked while this decode ran: lockAll() already
       // cleared the map, and caching now would put plaintext back into it.
-      if (keyring.isUnlocked) plain.set(id, text);
+      // And only for the body the record holds: a Recent file read keeps
+      // nothing in memory, its plaintext least of all (§23).
+      if (keyring.isUnlocked && buffers.get(id)?.content === content) plain.set(id, text);
       return text;
     });
   }
@@ -541,6 +774,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   function updateContent(id, content) {
     const record = buffers.get(id);
     if (!record) return;
+    // No working copy: a file body this window has not read. The editor only
+    // ever edits a state built from a read, so this cannot happen; it guards
+    // the next line from turning an unknown body into an edit.
+    if (typeof record.content !== "string" && !record.enc) return;
     // For an encrypted doc the comparison is against the plaintext map, never
     // against record.content: the record holds ciphertext, which differs from
     // the text on every save anyway (age wraps a fresh file key each time).
@@ -553,8 +790,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       plain.set(id, content);
     } else {
       // A replace (silent reload from disk) echoes straight back here through
-      // the editor's update listener. Without this guard that echo would bump
-      // updatedAt past lastSyncAt and make a just-synced buffer look dirty.
+      // the editor's update listener. Without this guard that echo would
+      // start a persist and push a revision nobody typed.
       if (record.content === content) return;
       record.content = content;
     }
@@ -595,9 +832,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * Set or clear the user label of a buffer (architecture.md §7, §9). An empty
    * name clears it, which puts a scratch buffer back on its first line.
    *
-   * updatedAt deliberately stays where it is: it is the dirty-vs-disk test
-   * against file.lastSyncAt, and a label writes no text. Bumping it would make
-   * a just-saved buffer look edited and fork a conflict copy out of nothing.
+   * updatedAt deliberately stays where it is: a label writes no text, and
+   * updatedAt orders Recent by the last edit.
    *
    * @param {string} id @param {string} title @returns {Promise<boolean>}
    */
@@ -742,11 +978,11 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * to now? Fewer means a device joined since the last save; more means a
    * keyring this window has not pulled yet, and nothing here ever takes a
    * recipient away (architecture.md §20).
-   * @param {BufferRecord} record
+   * @param {BufferRecord} record @param {string} content Its encoded body.
    */
-  function needsMoreRecipients(record) {
-    if (!record.enc || !keyring.isSetUp || !age.isArmored(record.content)) return false;
-    return age.countRecipients(record.content) < keyring.recipientsFor(record.enc.preset).length;
+  function needsMoreRecipients(record, content) {
+    if (!record.enc || !keyring.isSetUp || !age.isArmored(content)) return false;
+    return age.countRecipients(content) < keyring.recipientsFor(record.enc.preset).length;
   }
 
   /**
@@ -770,21 +1006,52 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       const id = record.id;
       if (!isDocument(record) || !record.enc || record.trashedAt) continue;
       if (open.has(id) && !mine.has(id)) continue;
-      if (saveTimers.has(id) || !needsMoreRecipients(record)) continue;
+      if (saveTimers.has(id)) continue;
+      // The body, not record.content: a Recent file-backed doc has none in
+      // memory (§23), and its file is exactly what a re-wrap rewrites.
+      let read;
+      try {
+        read = await bodyOf(id);
+      } catch (err) {
+        if (!(err instanceof UnavailableError)) throw err;
+        if (!readFailed.has(id)) {
+          readFailed.add(id);
+          console.log("[vrtti] re-encrypt skipped, file not readable:", id, err.reason);
+        }
+        continue;
+      }
+      readFailed.delete(id);
+      if (!needsMoreRecipients(record, read.content)) continue;
       let text;
       try {
-        text = await textOf(id);
+        // No save is pending (tested above), so a cached plaintext is the
+        // text of exactly this body.
+        text = plain.get(id) ?? (await codec.decode(read.content, record.enc, keyring));
       } catch {
         continue;
       }
       // The keyring may have locked while the decode ran (lockAll cleared
       // the map): stop, and the next unlock runs this again.
       if (!keyring.isUnlocked) return;
-      record.content = await codec.encode(text, record.enc, keyring);
+      const content = await codec.encode(text, record.enc, keyring);
+      if (record.file) {
+        // The re-wrap rewrites what it just read (§23): a stamp that moved
+        // since is an edit this device never saw, and this round leaves the
+        // file to it. The next keyring change or unlock tries again.
+        const handle = handleFor(record);
+        const stat = handle ? await lastModified(handle).catch(() => undefined) : undefined;
+        if (stat === undefined || (read.mtime !== undefined && stat !== read.mtime)) continue;
+        record.content = content;
+        // A `.age` file on disk is wrapped the same way (§19).
+        await writeFileNow(record);
+      } else {
+        record.content = content;
+      }
       markDirty(record);
       await persist({ ...record });
-      // A `.age` file on disk is wrapped the same way (§19).
-      diskSoon(id);
+      // A Recent record keeps no body in memory (§23), unless the write
+      // failed and the text is held as `unwritten`.
+      if (!isMyTab(id)) dropBody(record);
       changed = true;
       console.log("[vrtti] re-encrypted for the current keyring:", id);
     }
@@ -841,7 +1108,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!keyring.isUnlocked) throw new Error("encrypt: the keyring is locked");
     if (!canEncryptFile(record)) throw new Error("encrypt: this file cannot be renamed");
 
-    const text = record.content;
+    // The body, not record.content: a doc in Recent holds none (§23).
+    const read = await bodyOf(id);
+    const text = read.content;
     const enc = codec.newEncMeta(preset);
     const content = await codec.encode(text, enc, keyring);
 
@@ -850,6 +1119,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       // The record already holds the latest text (updateContent), so a
       // pending debounce has nothing to add and would only race the writes.
       dropTimers(id);
+      await refuseIfChanged(record, handle, read, "encrypt");
       if (!(await ensurePermission(handle, "readwrite"))) {
         throw new Error("encrypt: permission not granted");
       }
@@ -863,7 +1133,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         await persist({ ...record });
         throw err;
       }
-      record.file.lastSyncAt = Date.now();
+      record.file.mtime = await lastModified(handle);
     }
 
     // The label is the one plaintext the server ever sees for this doc (§5),
@@ -886,8 +1156,30 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.sync.dirty = true;
     }
     await persist({ ...record });
+    // A doc encrypted from its Recent row keeps no body in memory (§23).
+    if (!isMyTab(id)) dropBody(record);
     emit("change");
     return record;
+  }
+
+  /**
+   * The pre-write check of encrypt and decrypt (§19, §23): they rewrite the
+   * file from the text they hold, so a file that changed under them wins, as
+   * for a keystroke. A loaded tab forks its text and takes the file; either
+   * way the command stops with a refusal, and nothing was written.
+   * @param {BufferRecord} record @param {any} handle
+   * @param {{content: string, mtime?: number}} read The body the command holds.
+   * @param {string} label
+   */
+  async function refuseIfChanged(record, handle, read, label) {
+    const disk = await movedOnDisk(record, handle, read.mtime);
+    if (!disk || disk.content === read.content) return;
+    console.log("[vrtti] " + label + ": changed on disk", record.file?.name);
+    if (isMyTab(record.id) && typeof record.content === "string") {
+      await forkConflict(record);
+      await replaceFromDisk(record.id, disk);
+    }
+    throw new Error(label + ": the file changed on disk");
   }
 
   /**
@@ -902,16 +1194,18 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!record || !record.enc) return null;
     if (!keyring.isUnlocked) throw new Error("decrypt: the keyring is locked");
     if (!canEncryptFile(record)) throw new Error("decrypt: this file cannot be renamed");
+    const read = await bodyOf(id);
     const text = await textOf(id);
 
     const handle = handleFor(record);
     if (record.file && handle) {
       dropTimers(id);
+      await refuseIfChanged(record, handle, read, "decrypt");
       if (!(await ensurePermission(handle, "readwrite"))) {
         throw new Error("decrypt: permission not granted");
       }
       await writeFile(handle, text);
-      record.file.lastSyncAt = Date.now();
+      record.file.mtime = await lastModified(handle);
       // The rename is the lesser half: the file holds plaintext now whatever
       // it is called, and the record below must follow the file. A taken
       // name is logged, and the `.age` name stays until the user renames it.
@@ -927,6 +1221,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // in the row menu clears it whenever they want the row to follow the text.
     if (record.sync) record.sync.dirty = true;
     await persist({ ...record });
+    if (!isMyTab(id)) dropBody(record);
     emit("change");
     return record;
   }
@@ -1001,10 +1296,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     });
     handles.set(handleId, handle);
     record.kind = "file";
-    // lastSyncAt is wall clock, not the file's mtime: it is compared against
-    // updatedAt (also wall clock) to decide dirty, and an old mtime would make
-    // a file that was just opened look edited.
-    record.file = { handleId, name: handle.name, lastSyncAt: Date.now() };
+    // No mtime here: it is the stamp of this device's last read or write of
+    // the file (§23), and the caller's read or write that follows sets it.
+    record.file = { handleId, name: handle.name };
   }
 
   /**
@@ -1027,11 +1321,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       await reopen(existing.id);
       return existing;
     }
-    const { content, enc } = await readFileForRecord(handle, handle.name);
+    const { content, enc, lastModified: mtime } = await readFileForRecord(handle, handle.name);
     const record = newBufferRecord();
+    // The working copy of the tab this opens; persist keeps it out of the row.
     record.content = content;
     if (enc) record.enc = enc;
     await linkFile(record, handle);
+    if (record.file) record.file.mtime = mtime;
     // Set here rather than through setLang: the record is not in `buffers`
     // yet, and nothing is listening for it. The first putBuffer below carries
     // the language, so no extra write happens.
@@ -1063,15 +1359,20 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   async function saveAs(id) {
     const record = buffers.get(id);
     if (!record) return null;
+    const content = await body(id);
     const handle = await saveFilePicker(suggestedName(record));
-    await writeFile(handle, record.content);
+    await writeFile(handle, content);
     await linkFile(record, handle);
+    record.content = content;
     // The user can type any name into the picker. An encrypted buffer under a
     // plain name would open as a page of armor next time, so the suffix goes
     // back on where the handle allows it.
     if (record.enc && record.file && !/\.age$/i.test(handle.name) && canRenameFile(record)) {
       await moveFile(record, handle, encryptedName(handle.name));
     }
+    // After the rename, so the stamp is the file as it now sits.
+    if (record.file) record.file.mtime = await lastModified(handle);
+    // The body is the file from here on: this row loses its `content` (§23).
     await persist({ ...record });
     // The buffer now has a file name, and a file name decides the language.
     // "auto", so a syntax the user picked by hand survives the save.
@@ -1084,22 +1385,20 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   /**
    * Disk wins. The record takes the file's text and the editor swaps it in as
    * one change, so undo history survives (architecture.md §2 replace path).
+   * An external edit is an edit (§23): it is marked for the next push, so it
+   * reaches the other devices.
    * @param {string} id
+   * @param {{content: string, mtime: number, enc?: import("../storage/idb.js").EncMeta}} [disk]
+   *   A read the caller already made, so the file is not read twice.
+   * @param {{edit?: boolean}} [options] edit: false for a file this device's
+   *   own sync leader just wrote from a pull, which is no news to the server.
    */
-  async function replaceFromDisk(id) {
+  async function replaceFromDisk(id, disk, { edit = true } = {}) {
     const record = buffers.get(id);
-    const handle = handleFor(record);
-    if (!record || !record.file || !handle) return;
-    const { content, enc } = await readFileForRecord(handle, record.file.name);
-    record.content = content;
-    // The file decides: a `.age` file that was replaced by plain text on disk
-    // stops being encrypted, and the other way round.
-    if (enc) record.enc = enc;
-    else delete record.enc;
-    // The old decoded text belongs to the old ciphertext.
-    plain.delete(id);
+    if (!record || !record.file || !handleFor(record)) return;
+    takeDisk(record, disk ?? (await readBody(record)));
     record.updatedAt = Date.now();
-    record.file.lastSyncAt = record.updatedAt;
+    if (edit) markDirty(record);
     await persist({ ...record });
     await announceReplace(record);
     emit("change");
@@ -1129,15 +1428,18 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * The local text forks into a scratch buffer, the file buffer then takes the
    * disk version. Nothing is lost and nothing prompts.
    * @param {BufferRecord} record
+   * @param {string} [text] The encoded text to fork, when it is not the one
+   *   in memory: a pull forks the DISK text of a file that changed under it,
+   *   and a Recent record holds no text in memory at all (§23).
    */
-  async function forkConflict(record) {
+  async function forkConflict(record, text = record.content ?? "") {
     const fork = newBufferRecord();
     if (record.enc) {
       // Ciphertext, copied byte for byte. The usual "conflict copy of …"
       // prefix would corrupt the age file and make the copy undecryptable, so
       // the note goes into the title, which is plaintext by design (§7).
       // Works without any key: a courier device forks conflicts too (§5).
-      fork.content = record.content;
+      fork.content = text;
       fork.enc = { ...record.enc };
       fork.title = "conflict copy of " + titleOf(record);
     } else {
@@ -1147,7 +1449,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         " (" +
         new Date().toISOString() +
         ")\n\n" +
-        record.content;
+        text;
     }
     buffers.set(fork.id, fork);
     await persist(fork);
@@ -1242,7 +1544,15 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   }
 
   /**
-   * The body of one push (architecture.md §13.5).
+   * The body of one push (architecture.md §13.5), and the file stamp that
+   * body matches. A file-backed body is read here (§23), so this rejects with
+   * UnavailableError when the file cannot be read; the client skips the
+   * record, which stays dirty.
+   *
+   * `sentMtime` exists because the leader reads files, not the owner's
+   * memory: it can push a file that is one debounce behind the owner's
+   * text, and afterPush keeps the record dirty when the stamp has moved
+   * since, so the rest goes with the next round.
    * @param {BufferRecord} record
    */
   async function pushPayload(record) {
@@ -1257,16 +1567,25 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // device (architecture.md §3), and the other device has no such file. Do
     // not "fix" this by sending kind 'file'; it would arrive as a broken link.
     meta.kind = record.kind === "keyring" ? "keyring" : "scratch";
-    return {
+    let sentMtime = record.file?.mtime;
+    /** @type {string | null} */
+    let content = null;
+    if (!tombstone) {
+      const read = await bodyOf(record.id);
+      content = read.content;
+      if (record.file) sentMtime = read.mtime;
+    }
+    const payload = {
       // null is "attach without a claim". rev 0 is not a revision the server
       // ever had, so claiming it would 409 for ever on the very first push.
       baseRev: record.sync && record.sync.rev !== 0 ? record.sync.rev : null,
       kind: tombstone ?? "text",
-      content: tombstone ? null : record.content,
+      content,
       meta,
       deviceId: await deviceId(),
       clientTime: record.updatedAt,
     };
+    return { payload, sentMtime };
   }
 
   /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
@@ -1286,19 +1605,29 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * @param {number} [sentUpdatedAt] The record's updatedAt as it went out. The
    *   user can type while the request is in flight, and then the server holds
    *   an old text; comparing it here is what keeps that record dirty.
+   * @param {number} [sentMtime] The file stamp of the body that went out
+   *   (pushPayload): a file written since is text the server does not have.
    */
-  async function afterPush(id, rev, sentUpdatedAt) {
+  async function afterPush(id, rev, sentUpdatedAt, sentMtime) {
     const record = buffers.get(id);
     if (!record || !record.sync) return;
+    // A file never read on this device since the v5 migration has no stamp;
+    // the push just read it, and that read is this device's last one. Without
+    // this the guard below would keep the record dirty for ever.
+    if (record.file && record.file.mtime === undefined && typeof record.content !== "string") {
+      record.file.mtime = sentMtime;
+    }
+    const stillDirty = () =>
+      (sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt) ||
+      Boolean(record.file && record.file.mtime !== sentMtime);
     const owner = workspaces.ownerOf(id);
     if (owner && owner !== workspaces.id && (await workspaces.liveSet()).has(owner)) {
       // The owner keeps the record's books (architecture.md §14.3). This
       // copy follows in memory only, so the next push loop already sees the
       // rev; the owner's own persist brings the stored record.
       record.sync.rev = rev;
-      record.sync.dirty =
-        sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt;
-      post("pushed", { ws: owner, id, rev, sentUpdatedAt });
+      record.sync.dirty = stillDirty();
+      post("pushed", { ws: owner, id, rev, sentUpdatedAt, sentMtime });
       return;
     }
     // A tombstone push is the last thing this record ever says to the server.
@@ -1306,8 +1635,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (record.sync.tombstone === "deleted") return forget(id);
     if (record.sync.tombstone) return clearSync(id);
     record.sync.rev = rev;
-    record.sync.dirty =
-      sentUpdatedAt !== undefined && record.updatedAt !== sentUpdatedAt;
+    record.sync.dirty = stillDirty();
     await persist({ ...record });
     emit("change");
   }
@@ -1332,22 +1660,45 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   }
 
   /**
-   * Take the incoming version as current.
+   * Take the incoming version as current. The pull's rule for a file (§3,
+   * §23): the incoming version wins. A file that changed under this device
+   * forks its disk text first, then the file takes the incoming at once.
    * @param {BufferRecord} record @param {Change} change
+   * @param {string} [forked] The text applyRemote already forked, so the
+   *   same text is not forked twice.
    */
-  async function adoptRemote(record, change) {
-    record.content = change.content ?? "";
+  async function adoptRemote(record, change, forked) {
+    const id = record.id;
+    const incoming = change.content ?? "";
+    // The pull replaces the text; a pending persist would write the old
+    // working copy over it (applyRemote forked that copy already).
+    dropTimers(id);
+    const handle = handleFor(record);
+    if (record.file && handle) {
+      try {
+        const disk = await movedOnDisk(record, handle);
+        if (disk && disk.content !== incoming && disk.content !== forked) {
+          await forkConflict(record, disk.content);
+        }
+      } catch {
+        // Unreadable: there is no disk text this device can fork. The write
+        // below fails the same way and holds the incoming as `unwritten`.
+      }
+    }
+    record.content = incoming;
     applyMeta(record, change.meta || {});
     record.sync = { rev: change.rev, dirty: false };
     record.updatedAt = Date.now();
     // The decoded text belongs to the ciphertext this just replaced.
-    plain.delete(record.id);
+    plain.delete(id);
+    // At once, not through a debounce: the pull has landed when the file
+    // holds it (§23). A failure keeps the pulled text as `unwritten`.
+    if (record.file) await writeFileNow(record);
     await persist({ ...record });
-    await announceReplace(record);
+    if (isMyTab(id)) await announceReplace(record);
+    // A Recent record keeps no body in memory (§23), unless it is held.
+    else dropBody(record);
     emit("change");
-    // A file-backed record mirrors the pull to its own file, the same
-    // write-behind a keystroke would take. A no-op for every other record.
-    diskSoon(record.id);
   }
 
   /**
@@ -1403,8 +1754,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       .finally(() => post("remote-applied", { docId: change.docId, rev: change.rev }));
   });
 
-  on("pushed", ({ ws, id, rev, sentUpdatedAt }) => {
-    if (ws === workspaces.id) void afterPush(id, rev, sentUpdatedAt);
+  on("pushed", ({ ws, id, rev, sentUpdatedAt, sentMtime }) => {
+    if (ws === workspaces.id) void afterPush(id, rev, sentUpdatedAt, sentMtime);
   });
 
   /**
@@ -1489,7 +1840,11 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       // Deleted elsewhere while this device still held unpushed text. The text
       // survives as a local copy; the record itself goes to the trash
       // (architecture.md §22), or away for good when there is nothing in it.
-      if (record.sync?.dirty && !discarded) await forkConflict(record);
+      // A file body not in memory needs no copy: it is the file, and the
+      // trash never touches the file.
+      if (record.sync?.dirty && !discarded && typeof record.content === "string") {
+        await forkConflict(record);
+      }
       if (isEmpty(record) || discarded) {
         buffers.delete(id);
         plain.delete(id);
@@ -1498,6 +1853,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         await trash(record);
       }
       await workspaces.removeTab(id);
+      dropBody(record);
       emit("evict", { id });
       if (id === activeId) {
         // Null first, so the next activate() parks nothing into a record that
@@ -1541,17 +1897,50 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       return;
     }
 
+    /** @type {string | undefined} */
+    let forked;
     if (record.sync) {
       // The incoming version wins and the local text forks. Nothing is lost
-      // and nothing prompts (architecture.md §3).
-      if (record.sync.dirty && !discarded) await forkConflict(record);
-    } else if (record.content !== change.content) {
+      // and nothing prompts (architecture.md §3). Dirty here is also a
+      // keystroke still in its debounce, or a file write that failed: text
+      // the push has not seen yet (§23).
+      const dirty =
+        record.sync.dirty || saveTimers.has(id) || Boolean(record.file?.unwritten);
+      if (dirty && !discarded && typeof record.content === "string") {
+        forked = record.content;
+        await forkConflict(record);
+      } else if (dirty && !discarded && record.file) {
+        // A Recent file the leader found changed (stampRecentFiles): the
+        // edit is on disk only, and the stamp already moved, so the disk
+        // check in adoptRemote cannot see it. Its text forks from the file.
+        const local = await body(id).catch((err) => {
+          if (!(err instanceof UnavailableError)) throw err;
+          return undefined;
+        });
+        if (local !== undefined && local !== change.content) {
+          forked = local;
+          await forkConflict(record, local);
+        }
+      }
+    } else {
       // Detached here, then edited on either side. Re-attaching must not drop
       // the local text; equal content needs no fork, which is what makes a
       // detach and re-attach round trip quietly.
-      await forkConflict(record);
+      let local;
+      try {
+        local = await body(id);
+      } catch (err) {
+        // The file cannot be read: its text is still on disk, untouched by
+        // this, and the write in adoptRemote fails the same way and holds
+        // the incoming as `unwritten`. Adopt without a fork.
+        if (!(err instanceof UnavailableError)) throw err;
+      }
+      if (local !== undefined && local !== change.content) {
+        forked = local;
+        await forkConflict(record, local);
+      }
     }
-    await adoptRemote(record, change);
+    await adoptRemote(record, change, forked);
   }
 
   /**
@@ -1580,8 +1969,10 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     return record;
   }
 
-  // Compare disk against every open file buffer. Timestamps only, no hashing.
-  // FileSystemObserver replaces this poll when it is stable.
+  // Compare disk against this window's loaded file tabs: the file's own
+  // stamp against `file.mtime`, the stamp of this device's last read or write
+  // (§23). No hashing. FileSystemObserver replaces this poll when it is
+  // stable.
   let watching = false;
   async function checkExternalChanges() {
     // Alt-tabbing fires focus again while a pass is still awaiting disk IO.
@@ -1599,24 +1990,46 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     for (const record of openBuffers()) {
       const handle = handleFor(record);
       if (!handle || !record.file) continue;
-      // Our own write is still queued; it is about to set the file's mtime, so
-      // there is nothing external to find yet.
-      if (diskTimers.has(record.id)) continue;
+      if (typeof record.content !== "string") {
+        // A tab never read has no working copy to compare: its next
+        // activation reads the file as it is. The active tab is the one
+        // exception, because it may be showing "File not available": a
+        // file that came back is read here, and the editor puts it up (§23).
+        if (record.id !== activeId) continue;
+        try {
+          await bodyOf(record.id);
+          emit("available", { id: record.id });
+        } catch {
+          // Still unavailable: the placeholder stays, the marker too.
+        }
+        continue;
+      }
+      // A persist is pending: its own pre-write check sees whatever is on
+      // disk, with the keystroke rule, which is the right one for a tab
+      // with unsaved text.
+      if (saveTimers.has(record.id)) continue;
       try {
-        if ((await lastModified(handle)) <= record.file.lastSyncAt) continue;
-        const { content } = await readFileForRecord(handle, record.file.name);
+        if (record.file.unwritten) {
+          // The retry of a failed write (§23), on focus and on the interval.
+          await writeBody(record);
+          await persist({ ...record });
+          continue;
+        }
+        const disk = await movedOnDisk(record, handle);
+        if (!disk) continue;
         // Two encryptions of the same text give different bytes, so this
         // shortcut simply never fires for a `.age` file. Correct, only slower:
         // a touched `.age` file takes the replace path instead.
-        if (content === record.content) {
-          // Same bytes: a touch, or a clock that runs ahead of ours. Move the
-          // stamp so this file stops re-triggering on every poll.
-          record.file.lastSyncAt = Date.now();
+        if (disk.content === record.content) {
+          // Same bytes: a touch. Keep the new stamp, so this file stops
+          // re-triggering on every poll.
+          record.file.mtime = disk.mtime;
+          await persist({ ...record });
           continue;
         }
-        // Dirty means the buffer holds edits the file never saw.
-        if (record.updatedAt > record.file.lastSyncAt) await forkConflict(record);
-        await replaceFromDisk(record.id);
+        // Clean here (no persist pending, nothing unwritten): a silent
+        // reload, no fork (§2).
+        await replaceFromDisk(record.id, disk);
       } catch (err) {
         // Unreadable: permission dropped, or the file is gone. A poll must
         // never throw, and only the first case earns a reconnect marker.
@@ -1625,14 +2038,22 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     }
   }
 
-  /** @param {BufferRecord} record Does this buffer's file need a permission grant? */
+  /**
+   * Does this buffer's file need a click: a permission grant, a re-pick, or
+   * the retry of a write that failed (§23)?
+   * @param {BufferRecord} record
+   */
   function needsReconnect(record) {
-    return Boolean(record.file && needsPermission.has(record.file.handleId));
+    return Boolean(
+      record.file && (needsPermission.has(record.file.handleId) || record.file.unwritten)
+    );
   }
 
   /**
    * Runs from a click, which is the only context where requestPermission may
-   * prompt. On success the pending text goes to disk immediately.
+   * prompt. Reconnect never overwrites (§23): after a grant or a fresh pick
+   * the file is the body and the record reads it. Only an `unwritten` record
+   * writes its held text, through the pre-write check.
    * @param {string} id
    */
   async function reconnect(id) {
@@ -1641,13 +2062,26 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (!record || !record.file || !handle) return false;
     const handleId = record.file.handleId;
     if (isDesktop) {
-      // In the shell a reconnect is always a fresh pick. Either the record is
-      // from before the native backend and holds a WebView2 handle, which
+      // A native write that failed for another reason than a missing file
+      // (a full disk, a lock) needs a retry, not a picker: the file is there.
+      if (record.file.unwritten && isNativeHandle(handle)) {
+        const missing = await lastModified(handle).then(
+          () => false,
+          (err) => Boolean(err && err.name === "NotFoundError")
+        );
+        if (!missing) {
+          const ok = await writeBody(record);
+          await persist({ ...record });
+          if (ok) emit("available", { id });
+          return ok;
+        }
+      }
+      // In the shell a reconnect is otherwise a fresh pick. Either the record
+      // is from before the native backend and holds a WebView2 handle, which
       // cannot tell Rust which file it points at, or it is a native root whose
       // file moved or vanished (architecture.md §17, "Mixed handles"). The
       // picker runs from this click because a click is the only place a
-      // picker may open. Same handle id, so the buffer keeps its link and its
-      // text.
+      // picker may open. Same handle id, so the buffer keeps its link.
       let picked;
       try {
         picked = await pickFile();
@@ -1665,14 +2099,95 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
         addedAt: stored ? stored.addedAt : Date.now(),
       });
       record.file.name = picked.name;
-      await persist({ ...record });
-    } else if (!(await ensurePermission(handle, "readwrite"))) {
-      return false;
+      needsPermission.delete(handleId);
+      // The old file's stamp says nothing about the picked one.
+      delete record.file.mtime;
+      if (record.file.unwritten) {
+        await writeBody(record);
+        await persist({ ...record });
+      } else if (typeof record.content === "string") {
+        // The picked file is the body: never overwrite it with the tab.
+        await replaceFromDisk(id);
+      } else {
+        // Nothing loaded: the next read takes the picked file. It may hold
+        // other text than the lost one, so the server hears about it.
+        markDirty(record);
+        await persist({ ...record });
+      }
+    } else {
+      if (!(await ensurePermission(handle, "readwrite"))) return false;
+      needsPermission.delete(handleId);
+      if (record.file.unwritten) {
+        await writeBody(record);
+        await persist({ ...record });
+      } else if (typeof record.content === "string") {
+        await checkExternalChanges();
+      }
     }
-    needsPermission.delete(handleId);
-    await writeToDisk(id);
-    await checkExternalChanges();
+    // The editor re-reads a tab that showed "File not available".
+    emit("available", { id });
+    emit("change");
     return true;
+  }
+
+  /**
+   * Unlink file (§23): the inverse of Save to disk. The body becomes the
+   * record's own `content`, the record a scratch one, and the handle row
+   * goes. The file on disk is not touched. Also the way out of a lost file,
+   * as long as its text is held (`unwritten`); a file that cannot be read
+   * rejects with UnavailableError, and the command says so.
+   * @param {string} id @returns {Promise<BufferRecord | null>}
+   */
+  async function unlinkFile(id) {
+    const record = buffers.get(id);
+    if (!record || !record.file) return null;
+    const text = await body(id);
+    const { handleId, name } = record.file;
+    handles.delete(handleId);
+    needsPermission.delete(handleId);
+    await deleteHandle(handleId);
+    // The row keeps the file's name as its label; the user can rename it.
+    if (!record.title) {
+      record.title = decryptedName(name);
+      // The title is metadata that syncs (§5); a scratch doc has no file
+      // name to show on the other devices.
+      markDirty(record);
+    }
+    record.kind = "scratch";
+    delete record.file;
+    record.content = text;
+    diskFailed.delete(id);
+    await persist({ ...record });
+    emit("change");
+    return record;
+  }
+
+  /**
+   * The sync leader's watch over Recent (§23): one stat per file-backed note
+   * with a server target, before each push round. A changed stamp marks it
+   * dirty, and the push then reads the file. Never reads a body here. A tab
+   * of any window is skipped: its window's own poll watches it, and only
+   * that window writes its record (§14).
+   */
+  async function stampRecentFiles() {
+    for (const record of [...buffers.values()]) {
+      if (!record.file || !record.sync || record.sync.tombstone || record.trashedAt) continue;
+      if (workspaces.ownerOf(record.id) !== null) continue;
+      const handle = handleFor(record);
+      if (!handle) continue;
+      let stat;
+      try {
+        stat = await lastModified(handle);
+      } catch {
+        continue;
+      }
+      if (stat === record.file.mtime) continue;
+      // Unknown means "never read since the migration": nothing to compare,
+      // so no edit to report, only a stamp to keep.
+      if (record.file.mtime !== undefined) markDirty(record);
+      record.file.mtime = stat;
+      await persist({ ...record });
+    }
   }
 
   /**
@@ -1688,7 +2203,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.kind !== "file" &&
       !record.enc &&
       !record.title &&
-      record.content.trim() === ""
+      (record.content ?? "").trim() === ""
     );
   }
 
@@ -1714,9 +2229,17 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
 
   /** The record is gone: from memory, IndexedDB and the other windows. @param {string} id */
   async function forget(id) {
+    const record = buffers.get(id);
     buffers.delete(id);
     plain.delete(id);
     await remove(id);
+    // Nothing else owns a file record's handle row (linkFile makes one per
+    // record); left behind, it would sit in the store for ever.
+    if (record?.file) {
+      handles.delete(record.file.handleId);
+      needsPermission.delete(record.file.handleId);
+      await deleteHandle(record.file.handleId);
+    }
     emit("change");
   }
 
@@ -1748,6 +2271,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const index = workspaces.current().tabs.indexOf(id);
     if (!record || index < 0) return;
     emit("evict", { id });
+    // The flush: a keystroke still in its debounce reaches its storage now,
+    // because the working copy goes next (§23).
+    const pending = saveTimers.has(id);
+    dropTimers(id);
+    if (pending) await persistNow(id);
+    // In Recent, a file-backed record has no body in memory (§23).
+    dropBody(record);
     if (isEmpty(record)) {
       await discard(record);
     } else {
@@ -1794,8 +2324,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   async function load() {
     for (const record of await getAllBuffers()) buffers.set(record.id, record);
     // Handles come back from IndexedDB with their permission possibly back at
-    // "prompt". Nothing prompts here: that needs a user gesture, and a file
-    // buffer opens from its IndexedDB copy either way.
+    // "prompt". Nothing prompts here: that needs a user gesture. Nothing is
+    // read here either: a file body is read when its tab is shown (§23).
     for (const stored of await getAllHandles()) {
       // The store also holds directory handles for opened folders
       // (model/folders.js owns those). A directory handle here would be a file
@@ -1826,22 +2356,49 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   /** @param {BufferRecord} record */
   async function adoptFromWindow(record) {
     const id = record.id;
-    const mine = workspaces.current().tabs.includes(id);
-    if (mine && (saveTimers.has(id) || diskTimers.has(id))) return;
+    const mine = isMyTab(id);
+    if (mine && saveTimers.has(id)) return;
     const previous = buffers.get(id);
+    // A file-backed record travels without its body (§23). This window's
+    // working copy of its own tab stays; an undefined from the message must
+    // not wipe it.
+    const loaded =
+      mine &&
+      Boolean(record.file) &&
+      typeof record.content !== "string" &&
+      typeof previous?.content === "string";
+    if (loaded) record.content = previous?.content;
     buffers.set(id, record);
+    if (record.kind === "keyring") {
+      plain.delete(id);
+      emit("system", { id });
+      emit("change");
+      return;
+    }
+    if (loaded) {
+      // Only a file write elsewhere moves the stamp of this window's tab:
+      // the sync leader applied a pull itself (§14.3 fallback). The file is
+      // the body, so the tab reads it; the leader already told the server.
+      if (record.file?.mtime !== previous?.file?.mtime) {
+        // The old stamp until the read lands: a read that fails leaves the
+        // tab's text as it was, and the next poll must still see the change.
+        if (previous?.file) record.file = { ...record.file, mtime: previous.file.mtime };
+        await replaceFromDisk(id, undefined, { edit: false }).catch((err) =>
+          console.log("[vrtti] re-read after another window's write failed", id, err)
+        );
+      }
+      emit("change");
+      return;
+    }
     const contentChanged =
       !previous ||
       previous.content !== record.content ||
       Boolean(previous.enc) !== Boolean(record.enc);
     // The decoded text belongs to the old ciphertext.
     if (contentChanged) plain.delete(id);
-    if (record.kind === "keyring") {
-      emit("system", { id });
-      emit("change");
-      return;
+    if (mine && contentChanged && typeof record.content === "string") {
+      await announceReplace(record);
     }
-    if (mine && contentChanged) await announceReplace(record);
     emit("change");
   }
 
@@ -1872,6 +2429,11 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     // buffer now would write the workspace back (see workspace.js).
     if (workspaces.isDissolved) return;
     const tabs = workspaces.current().tabs;
+    // A tab another window took (a dissolve, a lost double take) keeps no
+    // body here any more (§23); its owner reads its own.
+    for (const record of buffers.values()) {
+      if (!tabs.includes(record.id) && !saveTimers.has(record.id)) dropBody(record);
+    }
     if (activeId && !tabs.includes(activeId)) {
       activeId = null;
       const next = openBuffers()[0];
@@ -1943,6 +2505,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     reopen,
     activate,
     textOf,
+    // The encoded body of any record, read from its file when this window
+    // holds none (§23). The one door for a caller that needs the bytes.
+    body,
     decodeContent,
     updateContent,
     // For the editor's locked placeholder: a LockedError while the keyring is
@@ -1980,5 +2545,9 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     checkExternalChanges,
     needsReconnect,
     reconnect,
+    unlinkFile,
+    // For the sync leader, before each push round (§23).
+    stampRecentFiles,
+    UnavailableError,
   };
 }

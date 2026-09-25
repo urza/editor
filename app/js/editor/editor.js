@@ -226,10 +226,17 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste) 
 
 const LOCKED_TEXT = "🔒 Locked. Unlock to read this document.";
 const FOREIGN_TEXT = "🔒 Encrypted for another device. This device has no key for it.";
+/** @type {Record<string, string>} UnavailableError reasons (model/docs.js), as the placeholder says them. */
+const UNAVAILABLE_TEXT = {
+  permission: "permission needed",
+  missing: "file missing",
+  error: "read failed",
+};
 
 /**
- * What an encrypted document shows while its text is out of reach: locked, or
- * still decoding (architecture.md §5).
+ * What a document shows while its text is out of reach: an encrypted one
+ * locked or still decoding (architecture.md §5), a file-backed one still
+ * reading or unreadable (§23).
  *
  * It carries no update listener and no history on purpose. This state is not
  * the document, so nothing typed into it may ever reach the store, and nothing
@@ -367,8 +374,8 @@ export function mountEditor(host, store) {
       return state;
     }
 
-    // Encrypted and not decoded yet. The placeholder goes up now and the real
-    // state swaps in when the decode lands, so the switch never blocks.
+    // A file read or a decode is running. The placeholder goes up now and the
+    // real state swaps in when it lands, so the switch never blocks.
     placeholderId = id;
     decodingId = id;
     const gen = generation;
@@ -389,6 +396,18 @@ export function mountEditor(host, store) {
       },
       (err) => {
         if (decodingId === id) decodingId = null;
+        // The file could not be read (§23): say which one and why, in the
+        // placeholder frame. A reconnect or the file coming back sends the
+        // store's "available" event, which reads again.
+        if (err && err.name === "UnavailableError") {
+          if (id === store.activeId && placeholderId === id) {
+            const record = store.get(id);
+            const name = record?.file ? record.file.name : id;
+            const why = UNAVAILABLE_TEXT[err.reason] ?? UNAVAILABLE_TEXT.error;
+            view.setState(createLockedState("File not available: " + name + " (" + why + ")"));
+          }
+          return;
+        }
         if (!err || err.name !== "LockedError") {
           console.log("[vrtti] decode failed", id, err);
           return;
@@ -406,7 +425,10 @@ export function mountEditor(host, store) {
         askUnlock(id);
       }
     );
-    return createLockedState();
+    // Blank while a plain file is read: "Locked." would be a false claim for
+    // a doc that is not encrypted, and the read takes milliseconds.
+    const record = store.get(id);
+    return record?.file && !record.enc ? createLockedState("") : createLockedState();
   }
 
   /**
@@ -495,6 +517,13 @@ export function mountEditor(host, store) {
   store.events.addEventListener("unlock", () => {
     const active = store.activeId;
     if (active && placeholderId === active) reactivate(active);
+  });
+
+  // A file came back (a reconnect, §23). Only a tab that shows the
+  // placeholder has anything to do: it reads the file again.
+  store.events.addEventListener("available", (event) => {
+    const { id } = /** @type {CustomEvent} */ (event).detail;
+    if (id === store.activeId && placeholderId === id) reactivate(id);
   });
 
   store.events.addEventListener("evict", (event) => {

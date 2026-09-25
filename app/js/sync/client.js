@@ -61,6 +61,10 @@ export function createSyncClient({ store, keyring }) {
   let started = false;
   /** @type {number | undefined} */
   let debounceTimer;
+  // Records whose file could not be read for a push. Logged once each, not
+  // once per round: a file that stays missing would fill the console.
+  /** @type {Set<string>} */
+  const unreadable = new Set();
 
   function isConfigured() {
     return Boolean(config && config.url && config.token);
@@ -146,7 +150,21 @@ export function createSyncClient({ store, keyring }) {
    *   back with no current revision (the document has no rows at all).
    */
   async function pushOne(record, attach = false) {
-    const payload = await store.pushPayload(record);
+    let prepared;
+    try {
+      prepared = await store.pushPayload(record);
+    } catch (err) {
+      // A file-backed body that cannot be read this round (§23): skip it.
+      // The record stays dirty, and the next round tries again.
+      if (!err || /** @type {any} */ (err).name !== "UnavailableError") throw err;
+      if (!unreadable.has(record.id)) {
+        unreadable.add(record.id);
+        console.log("[vrtti] push skipped, file not readable:", record.id, err);
+      }
+      return;
+    }
+    unreadable.delete(record.id);
+    const { payload, sentMtime } = prepared;
     if (attach) payload.baseRev = null;
     // Read before the request: the push clears `purge`, and the user can type
     // while it is in flight, which is what afterPush compares against.
@@ -169,7 +187,7 @@ export function createSyncClient({ store, keyring }) {
     if (!res.ok) throw httpError(res);
 
     const body = await res.json();
-    await store.afterPush(record.id, body.rev, sentUpdatedAt);
+    await store.afterPush(record.id, body.rev, sentUpdatedAt, sentMtime);
 
     if (purge) {
       // The doc just turned encrypted, and the older revisions still hold its
@@ -225,6 +243,10 @@ export function createSyncClient({ store, keyring }) {
         setStatus({ state: "syncing", lastSyncAt });
         await ensureKeyringSynced();
         await pull();
+        // Recent file notes changed on disk become dirty here, so this
+        // round's push carries them (§23). After the pull: a pull writes
+        // files itself and moves their stamps first.
+        await store.stampRecentFiles();
         await push();
         lastSyncAt = Date.now();
         setStatus({ state: "idle", lastSyncAt });

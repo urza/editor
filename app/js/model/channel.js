@@ -6,7 +6,8 @@
 // travels with every message so a later unit can address one window.
 //
 // Message types and payloads:
-//   buffer            { record }            a buffer record after a local put
+//   buffer            { record }            a buffer record after a local put; no
+//                                           `content` for a file-backed one (§23)
 //   buffer-deleted    { id }
 //   workspace         { record }            a workspace record after a local put
 //   workspace-deleted { id }

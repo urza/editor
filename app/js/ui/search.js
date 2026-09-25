@@ -296,31 +296,32 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       // that is open here even when the tab itself matched nothing.
       if (record.file && record.file.path) run.paths.add(record.file.path);
 
-      let text = "";
-      if (record.enc) {
-        // §5: search only sees currently unlocked documents. Nothing here may
-        // prompt, so a locked store simply skips them and says how many.
-        if (!store.isUnlocked) {
-          run.locked++;
-          continue;
-        }
-        try {
-          text = await store.textOf(record.id);
-        } catch (err) {
-          // The courier case (§5): ciphertext for another device, which no
-          // passphrase on this machine opens. Skip it, and stay quiet. The
-          // name, not an instanceof: editor/editor.js reads the same error
-          // the same way, and neither of them imports the crypto layer.
-          if (!err || err.name !== "LockedError") {
-            console.log("[vrtti] search: decode failed", record.id, err);
-          }
-          run.locked++;
-          continue;
-        }
-        if (run.gen !== generation) return false;
-      } else {
-        text = /** @type {string} */ (store.textOf(record.id));
+      // §5: search only sees currently unlocked documents. Nothing here may
+      // prompt, so a locked store simply skips them and says how many.
+      if (record.enc && !store.isUnlocked) {
+        run.locked++;
+        continue;
       }
+      // Awaited for every tab: a file-backed tab not shown yet is read from
+      // its file here (architecture.md §23), as an encrypted one is decoded.
+      let text;
+      try {
+        text = await store.textOf(record.id);
+      } catch (err) {
+        // The file cannot be read (a missing file, a lost permission): its
+        // row says so already, and there is no text to search.
+        if (err && err.name === "UnavailableError") continue;
+        // The courier case (§5): ciphertext for another device, which no
+        // passphrase on this machine opens. Skip it, and stay quiet. The
+        // name, not an instanceof: editor/editor.js reads the same error
+        // the same way, and neither of them imports the crypto layer.
+        if (!err || err.name !== "LockedError") {
+          console.log("[vrtti] search: decode failed", record.id, err);
+        }
+        run.locked++;
+        continue;
+      }
+      if (run.gen !== generation) return false;
 
       addFile(run, titleOf(record), { id: record.id }, text);
       if (run.capped) return false;

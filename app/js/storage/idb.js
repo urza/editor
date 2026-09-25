@@ -11,13 +11,23 @@
 // `order` for manual sidebar ordering are still reserved and unused.
 // v4 added the "workspaces" store and removed the buffer `closed` flag:
 // membership in a workspace's `tabs` is the one truth for "open" (§14.1).
+// v5 deleted `content` and `file.lastSyncAt` from every record with `file`:
+// a file-backed note keeps its body in the file and nowhere else (§23).
 
 /**
  * @typedef {Object} FileLink
  * @property {string} handleId  Key into the "handles" store.
  * @property {string} name      Disk file name, kept here so the sidebar renders without a handle.
- * @property {number} lastSyncAt  Epoch ms of the last successful disk read or write.
  * @property {string} [path]  Path inside the folder it was opened from, display only.
+ * @property {number} [mtime]  The file's modification time as the platform
+ *                             reported it at this device's last successful read
+ *                             or write (architecture.md §23). "Changed on disk"
+ *                             is a stat that differs from it. Undefined until
+ *                             the first read after the v5 migration, which
+ *                             means "nothing to compare against": no fork.
+ * @property {true} [unwritten]  The last file write failed, so the row holds
+ *                             `content` next to the file until the next write
+ *                             attempt lands and clears it (§23).
  */
 
 /**
@@ -45,7 +55,11 @@
 /**
  * @typedef {Object} BufferRecord
  * @property {string} id
- * @property {string} content  Opaque to this layer: plaintext today, may be age ciphertext later.
+ * @property {string} [content]  The body, opaque to this layer (plaintext or
+ *                            age ciphertext). Absent for a file-backed record,
+ *                            whose body is the file (architecture.md §23);
+ *                            present there only while `file.unwritten` holds a
+ *                            body the file write did not take.
  * @property {number} createdAt
  * @property {number} updatedAt
  * @property {string} [title]  User label from the sidebar rename (architecture.md
@@ -108,7 +122,7 @@
 import { reviveHandle } from "./native.js";
 
 const DB_NAME = "vrtti";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE = "buffers";
 const HANDLES = "handles";
 const SETTINGS = "settings";
@@ -134,9 +148,10 @@ export function openDb() {
       // Every version's stores are created here, each behind a "does it exist"
       // check. That makes the handler idempotent, so one code path upgrades
       // any older database and creates a fresh one. v1 to v3 never rewrote a
-      // record, because every field they added was optional. v4 rewrites the
-      // buffers once, to drop `closed`, and that step needs the old version
-      // number: a fresh database (oldVersion 0) has nothing to migrate.
+      // record, because every field they added was optional. v4 and v5
+      // rewrite the buffers once each (drop `closed`; drop the second body of
+      // a file record), and those steps need the old version number: a fresh
+      // database (oldVersion 0) has nothing to migrate.
       req.onupgradeneeded = (event) => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) {
@@ -151,8 +166,14 @@ export function openDb() {
         if (!db.objectStoreNames.contains(WORKSPACES)) {
           db.createObjectStore(WORKSPACES, { keyPath: "id" });
         }
-        if (event.oldVersion > 0 && event.oldVersion < 4 && req.transaction) {
-          migrateToWorkspaces(req.transaction);
+        const tx = req.transaction;
+        if (event.oldVersion > 0 && event.oldVersion < 4 && tx) {
+          // v5 runs from inside v4's callback, after v4 queued its puts: two
+          // getAll() issued side by side would both read the v3 rows, and the
+          // v5 put would bring `closed` back.
+          migrateToWorkspaces(tx, () => migrateToOneBody(tx));
+        } else if (event.oldVersion === 4 && tx) {
+          migrateToOneBody(tx);
         }
       };
       req.onsuccess = () => {
@@ -189,8 +210,9 @@ export function openDb() {
  * upgrade transaction, which stays open while these requests chain, so no
  * await is possible here: the callbacks nest instead.
  * @param {IDBTransaction} tx
+ * @param {() => void} then  The next migration, started once the puts are queued.
  */
-function migrateToWorkspaces(tx) {
+function migrateToWorkspaces(tx, then) {
   const buffers = tx.objectStore(STORE);
   buffers.getAll().onsuccess = (event) => {
     /** @type {any[]} */
@@ -206,6 +228,7 @@ function migrateToWorkspaces(tx) {
         buffers.put(record);
       }
     }
+    then();
     tx.objectStore(HANDLES).getAll().onsuccess = (event2) => {
       /** @type {any[]} */
       const handles = /** @type {IDBRequest} */ (event2.target).result;
@@ -230,6 +253,28 @@ function migrateToWorkspaces(tx) {
         updatedAt: now,
       });
     };
+  };
+}
+
+/**
+ * v4 to v5: a file-backed record loses its IndexedDB copy of the body and
+ * `file.lastSyncAt` (architecture.md §23). The file was already the truth
+ * (§1), and the focus poll would have replaced the copy at the next focus.
+ * Same shape as migrateToWorkspaces: no await inside the upgrade transaction,
+ * and running it twice changes nothing.
+ * @param {IDBTransaction} tx
+ */
+function migrateToOneBody(tx) {
+  const buffers = tx.objectStore(STORE);
+  buffers.getAll().onsuccess = (event) => {
+    /** @type {any[]} */
+    const all = /** @type {IDBRequest} */ (event.target).result;
+    for (const record of all) {
+      if (!record.file) continue;
+      delete record.content;
+      delete record.file.lastSyncAt;
+      buffers.put(record);
+    }
   };
 }
 

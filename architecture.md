@@ -5,32 +5,43 @@ The PoC in `poc/` is the seed. See `motivation.txt` for goals and `poc-plan.md` 
 
 ## 1. Core storage model
 
-Every open document is a buffer record in IndexedDB, on every platform.
-A buffer can link to zero or more persistence targets.
-A target is a disk file, a disk folder entry, or a server document.
+Every document is a buffer record in IndexedDB, on every platform: the index
+row that carries the id, the title, the language, `enc`, `sync`, `file` and
+the timestamps. The body lives in exactly one place, and the record says
+where (§23, 2026-09-25):
+
+- a record with `file` keeps its body in that file, and nowhere else;
+- every other record keeps it in `content`, in the same IndexedDB row.
+
+A record can also have a server target (section 3). The server holds
+revisions; it is never a place this device reads a body from.
 
 Consequences:
 
-- Autosave, crash recovery, and close-without-prompts work everywhere, unchanged from the PoC.
-- Disk writes and server pushes are write-behind steps after the IndexedDB write.
-  A network failure or a denied file permission never loses text.
-- One code path serves PC and phone. The phone simply has no disk target.
+- Autosave, crash recovery, and close-without-prompts work everywhere. The
+  persist step writes the body to its storage 300 ms after the last edit,
+  whichever storage that is.
+- One code path serves PC and phone. The phone simply never has a `file`,
+  and the file link is per device: a synced note is a file here and an
+  internal note there.
+- For a file-backed buffer, the file is the truth and vrtti is one of its
+  editors. Another program's edit is an edit: the focus poll takes it, and a
+  server target pushes it on.
 
-For a file-backed buffer, disk is the source of truth.
-The IndexedDB copy is a journal and a cache.
-On load, the app re-reads the disk file and compares timestamps.
+Until 2026-09-25 a file-backed record kept a second body in IndexedDB as a
+journal and a cache. §23 records why that went.
 
 ### Write pipeline
 
-Each stage is independent. A failure in a later stage never loses data,
-because the earlier stage already holds the text.
+Each stage is independent. A failed body write never loses text: the row
+keeps it, marked, until the write lands (§23, `file.unwritten`).
 
 ```
 editor (plaintext, in memory)
   -> codec           encrypt, only for docs with `enc` (section 5)
   -> record          in-memory Map, content is now opaque bytes/text
-  -> IndexedDB       debounced ~300 ms, durable on tx complete
-  -> disk            write-behind, only if a file link exists
+  -> body storage    debounced ~300 ms: the file when linked (checked first, §23),
+                     else the IndexedDB row; the index row follows either way
   -> sync outbox     mark dirty, push when online (section 3)
 ```
 
@@ -56,8 +67,12 @@ Implementation decisions (2026-09-01, step 2 build):
   a runtime map id -> handle is loaded at start.
 - Buffer dirty-vs-disk test is timestamps, no hashing: `updatedAt` vs the
   `file.lastSyncAt` set on every successful disk read or write.
+  (Superseded 2026-09-25, §23: dirty is a pending persist or `file.unwritten`,
+  and "changed on disk" is the file's own `mtime` against `file.mtime`.)
 - Disk write-behind: a second debounce (~1 s) after the IndexedDB write.
   A disk failure shows in the save indicator; the text is safe in IndexedDB.
+  (Superseded 2026-09-25, §23: one persist stage writes the body to the file,
+  and a failed write keeps the text in the row as `file.unwritten`.)
 - Silent reload on clean external change goes through a store "replace" path,
   so the editor view gets the new text as one dispatched change.
 - Conflict fork: the local text becomes a new scratch buffer with a first
@@ -298,13 +313,15 @@ Buffer record:
 
 ```
 {
-  id, content, closed, createdAt, updatedAt,
+  id, createdAt, updatedAt,
+  content?,                          // the body; absent when `file` is set (§23)
   kind: 'scratch' | 'file' | 'keyring',
   title?,                            // user label; the plaintext name of an encrypted doc
   lang?, langSource?,
-  file?: { handleId, name, path, lastSyncAt },
+  file?: { handleId, name, path?, mtime?, unwritten? },   // per device, never synced
   sync?: { rev, dirty, tombstone?: 'deleted' | 'detached', purge?: true },
   enc?:  { v: 1, preset: 'all-devices' | 'this-device' },  // never the recipient list (§5)
+  trashedAt?,                        // §22
   group, order
 }
 ```
@@ -686,6 +703,14 @@ Open: none.
   never substituted, rename before write on the way in and write before
   rename on the way out, so the disk never holds age bytes under a plain
   name (2026-09-24, §19). Both directions need a handle that can rename.
+
+- One body per note (2026-09-25, §23): a record with `file` keeps its body
+  in the file and nowhere else; every other record keeps it in `content`.
+  The IndexedDB row is the index on every device. One persist stage writes
+  the body to its storage; every file write checks the file's `mtime`
+  first; a failed write holds the text in the row as `file.unwritten`; a
+  read failure is a placeholder, never an empty document. "Unlink file" is
+  the inverse of "Save to disk". IndexedDB v5 strips the old copies.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
@@ -2020,3 +2045,182 @@ entry is gone at start and a 1-day-old one stays; a second window sees
 the trash and the restore at once; a trashed file-backed record is
 restored by a click on its file, with no duplicate; the §9 empty close
 still removes outright.
+
+## 23. One body per note (agreed 2026-09-25)
+
+§1 gave a file-backed note two bodies: the file, and a copy in IndexedDB
+that §1 called a journal and a cache. The copy was refreshed only by the
+focus poll, and only for this window's tabs. A note in Recent kept a
+stale copy: opening it showed the old text, the next poll forked a
+conflict copy nobody asked for, and a keystroke before that poll wrote
+the old text over the external edit. A pull wrote the file with no look
+at it, and a disk edit the poll did take never reached the server. These
+are one bug: two bodies and no rule for which one to read.
+
+The rule now: **a note has one body, and the record says where it is.**
+A record with `file` keeps its body in the file and nowhere else; every
+other record keeps it in `content` in IndexedDB. The record itself (id,
+title, language, `enc`, `sync`, `file`, timestamps) stays in IndexedDB on
+every device, as the index. Phones and browsers without disk access never
+see a `file` and change nothing: a synced note is file-backed here and
+internal there, because `file` was never part of the synced metadata.
+
+### Decisions
+
+- **`content` is not persisted for a file-backed record.** In memory it
+  is the working copy of a body this window holds: every scratch record,
+  and this window's open file-backed tabs once they were read. `persist`
+  strips it for a file-backed record (unless `unwritten`, below), so
+  neither IndexedDB nor the `buffer` message to other windows carries it.
+  Closing a tab flushes the pending write, then drops it. A record in
+  Recent has no body in memory in any window.
+- **One accessor reads the body.** `body(id)` resolves to the encoded
+  body (ciphertext for an encrypted doc): `record.content` when it is
+  loaded or held, else the file through `readFileForRecord`, which also
+  stamps `file.mtime`. A read for one of this window's tabs stays in
+  `record.content`; a read for a Recent record does not. `textOf` sits on
+  top of `body` and returns a Promise for a file-backed doc, as it already
+  does for an encrypted one; the editor's placeholder path serves both,
+  blank while a file read is pending. Every reader of a body goes through
+  these two: push, fork, re-wrap, encrypt, decrypt, search, unlink. A
+  `record.content` read outside the store is a bug.
+- **One write stage.** The 300 ms persist step writes the body to its
+  storage: the IndexedDB row for a scratch record; for a file-backed one
+  the file, then the index row without `content`. The second disk
+  debounce (`diskSoon`, `diskTimers`) and `file.lastSyncAt` go. The
+  crash window is 300 ms for both kinds, as it was for IndexedDB. The
+  save indicator reports the file write for a file-backed doc, which is
+  the write that matters.
+- **`file.mtime` replaces `file.lastSyncAt`.** It is the file's
+  modification time as the platform reported it at this device's last
+  successful read or write (`readFileForRecord` returns it; a write stats
+  once after it lands). "Changed under us" is `stat !== file.mtime`, an
+  inequality, so a restored backup with an older stamp counts too.
+  Wall-clock `updatedAt` feeds no disk decision any more; it keeps
+  ordering Recent and guarding the push. Unknown (`undefined`: after the
+  migration, before the first read) means no fork, because there is
+  nothing to compare against.
+- **Dirty against disk is a fact, not a stamp.** A file-backed tab is
+  dirty when a persist is pending or `file.unwritten` is set. Close and
+  reopen bump `updatedAt` as before and no longer look like edits.
+- **Every writer checks first.** Before any write to a file, stat it. A
+  stamp equal to `file.mtime` (or an unknown `file.mtime`) means write. A
+  different stamp means the file holds text this device never saw, and
+  the writer's own rule decides, the same two rules as today:
+  - the keystroke write and the encrypt/decrypt commands: the file wins.
+    The local text forks into a conflict copy, the buffer takes the file
+    (`replaceFromDisk`), and nothing is written this round (§2).
+  - a pull: the incoming version wins. The disk text forks into a
+    conflict copy, then the write goes ahead (§3). A dirty tab forks its
+    own text as well, as today.
+  - the re-wrap of §20 rewrites what it just read: a stamp that moved
+    between its read and its write skips the record this round.
+  The window between the stat and the write is milliseconds and is
+  accepted, as the poll's own window was.
+- **A failed write holds the body.** When a file write fails (a denied
+  permission, a vanished file, a full disk), the record keeps `content`,
+  is persisted with it, and gets `file.unwritten: true`. Readers take
+  `content` over the file while the flag is set; the next write attempt
+  (the next persist, the focus poll, the reconnect click) runs the check
+  above, writes, and clears the flag. Until then the row shows the
+  reconnect marker. This is the one moment a record carries a body next
+  to a file, and the flag says so.
+- **A failed read is a placeholder.** `body` rejects with
+  `UnavailableError` (`reason`: `permission`, `missing` or `error`) when
+  the file cannot be read. The editor shows it in the placeholder frame
+  ("File not available: <name>" plus the reason), the row gets its
+  marker, and nothing else happens: no empty document, no conflict copy.
+  A reconnect click (permission), or the file coming back (the next poll
+  or activation reads again), resolves it.
+- **Reconnect never overwrites.** After a granted permission or a fresh
+  pick (§17), the file is the body: the record reads it. Only an
+  `unwritten` record writes its held text into the file, through the
+  check above. On the native backend the marker click retries the write
+  first and offers the re-pick only for a missing file.
+- **Unlink file.** The inverse of Save to disk, in the row menu: the body
+  is read (or the held text taken), the record becomes a scratch record
+  with `content`, and the handle row goes. The file stays on disk,
+  untouched. It is also the way out of a lost file. `forget` deletes the
+  handle row too, which it never did.
+- **An external edit is an edit.** When the poll, an activation, or a
+  pre-write check takes the file's text, the record is marked dirty for
+  sync when it has a server target, so the change reaches the other
+  devices. Before, `replaceFromDisk` never did.
+- **Recent notes with a server target are watched too**, by the sync
+  leader, one stat each before a push round: a changed stamp updates
+  `file.mtime` and marks the record dirty; the push then reads the file.
+  A touch causes one harmless push. Notes without a server target are
+  read when opened and never before: still no watcher (§17).
+- **A push reads the file.** `pushPayload` awaits `body`; a record whose
+  file cannot be read this round is skipped and stays dirty. The payload
+  carries the `mtime` it read, and `afterPush` keeps the record dirty
+  when `file.mtime` has moved since: the leader reads files, not the
+  owner's memory, so it can push a file that is one debounce behind, and
+  this guard sends the rest with the next round.
+- **A pull writes the file at once**, not through a debounce: the pull
+  has landed when the file holds it. A failed write leaves the record
+  `unwritten` with the pulled text, so nothing is lost. Another window's
+  `buffer` message with a moved `file.mtime` makes the owner re-read a
+  loaded tab (the §14.3 fallback, where the leader applied the change).
+- **Migration to IndexedDB v5** deletes `content` and `file.lastSyncAt`
+  from every record with `file`. §1 already said the disk wins for these
+  records, and the poll would have replaced the copy at the next focus.
+  The one copy this can drop is a failed disk write never retried, which
+  the status bar showed as "disk write failed" until now.
+- **Trash is unchanged in shape** (§22): a trashed file-backed record is
+  an index row; its body is its file, which never left. Restore reads it.
+- **What stays.** The focus poll over this window's loaded tabs, with the
+  same two outcomes (clean: silent reload; dirty: fork, then reload).
+  `.age` files: `body` decodes after the read, and a `.age` file replaced
+  by plain text on disk still flips the record (§13.4). The §14 rule that
+  one window owns a buffer's writes. The 30-second interval and the focus
+  trigger.
+
+Build notes (2026-09-25, unit 23.1), where the code refines the above:
+
+- **The file says "encrypted", never the preset.** A read applies the
+  file's `enc` only when the record has none, and drops `enc` when the
+  file is plain. Reads happen on every open now, and a `.age` file cannot
+  say "this-device", so taking its preset would reset one on every open.
+- **Where the pull forks.** `applyRemote` counts a pending persist and
+  `file.unwritten` as dirty, forks there, and hands the forked text to
+  `adoptRemote`, so the same text never forks twice. A dirty Recent file
+  record forks its disk text, because after the leader's stamp pass the
+  disk check in `adoptRemote` cannot see that edit any more.
+- **A re-read after the leader's own write is no edit.** When another
+  window's `buffer` message moves the stamp of this window's loaded tab,
+  `replaceFromDisk` runs without marking the record dirty: the leader
+  already told the server.
+- **An unknown stamp takes the push's read.** After the migration a Recent
+  file has no `file.mtime`; `afterPush` stores the stamp the push read, or
+  the new guard would keep the record dirty for ever.
+- **Migration order.** A v3 database runs the v5 step from inside the v4
+  callback; issued side by side, the v5 put would bring `closed` back.
+- **Bodies dropped on a workspace change.** A tab another window took (a
+  dissolve, a lost double take) loses its in-memory body here as well.
+
+### 23.1 Store, editor, menu (unit 1)
+
+`storage/idb.js` (v5 migration, `content` optional, `FileLink` gets
+`mtime` and `unwritten`, `lastSyncAt` gone), `model/docs.js` (`body`,
+`textOf` over it, the merged persist stage, the pre-write check, the
+`unwritten` state, `UnavailableError`, `unlinkFile`, `reconnect`, the
+dirty-for-sync marking, the Recent stat pass for the leader, `forget`
+deleting the handle, `adoptFromWindow` on a moved `mtime`),
+`sync/client.js` (await the payload, skip an unavailable file, the stat
+pass before a push round, the `mtime` guard in `afterPush`),
+`editor/editor.js` (the unavailable placeholder, blank while a file read
+is pending), `ui/search.js` (await `textOf` for every tab),
+`ui/sidebar.js` (Unlink file in the row menu), `main.js` (the command,
+the test hooks). Gate: Playwright against the fake shell of §19 and the
+mock sync server: the IndexedDB row of a file record holds no `content`
+and the v4 to v5 migration strips it; a Recent note edited on disk opens
+with the new text and no conflict copy; typing right after that reopen
+keeps the disk edit; an external edit on a clean tab reloads silently
+and marks the record dirty for sync; an external edit on a dirty tab
+forks; a pull over an externally edited file forks the disk text and
+writes the incoming; a failed write sets `unwritten` and the retry
+clears it; a missing file shows the placeholder and Unlink file makes a
+scratch note of it; the leader pushes a file note it does not own; save
+to disk strips `content` from the row; encrypt and decrypt of a file doc
+still work; `.age` on disk still opens and decodes.

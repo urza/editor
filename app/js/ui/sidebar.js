@@ -155,6 +155,13 @@ export function mountSidebar(store, folders, sync) {
       if (store.canRenameFile(record)) {
         items.push({ label: "Rename file…", act: () => startRename(record) });
       }
+      // The inverse of Save to disk (architecture.md §23), and the way out of
+      // a file that is gone for good.
+      items.push({
+        label: "Unlink file",
+        hint: "The note stays in vrtti, the file stays on disk",
+        act: () => run("file.unlink", record.id),
+      });
     } else {
       items.push({ label: "Rename…", act: () => startRename(record) });
       if (record.title) {
@@ -272,7 +279,11 @@ export function mountSidebar(store, folders, sync) {
       warn.className = "buffer-warn";
       warn.type = "button";
       warn.textContent = "⚠";
-      warn.title = "This file needs permission again. Click to reconnect.";
+      // Two causes share the marker and the click (architecture.md §23): a
+      // lost permission or file, and a write that failed and holds the text.
+      warn.title = record.file?.unwritten
+        ? "The last write to this file failed. Click to try again."
+        : "This file needs permission again. Click to reconnect.";
       warn.addEventListener("click", (event) => {
         // The click itself is the user gesture requestPermission needs; a
         // background retry can never get the grant.
