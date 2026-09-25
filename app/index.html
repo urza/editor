@@ -108,11 +108,28 @@
              unhidden by ui/sidebar.js only where the File System Access API
              exists: Firefox and phones must never see a button that cannot work.
              The row itself always shows; search works without the API. -->
+        <!-- Each button is an icon plus a label. app.css folds the label away
+             when the button gets narrow, so a slim sidebar still shows all
+             four. The icons are inline so that they paint on the first frame
+             and take currentColor from the button; no sprite, no extra fetch.
+             aria-hidden: the label and the title already name the button. -->
         <div id="open-actions">
-          <button id="search-open" type="button" title="Find in files (Ctrl+Shift+F)">search</button>
-          <button id="open-file" type="button" title="Open a file from disk" hidden>file</button>
-          <button id="open-folder" type="button" title="Open a folder from disk" hidden>folder</button>
-          <button id="new-window" type="button" title="New window (Alt+Shift+N)">window</button>
+          <button id="search-open" type="button" title="Find in files (Ctrl+Shift+F)">
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="6.75" cy="6.75" r="4.25"/><path d="M10 10l4 4"/></svg>
+            <span class="action-label">search</span>
+          </button>
+          <button id="open-file" type="button" title="Open a file from disk" hidden>
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.75 1.75h5.5l3 3v9.5h-8.5z"/><path d="M9.25 1.75v3h3"/></svg>
+            <span class="action-label">file</span>
+          </button>
+          <button id="open-folder" type="button" title="Open a folder from disk" hidden>
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1.75 3.75h4.5l1.5 1.5h6.5v8H1.75z"/></svg>
+            <span class="action-label">folder</span>
+          </button>
+          <button id="new-window" type="button" title="New window (Alt+Shift+N)">
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1"/><path d="M1.75 5.75h12.5"/><path d="M8 7.5v4.5M5.75 9.75h4.5"/></svg>
+            <span class="action-label">window</span>
+          </button>
         </div>
         <h2 class="sidebar-heading">Open</h2>
         <ul id="open-list" class="buffer-list"></ul>

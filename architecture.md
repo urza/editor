@@ -81,7 +81,11 @@ Implementation decisions (2026-09-01, step 2 build):
   the permission request runs on that click (a user gesture is required).
 - UI entry points (mouse-first): "file" and "folder" open buttons under the
   big "+", a save-to-disk statusbar button for scratch buffers. All hidden
-  when the File System Access API is absent (Firefox, phones).
+  when the File System Access API is absent (Firefox, phones). The row's
+  buttons (search, file, folder, window) carry a monochrome inline SVG icon
+  plus a label; each button is a container query on its own width, so the
+  label folds when the button is too narrow for it (2026-09-25). Below about
+  320px of sidebar the four-button row is icons only.
 - Folder section: lazy tree. Top-level entries listed; subdirectories expand
   on click and list on demand. Directories first, then files, A-Z. Closing a
   folder removes the section; buffers opened from it stay open.

@@ -41,6 +41,7 @@
 
   /* Glyphs: drawn rather than read, so they keep their own larger steps. */
   --ui-icon:    calc(15px * var(--ui-scale));  /* the hamburgers, the status bar */
+  --ui-icon-sm: calc(14px * var(--ui-scale));  /* the action row (search, file, ...) */
   --ui-icon-lg: calc(18px * var(--ui-scale));  /* the settings close button */
   --ui-plus:    calc(22px * var(--ui-scale));  /* the new-buffer "+" */
 
@@ -308,7 +309,12 @@ body {
 
 #open-actions button {
   flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   height: calc(22px * var(--ui-scale));
+  padding: 0 4px;
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
@@ -318,12 +324,44 @@ body {
   line-height: 1;
   cursor: pointer;
   opacity: 0.85;
+  /* Each button measures itself, not the sidebar: the row holds two buttons
+     in Firefox and four in Chrome, and only the button's own width says
+     whether its label still fits. The containment costs nothing here, the
+     button's width comes from flex: 1 and never from its contents. */
+  container: action / inline-size;
 }
+
+/* display: inline-flex above would beat the user agent's [hidden] rule, the
+   same trap as #open-actions[hidden]. ui/sidebar.js hides the disk buttons
+   without the File System Access API and the window button on phones. */
+#open-actions button[hidden] { display: none; }
 
 #open-actions button:hover {
   background: var(--st-sidebar-selected);
   color: var(--st-sidebar-heading);
   opacity: 1;
+}
+
+.action-icon {
+  flex: 0 0 auto;
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Icon + 4px gap + a six-letter label at --ui-xs needs about 5.25em of the
+   button's font (measured 57.75px at 11px in DejaVu Sans Mono, the widest of
+   the stack); below that the label would spill, so it folds and the icon
+   stands alone. The query measures the content box, so the 4px padding on
+   each side sits outside the number. em, not px: a container query resolves
+   em against the container's own font-size, so the fold point follows
+   --ui-scale with no second number to keep in step. */
+@container action (max-width: 5.75em) {
+  .action-label { display: none; }
 }
 
 /* Small chrome buttons: statusbar "↻". */
