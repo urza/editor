@@ -37,6 +37,7 @@
   --ui-sm:   calc(12px * var(--ui-scale));  /* status bar, menus, dialogs */
   --ui-md:   calc(13px * var(--ui-scale));  /* list rows, section titles */
   --ui-base: calc(14px * var(--ui-scale));  /* the inherited default */
+  --ui-lg:   calc(18px * var(--ui-scale));  /* settings section headings */
 
   /* Glyphs: drawn rather than read, so they keep their own larger steps. */
   --ui-icon:    calc(15px * var(--ui-scale));  /* the hamburgers, the status bar */
@@ -792,34 +793,60 @@ body {
 
 /* Settings overlay (js/ui/settings.js, architecture.md §9). Covers the editor
    area only, so the sidebar stays usable on a PC. z-index because the
-   CodeMirror DOM is appended after this element and is positioned too. */
+   CodeMirror DOM is appended after this element and is positioned too.
+
+   Inside, the panel is shaped like the app itself: a rail of sections on the
+   left, a document on the right. The document column is capped, or a hint
+   runs 150 characters across a wide pane and a control sits a screen away
+   from its label (the "one wall" of 2026-09-25). */
 #settings-panel {
   position: absolute;
   inset: 0;
   z-index: 10;
   overflow-y: auto;
-  padding: 0 18px 28px;
+  /* Keyboard focus scrolls a row out from under the sticky head. */
+  scroll-padding-top: var(--ui-top-h);
+  padding: 0 24px 48px;
   background: var(--st-ui-bg);
   color: var(--st-text-fg);
   outline: none;  /* it takes focus on open only to catch Escape */
+  /* A named container, so the rail folds on the panel's own width and not
+     on the viewport: a narrow editor pane on a PC has no room for it either. */
+  container: settings / inline-size;
 }
 
 /* Phone: one full-screen panel. fixed escapes the editor pane, so the sidebar
    and the status bar are covered too; there is no room to keep them, and the
    panel scrolls on its own. */
 @media (max-width: 700px) {
-  #settings-panel { position: fixed; }
+  #settings-panel {
+    position: fixed;
+    padding: 0 16px 32px;
+  }
 }
 
-/* Sticky, so the × stays reachable on a phone without scrolling back up. */
+/* The head and the body share one centered page width, so the × sits on the
+   right edge of the content and not in a far corner of the pane. */
+.settings-page {
+  max-width: calc(820px * var(--ui-scale));
+  margin: 0 auto;
+}
+
+/* Sticky, so the × stays reachable on a phone without scrolling back up.
+   Its height is also the rail's sticky offset and the panel's scroll
+   padding, so all three read --ui-top-h. */
 .settings-head {
   position: sticky;
   top: 0;
+  z-index: 1;
+  background: var(--st-ui-bg);
+}
+
+.settings-head-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 0 10px;
-  background: var(--st-ui-bg);
+  height: var(--ui-top-h);
 }
 
 .settings-title {
@@ -834,16 +861,83 @@ body {
 
 #settings-close { font-size: var(--ui-icon-lg); }
 
-.settings-section { margin-top: 18px; }
+.settings-body {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(40px * var(--ui-scale));
+}
 
+/* The rail: every section by name, with its state word under the ones that
+   have one. A click scrolls the document; the rail is not a second page. */
+.settings-rail {
+  position: sticky;
+  top: var(--ui-top-h);
+  flex: 0 0 calc(160px * var(--ui-scale));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 14px;
+}
+
+.settings-rail-item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-md);
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* display above beats the browser's own [hidden]; the Trash entry hides with
+   its section (§22). */
+.settings-rail-item[hidden] { display: none; }
+
+.settings-rail-item:hover { background: var(--st-sidebar-selected); }
+
+/* The same selection as the app's own sidebar. */
+.settings-rail-item[aria-current="true"] {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+
+.settings-rail-status {
+  display: block;
+  font-size: var(--ui-sm);
+  color: var(--st-gutter-fg);
+}
+
+.settings-rail-status:empty { display: none; }
+
+.settings-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: calc(600px * var(--ui-scale));
+}
+
+/* Below this width the rail would squeeze the document under 400px, so the
+   sections stand on their own headings instead. */
+@container settings (max-width: 720px) {
+  .settings-rail { display: none; }
+  .settings-main { max-width: none; }
+}
+
+.settings-section { margin-top: calc(36px * var(--ui-scale)); }
+.settings-section:first-child { margin-top: 14px; }
+
+/* One strong rule under the heading, weak rules between the rows: two levels
+   of structure, no boxes. */
 .settings-section > h3 {
-  margin: 0 0 6px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--st-sidebar-bg);
-  font-size: var(--ui-xs);
+  margin: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--st-selection-border);
+  font-size: var(--ui-lg);
   font-weight: normal;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--st-sidebar-heading);
 }
 
@@ -856,23 +950,38 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 12px;
-  padding: 7px 0;
+  gap: 6px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--st-sidebar-bg);
 }
+
+/* The heading's rule stands in for the first row's. */
+.settings-section > h3 + .settings-row { border-top: 0; }
 
 /* The display:flex above would beat the browser's own [hidden] rule, and a
    conditional row (the persistence request) hides itself through that
    property. Keep both rules together, like #open-actions. */
 .settings-row[hidden] { display: none; }
 
+/* A note (the About credits) is prose with a link inside, not a label and a
+   control, so it is not a flex row: flex would split its text and its link
+   into separate items. */
+.settings-note:not([hidden]) { display: block; }
+
 /* min-width: 0 lets the flex column shrink below its content width, or the
-   62-character age keys next to it push the row past a phone screen. */
-.settings-label { flex: 1; min-width: 0; }
+   62-character age keys next to it push the row past a phone screen. The
+   basis leaves a control room on the right and still wraps a long value
+   onto its own line. */
+.settings-label {
+  flex: 1 1 calc(240px * var(--ui-scale));
+  min-width: 0;
+}
 
 .settings-hint,
 .settings-note {
-  margin: 2px 0 0;
-  font-size: var(--ui-xs);
+  margin: 3px 0 0;
+  max-width: 66ch;
+  font-size: var(--ui-sm);
   line-height: 1.5;
   color: var(--st-gutter-fg);
 }
@@ -886,10 +995,27 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* A key row (item.block): the value is a public key or a code, too long for
+   the right column, so it takes its own line in an inset block. One click
+   selects the whole key for copying. */
+.settings-row-block .settings-value {
+  flex: 1 0 100%;
+  padding: 8px 10px;
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-foreground);
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  -webkit-user-select: all;  /* Safari still wants the prefix for `all` */
+  user-select: all;
+}
+
 .settings-note a { color: #6699CC; }
 
 /* Toggle: a button that shows its own state, so no framework and no invisible
-   checkbox. aria-pressed is both the state and the style hook. */
+   checkbox. aria-pressed is both the state and the style hook. The caret
+   orange marks "on" and nothing else on this page, so a lit toggle is found
+   at a glance. */
 .settings-toggle {
   flex: 0 0 auto;
   min-width: calc(52px * var(--ui-scale));
@@ -899,16 +1025,18 @@ body {
   background: transparent;
   color: var(--st-gutter-fg);
   font: inherit;
-  font-size: var(--ui-xs);
+  font-size: var(--ui-sm);
   line-height: 1.4;
   cursor: pointer;
 }
 
 .settings-toggle[aria-pressed="true"] {
-  background: var(--st-selection);
-  color: var(--st-sidebar-heading);
+  border-color: var(--st-caret);
+  color: var(--st-caret);
 }
 
+/* Shared with the dialogs (ui/dialog.js) and the history view, so the base
+   look stays; the panel-only size is scoped by id below. */
 .settings-button {
   flex: 0 0 auto;
   padding: 3px 10px;
@@ -933,24 +1061,38 @@ body {
    dead end that lights up under the pointer reads as clickable. */
 .settings-button:disabled:hover { background: var(--st-sidebar-bg); }
 
-/* Stepper (the two text sizes). The number sits between its two buttons and
-   holds a fixed column, so "+" does not walk sideways as the value grows. */
+#settings-panel .settings-button {
+  padding: 4px 12px;
+  font-size: var(--ui-sm);
+}
+
+/* One focus ring for everything in the panel, the same as the inputs had. */
+#settings-panel :is(button, input, a):focus-visible {
+  outline: 1px solid var(--st-caret);
+  outline-offset: 2px;
+}
+
 /* A list row (the device list, architecture.md §21): the label block on top,
    one line per entry under it, each with its own button on the right. */
 .settings-row-list {
   flex-direction: column;
   align-items: stretch;
 }
-.settings-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+/* The label's flex-basis above is a width. In this column it would be a
+   height, and the entries would start 240px under the hint. */
+.settings-row-list > .settings-label { flex: 0 0 auto; }
+.settings-list { display: flex; flex-direction: column; margin-top: 4px; }
 .settings-list-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0 4px 10px;
-  border-left: 2px solid var(--st-sidebar-selected);
+  gap: 12px;
+  padding: 8px 0 8px 14px;
+  border-top: 1px solid var(--st-sidebar-bg);
 }
 .settings-list-text { flex: 1; min-width: 0; }
 
+/* Stepper (the two text sizes). The number sits between its two buttons and
+   holds a fixed column, so "+" does not walk sideways as the value grows. */
 .settings-stepper {
   flex: 0 0 auto;
   display: flex;
@@ -959,31 +1101,33 @@ body {
 }
 
 .settings-stepper-value {
-  min-width: calc(46px * var(--ui-scale));
+  min-width: calc(50px * var(--ui-scale));
   text-align: center;
   color: var(--st-sidebar-label);
-  font-size: var(--ui-xs);
+  font-size: var(--ui-sm);
   font-variant-numeric: tabular-nums;
 }
 
-.settings-stepper-button {
+/* Same specificity as the panel-wide button rule above, or that padding
+   would win and the glyph would sit off-center in a wide button. */
+#settings-panel .settings-stepper-button {
   min-width: calc(30px * var(--ui-scale));
-  padding: 3px 0;
+  padding: 4px 0;
   text-align: center;
 }
 
 /* Text row (the sync server and token). Same look as a dialog field, but it
    sits on the row's baseline next to its label instead of under it. */
 .settings-input {
-  flex: 0 1 calc(220px * var(--ui-scale));
+  flex: 0 1 calc(260px * var(--ui-scale));
   min-width: 0;
-  padding: 3px 7px;
+  padding: 5px 8px;
   border: 1px solid var(--st-selection-border);
   border-radius: 3px;
   background: var(--st-sidebar-bg);
   color: var(--st-foreground);
   font: inherit;
-  font-size: var(--ui-xs);
+  font-size: var(--ui-sm);
 }
 
 .settings-input:focus { outline: 1px solid var(--st-caret); }

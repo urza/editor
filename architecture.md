@@ -516,6 +516,19 @@ dismisses it. No modal library, no routing.
 - Buttons that need instant reach (new buffer, save indicator, update) stay
   outside the panel; the panel is for the rest, so chrome stays sparse.
 
+Shape (redesigned 2026-09-25, after the full-width rows read as one wall on
+a PC): the panel is the app in small. A sticky rail on the left lists the
+sections, with one state word under the ones that have a state (`Section.status`:
+storage persistence, the sync state, the lock state, the trash count), and a
+click scrolls the document to that section; the current section takes the
+sidebar's selection colour. The document column is capped at 600px, so a hint
+never runs past about 70 characters and a control stays next to its label.
+Headings carry a strong rule, rows a weak one. A key row (`Item.block`: the
+device key, the pairing code, the recovery key) puts its value on its own
+line in an inset block that one click selects. The rail folds away under a
+container query on the panel's own width (a phone, a narrow editor pane), not
+on the viewport. The caret orange marks an "on" toggle and focus, nothing else.
+
 ### Text size (agreed 2026-09-13, shipped)
 
 Two independent sizes, both device-local, both in the Appearance section of

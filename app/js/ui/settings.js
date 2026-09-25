@@ -61,6 +61,8 @@ let testResult = "";
  * @property {string} [placeholder]   text: empty-field hint.
  * @property {() => string | Promise<string>} [value]    info (and action):
  *                             right-hand text.
+ * @property {boolean} [block]        info: the value is a key or a code, so
+ *                             it takes its own line in an inset block.
  * @property {() => boolean | Promise<boolean>} [visible] Hide the row when false.
  * @property {string} [button]                           action: button label.
  * @property {() => any} [act]                           action: dispatch the action.
@@ -76,7 +78,12 @@ let testResult = "";
  *            button?: string, act?: () => any }} ListRow
  */
 
-/** @typedef {{ title: string, items: Item[] }} Section */
+/**
+ * One section. `status` is the one state word the rail shows under the
+ * section's name (the sync state, the lock state), read on every paint.
+ * @typedef {{ title: string, items: Item[],
+ *            status?: () => string | Promise<string> }} Section
+ */
 
 /**
  * Decimal units, because that is what storage quotas are reported in.
@@ -96,12 +103,18 @@ function formatBytes(bytes) {
   return bytes + " B";
 }
 
+/** The sync state in one word. Same words as the statusbar, so the two never disagree. */
+function syncStateWord() {
+  if (!sync) return "off";
+  const { state } = sync.status;
+  return state === "idle" ? "synced" : state;
+}
+
 /** One line for the sync status row: state, why, and when it last worked. */
 function syncStatusText() {
   if (!sync) return "off";
-  const { state, message, lastSyncAt } = sync.status;
-  // Same words as the statusbar, so the two never disagree.
-  let text = state === "idle" ? "synced" : state;
+  const { message, lastSyncAt } = sync.status;
+  let text = syncStateWord();
   if (message) text += " (" + message + ")";
   if (lastSyncAt) {
     text += " · last sync " + new Date(lastSyncAt).toLocaleTimeString();
@@ -159,6 +172,7 @@ const SECTIONS = [
   },
   {
     title: "Storage",
+    status: async () => ((await isPersisted()) ? "persistent" : "not persistent"),
     items: [
       {
         type: "info",
@@ -191,6 +205,7 @@ const SECTIONS = [
   },
   {
     title: "Sync",
+    status: () => syncStateWord(),
     items: [
       {
         type: "text",
@@ -262,6 +277,10 @@ const SECTIONS = [
   },
   {
     title: "Security",
+    status: () => {
+      if (!keyring?.isSetUp) return "not set up";
+      return keyring.isUnlocked ? "unlocked" : "locked";
+    },
     items: [
       {
         type: "info",
@@ -290,6 +309,7 @@ const SECTIONS = [
         key: "device-key",
         label: "Device key",
         hint: "Public. Your other devices encrypt to it once they approve this device.",
+        block: true,
         visible: () => Boolean(keyring?.isSetUp),
         value: () => keyring?.deviceRecipient ?? "",
       },
@@ -298,6 +318,7 @@ const SECTIONS = [
         key: "pairing-code",
         label: "Pairing code",
         hint: "Type it on a device that already uses this keyring to approve this one. The fingerprint next to it is what the other device shows you to confirm.",
+        block: true,
         visible: () => Boolean(keyring?.isSetUp && keyring.pairingCode),
         value: () => keyring?.pairingCode + "   ·   fingerprint " + keyring?.fingerprint(),
       },
@@ -346,6 +367,7 @@ const SECTIONS = [
         key: "recovery-key",
         label: "Recovery key",
         hint: "Public half of the offline master key. Every document is encrypted to it.",
+        block: true,
         visible: () => Boolean(keyring?.isSetUp),
         value: () => (keyring?.recoveryRecipients ?? []).join(" "),
       },
@@ -380,6 +402,10 @@ const SECTIONS = [
   },
   {
     title: "Trash",
+    status: () => {
+      const count = store?.trashed().length ?? 0;
+      return count === 1 ? "1 note" : count + " notes";
+    },
     items: [
       {
         type: "list",
@@ -463,8 +489,10 @@ function labelBlock(label, hint) {
  */
 function makeRow(item, refresh) {
   const row = document.createElement("div");
-  row.className = item.type === "note" ? "settings-note" : "settings-row";
+  // A note is a row too (it gets the rule between rows), only laid out as prose.
+  row.className = item.type === "note" ? "settings-row settings-note" : "settings-row";
   if (item.key) row.dataset.key = item.key;
+  if (item.block) row.classList.add("settings-row-block");
   // A conditional row starts hidden and is only ever shown by the answer of
   // its own check. Hiding it again on each repaint would make it blink, and
   // the check is async, so the blink would be visible.
@@ -702,12 +730,17 @@ export function mountSettings(deps = {}) {
   store = deps.store ?? null;
   const panel = /** @type {HTMLElement} */ (document.getElementById("settings-panel"));
 
+  // The head and the body share the .settings-page width, so the × and the
+  // content line up on the same right edge.
   const head = document.createElement("div");
   head.className = "settings-head";
+  const headRow = document.createElement("div");
+  headRow.className = "settings-page settings-head-row";
+  head.appendChild(headRow);
   const title = document.createElement("h2");
   title.className = "settings-title";
   title.textContent = "Settings";
-  head.appendChild(title);
+  headRow.appendChild(title);
   const closeButton = document.createElement("button");
   closeButton.className = "icon-button";
   closeButton.id = "settings-close";
@@ -715,34 +748,92 @@ export function mountSettings(deps = {}) {
   closeButton.textContent = "×";
   closeButton.title = "Close (Esc)";
   closeButton.addEventListener("click", () => close());
-  head.appendChild(closeButton);
+  headRow.appendChild(closeButton);
+
+  // The body is the app's own shape in small: a rail of sections on the
+  // left, the document on the right. CSS folds the rail away when the panel
+  // is narrow (a phone, a narrow editor pane).
+  const body = document.createElement("div");
+  body.className = "settings-page settings-body";
+  const rail = document.createElement("nav");
+  rail.className = "settings-rail";
+  rail.setAttribute("aria-label", "Sections");
+  const main = document.createElement("div");
+  main.className = "settings-main";
+  body.append(rail, main);
 
   /** @type {(() => void)[]} */
   const painters = [];
-  /** @type {HTMLElement[]} */
-  const sections = [];
+  /**
+   * One per section: its element in the document, its button in the rail
+   * and the state word under that button.
+   * @type {{ section: Section, element: HTMLElement, item: HTMLButtonElement,
+   *          status: HTMLElement }[]}
+   */
+  const entries = [];
+
+  // Which section the reader is in: the last one that starts under the
+  // sticky head. Once the panel is scrolled to its end, the last visible
+  // section takes the mark, or a short About could never have it. A panel
+  // that does not scroll at all marks the first.
+  function markCurrent() {
+    const shown = entries.filter((entry) => !entry.element.hidden);
+    if (shown.length === 0) return;
+    const top = panel.scrollTop + head.offsetHeight + 1;
+    let current = shown[0];
+    for (const entry of shown) {
+      if (entry.element.offsetTop <= top) current = entry;
+    }
+    const scrolls = panel.scrollHeight > panel.clientHeight + 1;
+    const atEnd = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 1;
+    if (scrolls && atEnd) current = shown[shown.length - 1];
+    for (const entry of entries) {
+      if (entry === current) entry.item.setAttribute("aria-current", "true");
+      else entry.item.removeAttribute("aria-current");
+    }
+  }
+
+  let marking = false;
+  panel.addEventListener(
+    "scroll",
+    () => {
+      // One mark per frame; a scroll fires many times per frame.
+      if (marking) return;
+      marking = true;
+      requestAnimationFrame(() => {
+        marking = false;
+        markCurrent();
+      });
+    },
+    { passive: true },
+  );
 
   // Hoisted on purpose: the rows below take it as their repaint hook.
   function refresh() {
     for (const paint of painters) paint();
+    for (const entry of entries) {
+      if (!entry.section.status) continue;
+      Promise.resolve(entry.section.status()).then((text) => {
+        entry.status.textContent = text;
+      });
+    }
     // A row's visible() answers in a microtask; the sections are judged
     // after that. A section whose rows are all hidden (the Trash while it
-    // is empty, §22) hides with them, heading included.
+    // is empty, §22) hides with them, heading and rail entry included.
     setTimeout(() => {
-      for (const element of sections) {
-        const rows = [...element.children].filter((el) => el.tagName !== "H3");
-        element.hidden = rows.length > 0 && rows.every((el) => el.hidden);
+      for (const entry of entries) {
+        const rows = [...entry.element.children].filter((el) => el.tagName !== "H3");
+        const hide = rows.length > 0 && rows.every((el) => el.hidden);
+        entry.element.hidden = hide;
+        entry.item.hidden = hide;
       }
+      markCurrent();
     }, 0);
   }
-
-  /** @type {HTMLElement[]} */
-  const children = [head];
 
   for (const section of SECTIONS) {
     const element = document.createElement("section");
     element.className = "settings-section";
-    sections.push(element);
     const heading = document.createElement("h3");
     heading.textContent = section.title;
     element.appendChild(heading);
@@ -751,9 +842,24 @@ export function mountSettings(deps = {}) {
       painters.push(paint);
       element.appendChild(el);
     }
-    children.push(element);
+    main.appendChild(element);
+
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "settings-rail-item";
+    const status = document.createElement("span");
+    status.className = "settings-rail-status";
+    // The space keeps the name and the state word apart in the accessible
+    // name; the state is a block of its own on screen.
+    item.append(section.title, " ", status);
+    item.addEventListener("click", () => {
+      // The panel's scroll-padding-top keeps it out from under the head.
+      element.scrollIntoView({ block: "start" });
+    });
+    rail.appendChild(item);
+    entries.push({ section, element, item, status });
   }
-  panel.replaceChildren(...children);
+  panel.replaceChildren(head, body);
 
   // The statusbar spellcheck button stays clickable next to an open panel on a
   // PC, so the panel repaints whenever that state flips, whoever flipped it.
