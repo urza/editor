@@ -202,7 +202,17 @@ export function createFolderStore({ workspaces }) {
 
   /** Open a folder from the picker. An already open folder is refreshed, not duplicated. */
   async function openFolder() {
-    const handle = await openDirectoryPicker();
+    return addFolder(await openDirectoryPicker());
+  }
+
+  /**
+   * List a folder in this workspace by its handle: a picker result, or a
+   * root the shell registered from a drop or a launch argument (architecture.md
+   * §24). A folder already known, maybe to another workspace, is listed here
+   * too instead of recorded twice.
+   * @param {any} handle
+   */
+  async function addFolder(handle) {
     for (const folder of folders.values()) {
       // isSameEntry, never a name match: two paths can both end in "notes".
       if (await sameEntry(folder.handle, handle)) {
@@ -388,6 +398,7 @@ export function createFolderStore({ workspaces }) {
     load,
     start,
     openFolder,
+    addFolder,
     closeFolder,
     needsReconnect,
     reconnect,

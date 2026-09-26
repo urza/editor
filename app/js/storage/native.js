@@ -267,6 +267,22 @@ function rootFields(root) {
   return { name: root.name, root: root.id, rootPath: root.path, path: "" };
 }
 
+/**
+ * A root the shell registered by itself, from a drop on the window, an "Open
+ * with" or a launch argument (architecture.md §24), delivered as the arg of
+ * the `disk.open` command. The same handle a picker returns, so the caller
+ * cannot tell the two apart. Null for anything that is not a Root: the
+ * command arrives as a DOM event, which any script could raise.
+ * @param {any} root
+ * @returns {NativeFileHandle | NativeDirectoryHandle | null}
+ */
+export function handleFromRoot(root) {
+  if (!root || typeof root.id !== "string" || typeof root.name !== "string") return null;
+  if (root.kind !== "file" && root.kind !== "directory") return null;
+  const fields = rootFields(root);
+  return root.kind === "directory" ? new NativeDirectoryHandle(fields) : new NativeFileHandle(fields);
+}
+
 export async function pickFolder() {
   return new NativeDirectoryHandle(rootFields(await pick("disk_pick_folder", {})));
 }

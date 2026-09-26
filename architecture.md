@@ -737,6 +737,12 @@ Open: none.
   read failure is a placeholder, never an empty document. "Unlink file" is
   the inverse of "Save to disk". IndexedDB v5 strips the old copies.
 
+- Open with vrtti (2026-09-26, §24): a drop on a window, a second launch
+  with arguments, a cold start with arguments and macOS's `Opened` all
+  reach one `open_paths`; Rust registers the root, the page opens it as a
+  picker result. The Open With menus on all three platforms now, the
+  default associations later, on the user's word.
+
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
 This section turns sections 3, 5, and 7 into build units. Each unit is one
@@ -2249,3 +2255,118 @@ clears it; a missing file shows the placeholder and Unlink file makes a
 scratch note of it; the leader pushes a file note it does not own; save
 to disk strips `content` from the row; encrypt and decrypt of a file doc
 still work; `.age` on disk still opens and decodes.
+
+## 24. Open with vrtti: drops, arguments, the Open With menus (agreed 2026-09-26)
+
+A file reaches the shell from outside in four ways, and one function
+takes all four (desktop-wrapper-goose-patterns.md §7: three delivery
+paths, one handler; §2: one window factory, per-window queues). The
+research this unit applies: goose §7 (unify the paths, queue per window
+until ready, a flag or queue instead of a second window at startup, stat
+then record then open), §2 (one factory, never a guessed window), §3
+(the page depends on a contract, not on Tauri), §8 (a fixed list of
+event names, the label checked on every command), and §17 above (the
+page never sends a path it did not get from Rust).
+
+- **A drop on a window.** Tauri's native drag-drop handler is on (the
+  default) and reports `WindowEvent::DragDrop(Drop { paths })` to the
+  shell. The target is the window that received the drop. On Windows the
+  native handler is what makes HTML5 drop events in the page dead, and
+  the page has none, so nothing is lost.
+- **A second launch with arguments** (Windows, Linux: "Open with",
+  Explorer's Shift+drop on the taskbar button, `vrtti file.md` in a
+  terminal). The single-instance plugin hands `argv` and `cwd` to the
+  running process. The target is the window the user used last, else
+  main; it is unminimized and focused.
+- **A cold start with arguments** (Windows, Linux). `std::env::args_os()`
+  after main opens; the ready queue holds the command until main's page
+  says `page_ready`.
+- **macOS** delivers both a cold start and a running app the same way,
+  `RunEvent::Opened { urls }` (Finder's Open With, a Dock drop, `open -a`),
+  and never through argv. The target is the last used window, else main,
+  and when no window exists the command is queued under main's label and
+  main is opened through the async runtime (the Windows deadlock rule of
+  §14.4 holds for every event handler).
+
+### Decisions
+
+- **Rust registers, the page opens.** For each path the shell stats it,
+  registers a root of the matching kind through the same `register` the
+  pickers use (same root id for the same file, so a second drop reopens
+  the buffer), and hands the page the `Root` as the command
+  `disk.open`. Anything that is not a file or a directory, or does not
+  exist (a `-flag`, macOS's `-psn_` argument, a typo), is skipped with
+  one log line. The page turns the root into a native handle and runs
+  the exact code a picker result runs: `createFromFile` for a file,
+  `folders.addFolder` (the body of `openFolder` without the picker) for
+  a directory. Several paths open in order, the last one active.
+- **The command channel carries JSON now.** `vrtti:command`'s `arg` was a
+  validated workspace id inside a hand-built JS literal; a path cannot be
+  validated that way, so `arg` is serialized with serde_json, which is a
+  JS literal on every engine since ES2019. `workspace.dissolve` keeps its
+  id check at the call site. The queue stores the same value, so a drop
+  during boot survives like a chord does.
+- **The shell remembers the last focused window** (`WindowEvent::Focused`),
+  because an external open arrives while Explorer or Finder has focus and
+  every vrtti window reports unfocused; "the focused window, else main"
+  would send every Open With to main. The list forgets a window on
+  `Destroyed`.
+- **No dedup timer.** goose absorbs a doubled URL with two seconds of
+  memory; here `createFromFile` finds the buffer that already holds the
+  root and reopens it, so a doubled delivery costs nothing.
+- **In the Open With menus, never the default.** The user asked for the
+  menus now and the associations later. Three platforms, three
+  mechanisms, one set of extensions (the editor's `BY_EXTENSION` table in
+  `editor/lang.js` plus the plain-text family):
+  - Windows: `bundle.fileAssociations` is deliberately absent, because
+    Tauri's NSIS macro writes the extension's default ProgID. An NSIS
+    hook (`src-tauri/windows/open-with.nsh`, `NSIS_HOOK_POSTINSTALL` and
+    `NSIS_HOOK_POSTUNINSTALL`) writes `Software\Classes\Applications\
+    vrtti.exe\shell\open\command`, which puts vrtti in "Choose another
+    app" for every type and makes Shift+drop on the taskbar button work,
+    plus `Software\Classes\.<ext>\OpenWithList\vrtti.exe` per extension,
+    which puts vrtti in the short Open with submenu for those types. The
+    default value of `.<ext>` is never written. The uninstaller removes
+    exactly these keys. The updater reinstalls through NSIS, so the hook
+    runs again after every update.
+  - Linux: `bundle.fileAssociations` with MIME types becomes `MimeType=`
+    in the `.desktop` file, which is what file managers read for their
+    Open With list; a default comes only from `mimeapps.list`, which we
+    never touch. The default `.desktop` template has no field code in
+    `Exec`, so a file manager could list vrtti but launch it without the
+    file; `linux/vrtti.desktop` is the stock template plus `%F`. The
+    AppImage is built from the deb data dir, so it gets the same file.
+  - macOS: `bundle.fileAssociations` with `rank: "Alternate"` becomes
+    `CFBundleDocumentTypes` with `LSHandlerRank` Alternate: listed in
+    Open With and accepted by the Dock, not preferred over the current
+    handler.
+  - The platform config files (`tauri.windows.conf.json`,
+    `tauri.linux.conf.json`, `tauri.macos.conf.json`) carry these; the
+    CLI merges the one for the build platform over `tauri.conf.json`.
+    Later, associating extensions is one `fileAssociations` block in the
+    Windows file and the same block on the other two with a stronger
+    rank.
+- **Windows taskbar drops.** Windows has no "drop a file on a taskbar
+  button to open it": a plain drop pins the file to the Jump List. Two
+  things do work: hovering the button while dragging raises the window
+  and the drop lands inside it, and Shift+drop opens the file with the
+  app once `Applications\vrtti.exe` exists (the hook above).
+
+### 24.1 Shell, page, bundle (unit 1)
+
+`src-tauri/src/lib.rs` (`open_paths`, `paths_from_args`, the JSON `arg`,
+the last-focused label, the drop, single-instance, argv and `Opened`
+hooks), `src-tauri/src/disk.rs` (`register` visible to the crate),
+`src-tauri/tauri.*.conf.json`, `src-tauri/windows/open-with.nsh`,
+`src-tauri/linux/vrtti.desktop`, `app/js/storage/native.js`
+(`handleFromRoot`), `app/js/model/folders.js` (`addFolder`),
+`app/js/main.js` (`disk.open`). Cargo tests: `paths_from_args` (relative
+to cwd, a flag and a missing path skipped), the JS literal for a path
+with quotes, backslashes and a newline, and the three platform configs
+parsing with the expected associations and hook. Gate: Playwright
+against the fake shell: a `disk.open` with a file root opens the file as
+a tab with its language from the name, the same root again reopens the
+same tab, a directory root adds a folder to the sidebar, and a root the
+mock does not know logs and opens nothing. Real shell: the user's
+Windows run (drop, Open with, a second drop of the same file, a folder
+drop, Shift+drop on the taskbar).

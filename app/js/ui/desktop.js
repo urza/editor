@@ -108,7 +108,10 @@ export function mountDesktop({ workspaces, isBlankBuffer }) {
   /** @param {string} id @param {string} source @param {any} [arg] */
   function dispatch(id, source, arg) {
     const now = performance.now();
-    const duplicate = now - (lastRun.get(id) ?? -Infinity) < DUPLICATE_MS;
+    // Only a bare chord can be a repeat. A command with an argument is a
+    // request: three files dropped at once are three disk.open commands in
+    // the same millisecond, and two dissolves can land together too.
+    const duplicate = arg === undefined && now - (lastRun.get(id) ?? -Infinity) < DUPLICATE_MS;
     // Spike step 2 and 3 (desktop-wrapper-tauri-vs-wails.md §8): the console
     // shows which path delivered each chord on each platform.
     console.log(`[vrtti desktop] ${id} via ${source}${duplicate ? " (duplicate, dropped)" : ""}`);
@@ -118,7 +121,8 @@ export function mountDesktop({ workspaces, isBlankBuffer }) {
   }
 
   // Menu chords, and the shell's own requests: a closing window's
-  // workspace.dissolve arrives here with the workspace id as `arg`.
+  // workspace.dissolve arrives here with the workspace id as `arg`, and a
+  // dropped or passed file's disk.open with its root (architecture.md §24).
   window.addEventListener("vrtti:command", (event) => {
     const detail = /** @type {CustomEvent<{ id: string, arg?: any }>} */ (event).detail;
     if (detail?.id) dispatch(detail.id, "menu", detail.arg);

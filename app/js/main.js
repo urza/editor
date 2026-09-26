@@ -11,7 +11,7 @@ import {
   putSetting,
 } from "./storage/idb.js";
 import { openFilePicker } from "./storage/fsa.js";
-import { isNativeHandle, pruneRoots } from "./storage/native.js";
+import { handleFromRoot, isNativeHandle, pruneRoots } from "./storage/native.js";
 import {
   checkForUpdate,
   hasDisk,
@@ -791,6 +791,28 @@ async function start() {
       id: "folder.reconnect",
       title: "Reconnect folder",
       run: (id) => folders.reconnect(id),
+    });
+    register({
+      id: "disk.open",
+      title: "Open from the shell",
+      // The shell's own open (architecture.md §24): a file dropped on the
+      // window, an "Open with", a launch argument. Rust registered the root
+      // already and sends it as the arg; the page opens it exactly like a
+      // picker result. Only the shell raises the command, so in a browser
+      // it is registered and idle.
+      run: async (root) => {
+        const handle = handleFromRoot(root);
+        if (!handle) {
+          console.log("[vrtti] disk.open without a root", root);
+          return;
+        }
+        try {
+          if (handle.kind === "directory") return await folders.addFolder(handle);
+          return await store.createFromFile(handle);
+        } catch (err) {
+          console.log("[vrtti] open from the shell failed", handle.rootPath, err);
+        }
+      },
     });
     register({
       id: "folder.openFile",

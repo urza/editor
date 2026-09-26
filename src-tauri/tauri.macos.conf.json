@@ -1,0 +1,102 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "fileAssociations": [
+      {
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "name": "Markdown",
+        "mimeType": "text/markdown",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "txt",
+          "text"
+        ],
+        "name": "Plain text",
+        "mimeType": "text/plain",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "js",
+          "mjs",
+          "cjs"
+        ],
+        "name": "JavaScript",
+        "mimeType": "text/javascript",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "jsx"
+        ],
+        "name": "JSX",
+        "mimeType": "text/jsx",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "ts"
+        ],
+        "name": "TypeScript",
+        "mimeType": "text/x-typescript",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "tsx"
+        ],
+        "name": "TSX",
+        "mimeType": "text/tsx",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "html",
+          "htm"
+        ],
+        "name": "HTML",
+        "mimeType": "text/html",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "css"
+        ],
+        "name": "CSS",
+        "mimeType": "text/css",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "json"
+        ],
+        "name": "JSON",
+        "mimeType": "application/json",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "cs"
+        ],
+        "name": "C#",
+        "mimeType": "text/x-csharp",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ]
+  }
+}

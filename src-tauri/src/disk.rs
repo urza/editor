@@ -63,6 +63,15 @@ pub struct DiskError {
     path: Option<String>,
 }
 
+impl std::fmt::Display for DiskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(path) => write!(f, "{} ({}): {path}", self.message, self.code),
+            None => write!(f, "{} ({})", self.message, self.code),
+        }
+    }
+}
+
 impl DiskError {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
@@ -570,7 +579,9 @@ impl Disk {
         self.lock().get(id)
     }
 
-    fn register(&self, kind: RootKind, path: PathBuf) -> Result<Root, DiskError> {
+    /// Also how a dropped or passed path becomes a root (lib.rs, §24): the
+    /// same record a pick makes, so the page cannot tell the two apart.
+    pub(crate) fn register(&self, kind: RootKind, path: PathBuf) -> Result<Root, DiskError> {
         let canonical = canonical_for(kind, &path).map_err(|err| DiskError::io(err, &path))?;
         let mut roots = self.lock();
         let root = roots.register(kind, path, canonical);

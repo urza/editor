@@ -4,19 +4,25 @@
 //! still updates the desktop app (desktop-wrapper-tauri-vs-wails.md §4.6,
 //! shape A). Every window is a workspace (architecture.md §14): the main one
 //! has the label "main" and the plain URL, the others "ws-<id>" and `?ws=<id>`.
+//! A file from outside (a drop, "Open with", a launch argument) becomes a
+//! disk root here and opens in the page (architecture.md §24).
 
 mod debug;
 mod disk;
 mod update;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use serde_json::Value;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::PageLoadEvent;
 use tauri::{
-    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, DragDropEvent, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
@@ -47,13 +53,20 @@ const CLOSE_WINDOW: &str = "shell.closeWindow";
 /// a window whose page has no listener yet waits here; the page calls
 /// `page_ready` once its bridge listens, and the queue drains. A page load
 /// starting again (reload, Force update) takes the window back to not ready.
+/// The queue is keyed by label, not by window, so a command for a window that
+/// does not exist yet (a file opened on macOS with every window closed) waits
+/// for that window's first `page_ready` too.
 #[derive(Default)]
 struct Shell {
     ready: HashSet<String>,
-    pending: HashMap<String, Vec<(String, Option<String>)>>,
+    pending: HashMap<String, Vec<(String, Option<Value>)>>,
     /// The page build each window reported with `page_ready`, for Help >
     /// About. An older page reports none.
     builds: HashMap<String, String>,
+    /// The window the user used last. An "Open with" arrives while Explorer
+    /// or Finder has focus, when every vrtti window reports unfocused, and
+    /// it belongs where the user was working, not in main by default.
+    focused: Option<String>,
 }
 
 /// A page that never calls `page_ready` is an older build of the page: the
@@ -67,8 +80,15 @@ pub fn run() {
         // First, as its docs require. A second launch on Windows or Linux
         // hands its arguments to this instance and exits; two processes on
         // one WebView2 profile would not even open (goose patterns §2).
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            open_or_focus(app.clone(), MAIN);
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // "Open with", Shift+drop on the taskbar button, `vrtti x.md` in
+            // a terminal: the file is the second launch's argument (§24).
+            let paths = paths_from_args(argv.iter().skip(1), Path::new(&cwd));
+            if paths.is_empty() {
+                open_or_focus(app.clone(), MAIN);
+            } else {
+                open_paths(app, None, paths);
+            }
         }))
         // Every window remembers its own bounds, by label (goose patterns §2:
         // the plugin saves and restores the same bounds flavour, which is
@@ -104,7 +124,7 @@ pub fn run() {
             let id = event.id().as_ref();
             if CHORDS.iter().any(|(chord, _, _)| *chord == id) {
                 if let Some(window) = debug::target_window(app) {
-                    forward_command(&window, id, None);
+                    deliver(app, window.label(), id, None);
                 }
             } else if id == CLOSE_WINDOW {
                 // Only a window that really has focus, never a guessed one
@@ -130,6 +150,13 @@ pub fn run() {
                 on_close_requested(window.app_handle(), window.label());
             }
             WindowEvent::Destroyed => forget_window(window.app_handle(), window.label()),
+            WindowEvent::Focused(true) => remember_focus(window.app_handle(), window.label()),
+            // Files dropped on this window (§24). Tauri's native handler is
+            // on, the default; on Windows that is also what keeps HTML5 drop
+            // events from the page, and the page has none.
+            WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+                open_paths(window.app_handle(), Some(window.label()), paths.clone())
+            }
             _ => {}
         })
         .setup(|app| {
@@ -137,6 +164,15 @@ pub fn run() {
             // its folder at boot finds the record already there.
             app.manage(disk::Disk::load(app.handle()));
             open_workspace_window(app.handle(), MAIN)?;
+            // A cold start with a file argument (Windows, Linux: "Open with"
+            // while vrtti is closed). Main's page is not ready yet, so the
+            // command waits in its queue (§24). macOS never puts a file in
+            // argv; it sends RunEvent::Opened below.
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let paths = paths_from_args(std::env::args_os().skip(1), &cwd);
+            if !paths.is_empty() {
+                open_paths(app.handle(), Some(MAIN), paths);
+            }
             update::init(app.handle());
             Ok(())
         })
@@ -157,6 +193,14 @@ pub fn run() {
                 has_visible_windows: false,
                 ..
             } => open_or_focus(app.clone(), MAIN),
+            // Finder's Open With, a Dock drop, `open -a vrtti x.md`: the one
+            // way a file reaches the app on macOS, cold start included (§24).
+            tauri::RunEvent::Opened { urls } => {
+                let paths: Vec<PathBuf> = urls.iter().filter_map(|url| url.to_file_path().ok()).collect();
+                if !paths.is_empty() {
+                    open_paths(app, None, paths);
+                }
+            }
             _ => {}
         }
         #[cfg(not(target_os = "macos"))]
@@ -243,7 +287,7 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
                     }
                     eprintln!("[vrtti] no page_ready from {}: an older page, draining", window.label());
                     for (id, arg) in take_pending(window.app_handle(), window.label()) {
-                        eval_command(&window, &id, arg.as_deref());
+                        eval_command(&window, &id, arg.as_ref());
                     }
                 });
             }
@@ -267,24 +311,95 @@ fn on_close_requested<R: Runtime>(app: &AppHandle<R>, label: &str) {
         .get_webview_window(MAIN)
         .or_else(|| app.webview_windows().into_iter().find(|(l, _)| l != label).map(|(_, w)| w));
     if let Some(window) = survivor {
-        forward_command(&window, "workspace.dissolve", Some(ws));
+        if valid_workspace_id(ws) {
+            deliver(app, window.label(), "workspace.dissolve", Some(Value::String(ws.to_string())));
+        }
     }
 }
 
-/// Hand a command to a page as a DOM event, or queue it until the page is
-/// ready. The page side is app/js/ui/desktop.js. `id` comes from CHORDS or
-/// this file, `arg` is a validated workspace id, so both are safe inside a
-/// JS string literal.
-fn forward_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&str>) {
-    if let Some(arg) = arg {
-        if !valid_workspace_id(arg) {
-            return;
+/// The paths among a launch's arguments, made absolute. A relative one is
+/// taken against the launching process's directory: the second instance's
+/// cwd, or ours at a cold start. A `-flag` (macOS once passed `-psn_…`) is
+/// not a path; a file whose name starts with a dash arrives absolute from
+/// any file manager, so nothing real is lost. Whether a path exists is
+/// `open_paths`'s question.
+fn paths_from_args<I, S>(args: I, cwd: &Path) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter()
+        .map(|arg| PathBuf::from(arg.as_ref()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .filter(|path| !path.to_string_lossy().starts_with('-'))
+        .map(|path| if path.is_absolute() { path } else { cwd.join(path) })
+        .collect()
+}
+
+/// The one handler for a file that reaches the shell from outside (§24, goose
+/// patterns §7): a drop, a second launch, a cold start, macOS's Opened. Each
+/// existing file or directory becomes a disk root through the same
+/// `register` the pickers use, so a file dropped twice keeps its id and the
+/// page reopens its buffer, and the page gets the root as `disk.open`. The
+/// queue holds the command while the page boots. `target` is the window the
+/// paths arrived at (a drop); without one the window the user used last
+/// takes them, else main, opened first when no window exists.
+fn open_paths<R: Runtime>(app: &AppHandle<R>, target: Option<&str>, paths: Vec<PathBuf>) {
+    let label = match target {
+        Some(label) => label.to_string(),
+        None => last_focused(app).unwrap_or_else(|| MAIN.to_string()),
+    };
+    let disk = app.state::<disk::Disk>();
+    for path in paths {
+        let kind = match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => disk::RootKind::File,
+            Ok(meta) if meta.is_dir() => disk::RootKind::Directory,
+            Ok(_) => {
+                eprintln!("[vrtti] not a file or a directory, skipped: {}", path.display());
+                continue;
+            }
+            Err(err) => {
+                eprintln!("[vrtti] cannot open {}: {err}", path.display());
+                continue;
+            }
+        };
+        let root = match disk.register(kind, path) {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("[vrtti] could not register a root: {err}");
+                continue;
+            }
+        };
+        match serde_json::to_value(&root) {
+            Ok(value) => deliver(app, &label, "disk.open", Some(value)),
+            Err(err) => eprintln!("[vrtti] could not encode a root: {err}"),
         }
     }
-    if queue_unless_ready(window.app_handle(), window.label(), id, arg) {
+    // The user acted in Explorer or Finder: the window that took the file
+    // comes forward, out of the taskbar if it was minimized. No window at
+    // all (macOS after the last close) means main opens, through the async
+    // runtime like every window an event handler asks for, and its first
+    // `page_ready` drains what waits under its label.
+    match app.get_webview_window(&label) {
+        Some(window) => {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        None => open_or_focus(app.clone(), MAIN),
+    }
+}
+
+/// Hand a command to a window's page as a DOM event, or queue it until the
+/// page is ready. The page side is app/js/ui/desktop.js. `arg` is any JSON
+/// value; `command_js` writes the literal, so a path with a quote or a
+/// backslash in it cannot break out of the script.
+fn deliver<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: Option<Value>) {
+    if queue_unless_ready(app, label, id, &arg) {
         return;
     }
-    eval_command(window, id, arg);
+    if let Some(window) = app.get_webview_window(label) {
+        eval_command(&window, id, arg.as_ref());
+    }
 }
 
 // The three lock helpers are statement-only on purpose: a guard used in a
@@ -292,7 +407,7 @@ fn forward_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<
 // the borrow checker refuses it.
 
 /// True when the command was queued because the page is not ready yet.
-fn queue_unless_ready<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: Option<&str>) -> bool {
+fn queue_unless_ready<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: &Option<Value>) -> bool {
     let state = app.state::<Mutex<Shell>>();
     // A poisoned lock still holds a usable set; nothing here panics halfway.
     let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
@@ -300,8 +415,23 @@ fn queue_unless_ready<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg
         return false;
     }
     let queue = shell.pending.entry(label.to_string()).or_default();
-    queue.push((id.to_string(), arg.map(String::from)));
+    queue.push((id.to_string(), arg.clone()));
     true
+}
+
+fn remember_focus<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    let state = app.state::<Mutex<Shell>>();
+    let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    shell.focused = Some(label.to_string());
+}
+
+/// The window the user used last, if it still exists.
+fn last_focused<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let state = app.state::<Mutex<Shell>>();
+    let shell = state.lock().unwrap_or_else(|err| err.into_inner());
+    let label = shell.focused.clone();
+    drop(shell);
+    label.filter(|label| app.get_webview_window(label).is_some())
 }
 
 fn is_ready<R: Runtime>(app: &AppHandle<R>, label: &str) -> bool {
@@ -323,6 +453,9 @@ fn forget_window<R: Runtime>(app: &AppHandle<R>, label: &str) {
     shell.ready.remove(label);
     shell.pending.remove(label);
     shell.builds.remove(label);
+    if shell.focused.as_deref() == Some(label) {
+        shell.focused = None;
+    }
 }
 
 /// The build the window's page reported, for Help > About (src/update.rs).
@@ -344,7 +477,7 @@ fn valid_build(build: &str) -> bool {
 }
 
 /// Mark the page ready and return what waited for it.
-fn take_pending<R: Runtime>(app: &AppHandle<R>, label: &str) -> Vec<(String, Option<String>)> {
+fn take_pending<R: Runtime>(app: &AppHandle<R>, label: &str) -> Vec<(String, Option<Value>)> {
     let state = app.state::<Mutex<Shell>>();
     let mut shell = state.lock().unwrap_or_else(|err| err.into_inner());
     shell.ready.insert(label.to_string());
@@ -352,15 +485,22 @@ fn take_pending<R: Runtime>(app: &AppHandle<R>, label: &str) -> Vec<(String, Opt
     queued
 }
 
-fn eval_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&str>) {
-    let detail = match arg {
-        Some(arg) => format!("{{ id: '{id}', arg: '{arg}' }}"),
-        None => format!("{{ id: '{id}' }}"),
-    };
-    let js = format!("window.dispatchEvent(new CustomEvent('vrtti:command', {{ detail: {detail} }}))");
-    if let Err(err) = window.eval(js) {
+fn eval_command<R: Runtime>(window: &WebviewWindow<R>, id: &str, arg: Option<&Value>) {
+    if let Err(err) = window.eval(command_js(id, arg)) {
         eprintln!("[vrtti] could not forward {id}: {err}");
     }
+}
+
+/// The script that raises `vrtti:command` in the page. The detail is written
+/// by serde_json, never by hand: JSON is a JS literal (ES2019 made U+2028 and
+/// U+2029 legal inside a string, and serde_json escapes every quote,
+/// backslash and control character), so a root's path goes through intact.
+fn command_js(id: &str, arg: Option<&Value>) -> String {
+    let detail = match arg {
+        Some(arg) => serde_json::json!({ "id": id, "arg": arg }),
+        None => serde_json::json!({ "id": id }),
+    };
+    format!("window.dispatchEvent(new CustomEvent('vrtti:command', {{ detail: {detail} }}))")
 }
 
 /// The page asks to close a window: Ctrl+Shift+W arrives as a keydown on
@@ -390,7 +530,7 @@ fn page_ready<R: Runtime>(window: WebviewWindow<R>, build: Option<String>) -> Re
     }
     let queued = take_pending(window.app_handle(), window.label());
     for (id, arg) in queued {
-        eval_command(&window, &id, arg.as_deref());
+        eval_command(&window, &id, arg.as_ref());
     }
     Ok(())
 }
@@ -478,4 +618,86 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Help: Check for updates…, About vrtti (src/update.rs).
     menu = menu.item(&update::submenu(app)?);
     menu.build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_from_args_resolves_and_skips_flags() {
+        let cwd = std::env::temp_dir();
+        let absolute = cwd.join("elsewhere").join("x.md");
+        let args = [
+            "-psn_0_1".to_string(),
+            String::new(),
+            "notes.md".to_string(),
+            absolute.to_string_lossy().into_owned(),
+            "--flag".to_string(),
+        ];
+        let paths = paths_from_args(args.iter(), &cwd);
+        assert_eq!(paths, vec![cwd.join("notes.md"), absolute]);
+    }
+
+    #[test]
+    fn command_js_writes_a_json_literal() {
+        let arg = serde_json::json!({ "path": "C:\\notes\\it's \"here\"\n.md" });
+        let js = command_js("disk.open", Some(&arg));
+        assert!(js.starts_with("window.dispatchEvent(new CustomEvent('vrtti:command', { detail: {"));
+        assert!(js.contains(r#""id":"disk.open""#));
+        assert!(js.contains(r#""path":"C:\\notes\\it's \"here\"\n.md""#));
+        assert!(!js.contains('\n'), "a raw newline would end the JS statement");
+        assert_eq!(
+            command_js("buffer.new", None),
+            "window.dispatchEvent(new CustomEvent('vrtti:command', { detail: {\"id\":\"buffer.new\"} }))"
+        );
+    }
+
+    /// The three platform files merge over tauri.conf.json the way the CLI
+    /// merges them (§24): Windows has the NSIS hook and no associations,
+    /// Linux and macOS the same extensions, macOS at the Alternate rank.
+    #[test]
+    fn platform_configs_parse() {
+        use tauri_utils::config::{Config, HandlerRank};
+        use tauri_utils::platform::Target;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let load = |target: Target| -> Config {
+            let (value, _) = tauri_utils::config::parse::read_from(target, root).expect("config reads");
+            serde_json::from_value(value).expect("config parses")
+        };
+
+        let windows = load(Target::Windows);
+        assert!(windows.bundle.file_associations.is_none(), "Windows claims no type yet");
+        let hooks = windows.bundle.windows.nsis.and_then(|nsis| nsis.installer_hooks).expect("NSIS hooks");
+        assert!(root.join(&hooks).is_file(), "{} exists", hooks.display());
+        let hooks_text = std::fs::read_to_string(root.join(&hooks)).unwrap();
+
+        let linux = load(Target::Linux);
+        let template = linux.bundle.linux.deb.desktop_template.as_ref().expect("desktop template");
+        assert!(root.join(template).is_file(), "{} exists", template.display());
+        assert!(std::fs::read_to_string(root.join(template)).unwrap().contains("Exec={{exec}} %F"));
+
+        let macos = load(Target::MacOS);
+        let exts = |config: &Config| -> Vec<String> {
+            let mut exts: Vec<String> = config
+                .bundle
+                .file_associations
+                .iter()
+                .flatten()
+                .flat_map(|association| association.ext.iter().map(|ext| ext.0.clone()))
+                .collect();
+            exts.sort();
+            exts
+        };
+        let linux_exts = exts(&linux);
+        assert_eq!(linux_exts, exts(&macos), "one list on both platforms");
+        assert!(linux_exts.iter().any(|ext| ext == "md"));
+        for ext in &linux_exts {
+            assert!(hooks_text.contains(&format!("\"{ext}\"")), "the NSIS hook lists .{ext} too");
+        }
+        for association in macos.bundle.file_associations.iter().flatten() {
+            assert_eq!(association.rank, HandlerRank::Alternate, "macOS lists, never claims");
+            assert!(association.mime_type.is_some(), "Linux needs a MIME type for every entry");
+        }
+    }
 }

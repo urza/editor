@@ -1,0 +1,18 @@
+# The bundler's stock template (tauri-bundler, linux/freedesktop/main.desktop)
+# plus one field code: without %F a file manager lists vrtti under Open With
+# and then launches it with no file (architecture.md §24). Used by the deb and,
+# through the deb data dir, by the AppImage.
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %F
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}

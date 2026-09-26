@@ -41,6 +41,10 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# The config test in lib.rs reads the three platform files the way the CLI
+# merges them (architecture.md §24); this sandbox cannot run a Windows or
+# macOS build to find a typo there. Already in the tree through tauri.
+tauri-utils = "2"
 
 [profile.dev.package."*"]
 # Dependencies without debug info: a smaller target/ and faster links
