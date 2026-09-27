@@ -701,23 +701,31 @@ body {
   font: inherit;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.7;
 }
 
-.buffer-row:hover .buffer-close,
-.buffer-row:hover .buffer-more,
-.buffer-row.active .buffer-close,
-.buffer-row.active .buffer-more,
-.folder-head:hover .folder-close { opacity: 0.7; }
 .buffer-close:hover,
 .buffer-more:hover { opacity: 1; }
+
+.folder-close { opacity: 0; }
+.folder-head:hover .folder-close { opacity: 0.7; }
+
+/* A row's buttons leave the layout, not only the view, while the row is idle:
+   the title takes their width and shows more of the name. Opacity alone kept
+   the width and cut the name short for nothing. A row with an open menu is
+   not idle, because the pointer sits in the menu, off the row, and the ⋯ must
+   stay under it. Nor is one with a keyboard-focused button: Escape returns
+   the focus to the ⋯ (ui/menu.js). Hover devices only, see below. */
+@media (hover: hover) {
+  .buffer-row:not(:hover, .active, :has(button:focus-visible, [aria-expanded="true"]))
+    :is(.buffer-close, .buffer-more) { display: none; }
+}
 
 /* The row menu button is a touch device's only way to reach rename, sync and
    encryption, and a finger has no hover, so it never hides there. The × goes
    the other way: the menu carries Close, and two small targets side by side on
    a phone are two chances to close the wrong buffer. */
 @media (hover: none) {
-  .buffer-more { opacity: 0.7; }
   .buffer-close { display: none; }
 }
 

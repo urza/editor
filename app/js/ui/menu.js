@@ -38,6 +38,10 @@ export function closeMenu({ restoreFocus = false } = {}) {
   // Only on Escape and after an item ran: a click somewhere else is already
   // moving the focus, and stealing it back would fight the user.
   if (restoreFocus && anchor.isConnected) anchor.focus();
+  // After the focus, not before: a sidebar row drops its buttons out of the
+  // layout once the menu is gone and no button has the focus (app.css), and a
+  // button with display: none cannot take the focus.
+  anchor.setAttribute("aria-expanded", "false");
 }
 
 /** @param {HTMLElement} el @returns {HTMLButtonElement[]} */
@@ -161,6 +165,9 @@ export function openMenu(anchor, items) {
   window.addEventListener("scroll", onAway, true);
   window.addEventListener("resize", onAway);
   current = { el, anchor, onKey, onDown, onAway };
+  // Screen readers announce it, and app.css keeps a sidebar row's buttons on
+  // screen by it while the pointer is in the menu, off the row.
+  anchor.setAttribute("aria-expanded", "true");
 
   const first = enabledItems(el)[0];
   if (first) first.focus();
