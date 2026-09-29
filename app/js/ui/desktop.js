@@ -95,11 +95,12 @@ export function closeWorkspaceWindow(id) {
 
 /**
  * @param {{workspaces: ReturnType<typeof import("../model/workspace.js").createWorkspaces>,
+ *          folders: ReturnType<typeof import("../model/folders.js").createFolderStore>,
  *          isBlankBuffer: (id: string) => boolean}} deps
  *   isBlankBuffer says whether a tab holds nothing worth a window: a scratch
  *   buffer with no text, or a buffer that no longer exists.
  */
-export function mountDesktop({ workspaces, isBlankBuffer }) {
+export function mountDesktop({ workspaces, folders, isBlankBuffer }) {
   if (!isDesktop) return;
 
   /** @type {Map<string, number>} */
@@ -163,19 +164,25 @@ export function mountDesktop({ workspaces, isBlankBuffer }) {
   // that never booted, or died mid-close, leaves behind; it has nothing to
   // bring back and is dissolved instead, or every launch would add a
   // blank window.
+  //
+  // First, a folder main lists moves to a workspace of its own (§14.5):
+  // main never lists a folder in the shell, and a record from before that
+  // rule is the one way one gets here. The loop then opens its window like
+  // any other's.
   if (workspaces.id === MAIN_WORKSPACE) {
-    workspaces
-      .liveSet()
-      .then((live) => {
-        for (const record of workspaces.all()) {
-          if (record.id === MAIN_WORKSPACE || live.has(record.id)) continue;
-          if (record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
-            void workspaces.dissolve(record.id);
-            continue;
-          }
-          openWorkspaceWindow(record.id);
-        }
-      })
-      .catch((err) => console.log("[vrtti desktop] reopen failed", err));
+    reopenAtLaunch().catch((err) => console.log("[vrtti desktop] reopen failed", err));
+  }
+
+  async function reopenAtLaunch() {
+    await folders.moveFoldersOut();
+    const live = await workspaces.liveSet();
+    for (const record of workspaces.all()) {
+      if (record.id === MAIN_WORKSPACE || live.has(record.id)) continue;
+      if (record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
+        void workspaces.dissolve(record.id);
+        continue;
+      }
+      openWorkspaceWindow(record.id);
+    }
   }
 }

@@ -743,6 +743,13 @@ Open: none.
   picker result. The Open With menus on all three platforms now, the
   default associations later, on the user's word.
 
+- Main never holds a folder (2026-09-29, §14.5): in the shell a folder
+  asked for in main opens a window of its own, main sheds any folder it
+  lists at launch, and a secondary window's title ends in "vrtti session".
+  From the user's report of a relaunch that brought back the wrong
+  windows: the folder sat in main and the notes in a secondary, and
+  nothing showed which was which.
+
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
 This section turns sections 3, 5, and 7 into build units. Each unit is one
@@ -971,7 +978,8 @@ The record buys three things beyond multi-window:
   pipeline single-writer: only the owning window runs the IndexedDB and
   disk debounces for a buffer. Most of the multi-instance danger (section
   "Coordination" below) disappears with this one rule.
-- A folder also lives in exactly one workspace.
+- A folder also lives in exactly one workspace. In the shell, never in
+  main: a folder asked for in main opens a window of its own (§14.5).
 - The buffer pool stays global. Recent shows the closed buffers of all
   workspaces. Membership in a workspace `tabs` list is the single truth for
   "open"; the `closed` flag on the buffer record is dropped.
@@ -1237,7 +1245,8 @@ and the rest from the goose lifecycle patterns the first build had skipped
   the capability: `open_workspace(id)` and `focus_workspace(id)`. That is
   the second and third IPC after the clipboard; the page still imports
   nothing from Tauri.
-- **Launch.** The shell opens only main. Main's page, once loaded, asks for
+- **Launch.** The shell opens only main. Main's page, once loaded, moves
+  any folder it lists into a workspace of its own (§14.5), then asks for
   a window for every workspace whose `ws:<id>` lock nobody holds. Quit
   therefore restores every window, and a plain browser does the same thing
   with nothing, which is the rule of section 14.
@@ -1250,6 +1259,61 @@ and the rest from the goose lifecycle patterns the first build had skipped
   Windows: New Window opens a second workspace, a buffer closed in one
   appears in the other's Recent, closing the second window dissolves it,
   quitting and relaunching restores both.
+
+### 14.5 Main never holds a folder (2026-09-29)
+
+The user's report: a scratchpad window and a folder window, both closed,
+a relaunch that brought back only the folder window with the notes in
+Recent, and later relaunches that brought back two windows. Every run
+matched one state: the folder was listed by the main workspace and the
+notes lived in a secondary one. Nothing on screen told the two apart.
+The rules above then did what they say. Closing the notes window
+dissolved it, closing the folder window kept it (main is never
+dissolved), and whichever window closed last survived as the quit's
+leftover. From the user's side the outcome looked random.
+
+The model stays. The trap is that main could become a folder window
+without anyone noticing, and the fix closes it by construction, in the
+shell only:
+
+- **A folder never lives in main.** `folders.addFolder` in main, whether
+  from the folder button, a dropped directory or a launch argument (§24),
+  puts the handle in the store, creates a workspace that lists it, and
+  asks the shell for its window. A folder that a secondary workspace
+  already lists brings that window forward instead (`open_workspace`
+  focuses an existing window). A secondary window takes a folder as
+  before. A browser tab keeps folders in main: without the shell there
+  is no window to open them in.
+- **Main sheds its folders at launch.** Before main reopens the other
+  workspaces (§14.4), `moveFoldersOut` moves any folder main lists into
+  a new workspace, and the reopen loop opens its window like any other's.
+  This is the migration for records from before the rule, and a standing
+  invariant after it. The new record is saved before main is stripped: a
+  crash between the two lists the folder twice, never nowhere.
+- **A secondary window says so in its title.** "<buffer> - vrtti session"
+  against main's "<buffer> - vrtti", in the shell and in a browser tab
+  alike. A folder window is already told by its file paths; a "New
+  Window" holding notes was not, and closing it sends those notes to
+  Recent.
+
+The user's state after the report: the notes sit in a secondary window
+and main lists the folder. The first launch moves the folder to a window
+of its own. The notes come home by hand, once: close their window
+(Ctrl+Shift+W), then open them from Recent in main.
+
+Unchanged and deliberate: the last window closing is a quit, and a quit
+keeps every workspace. Close main first, work on in the folder window,
+close it last, and both come back at the next launch. Sublime and VS
+Code restore the windows open at quit the same way, and it only affects
+a window the user kept open on purpose.
+
+Gate: Playwright against a fake shell (`window.vrttiDesktop` set, a
+stubbed `__TAURI__.core.invoke`): a folder picked in main creates a
+workspace listing it and asks for its window, and main lists nothing; a
+folder picked in a `?ws=` tab lists there as before; a main record
+seeded with a folder sheds it at launch and the reopen asks for that
+window; the secondary title carries the marker. Real shell: the user's
+Windows run.
 
 ## 15. Desktop shell, unit 1: the scaffold and the three chords (2026-09-21)
 
@@ -2299,7 +2363,8 @@ page never sends a path it did not get from Rust).
   one log line. The page turns the root into a native handle and runs
   the exact code a picker result runs: `createFromFile` for a file,
   `folders.addFolder` (the body of `openFolder` without the picker) for
-  a directory. Several paths open in order, the last one active.
+  a directory. Several paths open in order, the last one active. A
+  directory root in main opens a window of its own (§14.5).
 - **The command channel carries JSON now.** `vrtti:command`'s `arg` was a
   validated workspace id inside a hand-built JS literal; a path cannot be
   validated that way, so `arg` is serialized with serde_json, which is a

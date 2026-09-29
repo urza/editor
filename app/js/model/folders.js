@@ -15,7 +15,7 @@
 // level, a subdirectory lists on its first expand. Levels once listed stay
 // cached for the session, and a refresh re-lists exactly those.
 
-import { deleteHandle, getAllHandles, putHandle } from "../storage/idb.js";
+import { deleteHandle, getAllHandles, MAIN_WORKSPACE, putHandle } from "../storage/idb.js";
 import {
   ensurePermission,
   listDirectory,
@@ -44,12 +44,15 @@ const SEP = "\u0000";
 const FOCUS_GAP = 2000;
 
 /**
- * @param {{workspaces: ReturnType<typeof import("./workspace.js").createWorkspaces>}} deps
+ * @param {{workspaces: ReturnType<typeof import("./workspace.js").createWorkspaces>,
+ *          openWindow: (id: string) => void}} deps
  *   A folder lives in exactly one workspace (architecture.md §14). The
  *   handle store stays global; the workspace record says which handles this
- *   window shows.
+ *   window shows. openWindow opens a workspace's window, or brings it
+ *   forward (ui/desktop.js); it is a dependency because a model module
+ *   must not import the ui.
  */
-export function createFolderStore({ workspaces }) {
+export function createFolderStore({ workspaces, openWindow }) {
   /** @type {Map<string, FolderRecord>} */
   const folders = new Map();
   // Folder ids whose handle is not "granted" right now. A stored handle loses
@@ -205,24 +208,20 @@ export function createFolderStore({ workspaces }) {
     return addFolder(await openDirectoryPicker());
   }
 
-  /**
-   * List a folder in this workspace by its handle: a picker result, or a
-   * root the shell registered from a drop or a launch argument (architecture.md
-   * §24). A folder already known, maybe to another workspace, is listed here
-   * too instead of recorded twice.
-   * @param {any} handle
-   */
-  async function addFolder(handle) {
+  /** @param {any} handle The stored folder that is this same directory, or null. */
+  async function known(handle) {
     for (const folder of folders.values()) {
       // isSameEntry, never a name match: two paths can both end in "notes".
-      if (await sameEntry(folder.handle, handle)) {
-        // Known handle, maybe from another workspace: this one lists it too.
-        await workspaces.addFolder(folder.id);
-        emit("change");
-        await refresh(folder.id);
-        return folder;
-      }
+      if (await sameEntry(folder.handle, handle)) return folder;
     }
+    return null;
+  }
+
+  /**
+   * Put a new handle in the global store. No workspace lists it yet.
+   * @param {any} handle
+   */
+  async function remember(handle) {
     /** @type {FolderRecord} */
     const record = {
       id: crypto.randomUUID(),
@@ -234,10 +233,60 @@ export function createFolderStore({ workspaces }) {
     await putHandle(record);
     folders.set(record.id, record);
     post("handle", { kind: "added", record });
+    return record;
+  }
+
+  /**
+   * List a folder by its handle: a picker result, or a root the shell
+   * registered from a drop or a launch argument (architecture.md §24). A
+   * folder already known, maybe to another workspace, is listed instead of
+   * recorded twice.
+   *
+   * In the shell, main never lists a folder (architecture.md §14.5). Main is
+   * the scratchpad that comes back at every launch; a folder window is a
+   * session that dissolves when closed; and nothing on screen tells the two
+   * apart, so the user lost track of which was which once a folder sat in
+   * main. A folder asked for in main therefore gets a window of its own, or
+   * brings forward the window that already lists it.
+   * @param {any} handle
+   */
+  async function addFolder(handle) {
+    const found = await known(handle);
+    if (isDesktop && workspaces.id === MAIN_WORKSPACE) {
+      const owner = found ? workspaces.folderOwner(found.id) : null;
+      if (owner && owner !== MAIN_WORKSPACE) {
+        openWindow(owner);
+        return found;
+      }
+      const record = found ?? (await remember(handle));
+      const workspace = await workspaces.create({ folderIds: [record.id] });
+      openWindow(workspace.id);
+      return record;
+    }
+    if (found) {
+      // Known handle, maybe from another workspace: this one lists it too.
+      await workspaces.addFolder(found.id);
+      emit("change");
+      await refresh(found.id);
+      return found;
+    }
+    const record = await remember(handle);
     await workspaces.addFolder(record.id);
     emit("change");
     await entries(record.id, "");
     return record;
+  }
+
+  /**
+   * Move this workspace's folders into a workspace of their own. Main runs
+   * it at every launch in the shell (architecture.md §14.5); the sidebar
+   * hears the change from here, because the workspace store's own events
+   * carry tab writes too and the folder tree does not redraw on those.
+   */
+  async function moveFoldersOut() {
+    const target = await workspaces.moveFoldersOut();
+    if (target) emit("change");
+    return target;
   }
 
   /** @param {string} id Close a folder. Buffers opened from it keep their own handles. */
@@ -399,6 +448,7 @@ export function createFolderStore({ workspaces }) {
     start,
     openFolder,
     addFolder,
+    moveFoldersOut,
     closeFolder,
     needsReconnect,
     reconnect,

@@ -117,10 +117,23 @@ export function createWorkspaces({ id }) {
 
   /** @param {string} folderId Is the folder listed by any workspace? */
   function hasFolder(folderId) {
+    return folderOwner(folderId) !== null;
+  }
+
+  /**
+   * The workspace that lists a folder, a secondary one first: main is not
+   * meant to list any in the shell (architecture.md §14.5), so a secondary
+   * that does is the window to bring forward.
+   * @param {string} folderId @returns {string | null}
+   */
+  function folderOwner(folderId) {
+    let owner = null;
     for (const record of records.values()) {
-      if (record.folderIds.includes(folderId)) return true;
+      if (!record.folderIds.includes(folderId)) continue;
+      if (record.id !== MAIN_WORKSPACE) return record.id;
+      owner = record.id;
     }
-    return false;
+    return owner;
   }
 
   /** @param {string} bufferId @param {string} [wsId] */
@@ -174,11 +187,33 @@ export function createWorkspaces({ id }) {
     await save(record);
   }
 
-  /** A new, empty workspace. Its window opens it (architecture.md §14.2). */
-  async function create() {
-    const record = newRecord(crypto.randomUUID());
+  /**
+   * A new workspace. Its window opens it (architecture.md §14.2). Empty,
+   * unless the caller hands it folders to list from the start: a folder
+   * asked for in main gets its window this way (§14.5).
+   * @param {{folderIds?: string[]}} [fields]
+   */
+  async function create({ folderIds = [] } = {}) {
+    const record = { ...newRecord(crypto.randomUUID()), folderIds: [...folderIds] };
     await save(record);
     return record;
+  }
+
+  /**
+   * Move this workspace's folders into a new workspace of their own and
+   * return it, or null when there are none. Main runs this at every launch
+   * in the shell (architecture.md §14.5): main never lists a folder there,
+   * and a record from before that rule is the one way one gets in. The new
+   * record is saved before this one is stripped, so a crash in between
+   * lists the folder twice rather than nowhere.
+   */
+  async function moveFoldersOut() {
+    const record = current();
+    if (record.folderIds.length === 0) return null;
+    const target = await create({ folderIds: record.folderIds });
+    record.folderIds = [];
+    await save(record);
+    return target;
   }
 
   /**
@@ -353,6 +388,7 @@ export function createWorkspaces({ id }) {
     openSet,
     ownerOf,
     hasFolder,
+    folderOwner,
     liveSet,
     addTab,
     removeTab,
@@ -360,6 +396,7 @@ export function createWorkspaces({ id }) {
     addFolder,
     removeFolder,
     create,
+    moveFoldersOut,
     dissolve,
     load,
     start,

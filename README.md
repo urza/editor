@@ -112,8 +112,13 @@ Phones cannot open folders, so sync is also the backup there.
 ### Windows
 
 Each window has its own open notes and folders, like a Sublime window. In a
-browser a new window opens as a tab. In the desktop app it is a real window,
-and the app opens all of them again at the next launch.
+browser a new window opens as a tab. In the desktop app it is a real window.
+
+The first window is the scratchpad. It comes back at every launch, and in the
+desktop app it never holds a folder: open a folder there and the folder gets a
+window of its own. Every other window is a session, and its title says so.
+Close a session window and its notes and files go to Recent, where you can
+open them again. Quit with windows open and they all come back.
 
 ## Get it
 

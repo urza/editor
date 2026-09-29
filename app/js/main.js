@@ -7,6 +7,7 @@ import {
   deleteBuffer,
   getAllHandles,
   getSetting,
+  MAIN_WORKSPACE,
   openDb,
   putSetting,
 } from "./storage/idb.js";
@@ -183,7 +184,9 @@ async function start() {
   // Built on every platform: without a disk backend no directory handle can be
   // stored, so the store loads nothing and the sidebar draws no section. Only
   // its entry points are gated, below.
-  const folders = createFolderStore({ workspaces });
+  // openWindow: a folder asked for in main gets a window of its own in the
+  // shell (architecture.md §14.5); the model must not import the ui.
+  const folders = createFolderStore({ workspaces, openWindow: openWorkspaceWindow });
   await folders.load();
 
   // A root in Rust is a standing grant, and a folder this page closed (or a
@@ -861,10 +864,11 @@ async function start() {
   mountShell();
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
-  mountTitle(store);
+  mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({
     workspaces,
+    folders,
     isBlankBuffer: (id) => {
       const record = store.get(id);
       return !record || (record.kind !== "file" && !record.enc && !(record.content ?? "").trim());
