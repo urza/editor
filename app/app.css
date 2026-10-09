@@ -234,6 +234,37 @@ body {
   opacity: 0.5;
 }
 
+/* The floating "+" (ui/newbutton.js). Hidden here and shown by the narrow
+   query below: on a PC the sidebar "+" is one click away, and a button over
+   the text is a button in the way. Inside #editor-host, so it clears the
+   status bar on its own and the drawer (20), its scrim (15) and the settings
+   panel (10) all cover it. Grey, not the caret orange: that colour marks an
+   "on" toggle and focus, nothing else (architecture.md §9). */
+#new-fab {
+  display: none;
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: calc(52px * var(--ui-scale));
+  height: calc(52px * var(--ui-scale));
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  font: inherit;
+  font-size: calc(var(--ui-plus) * 1.3);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+#new-fab:active { transform: scale(0.94); }
+
+/* The [hidden] rule must outrank the narrow query's display: ui/newbutton.js
+   hides the button with the attribute while the keyboard is up. */
+#new-fab[hidden] { display: none; }
+
 /* Scrim behind the drawer. Hidden here, shown by the narrow query below: a
    docked sidebar takes nothing away from the editor and needs no scrim. */
 #sidebar-scrim {
@@ -288,6 +319,7 @@ body {
   #resizer { display: none; }
   #sidebar-open { display: block; }
   #app.sidebar-open #sidebar-open { display: none; }
+  #new-fab { display: block; }
 
   /* Reserved whether the drawer is open or not, so opening it never reflows
      the text underneath. */

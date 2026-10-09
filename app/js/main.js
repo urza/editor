@@ -46,6 +46,7 @@ import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/de
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
+import { mountNewButton } from "./ui/newbutton.js";
 import { showHistory } from "./ui/history.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
@@ -862,6 +863,7 @@ async function start() {
   // Before the sidebar: its rows dispatch sidebar.autoclose, and before
   // mountShortcuts, which snapshots the chord table once.
   mountShell();
+  mountNewButton();
   mountSidebar(store, folders, sync);
   mountStatusbar(store, sync);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });

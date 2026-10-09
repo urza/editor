@@ -157,6 +157,10 @@
            corner of the editor; app.css shows it only in that state. -->
       <button id="sidebar-open" type="button" title="Show sidebar (Alt+B)"
               aria-controls="sidebar" aria-expanded="false">☰</button>
+      <!-- New buffer in one tap on a phone, where the sidebar "+" sits behind
+           the drawer. app.css shows it under the drawer breakpoint only;
+           ui/newbutton.js hides it while the on-screen keyboard is up. -->
+      <button id="new-fab" type="button" title="New buffer" aria-label="New buffer">+</button>
       <!-- Overlay over the editor, filled by ui/settings.js from its item list.
            It sits inside #editor-host so it covers exactly the editor area and
            leaves the sidebar usable; the narrow media query in app.css switches

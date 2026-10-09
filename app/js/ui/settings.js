@@ -13,6 +13,7 @@ import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
+import { sidebarNewButtonShown } from "./newbutton.js";
 import { titleOf } from "../model/docs.js";
 
 /**
@@ -152,6 +153,16 @@ const SECTIONS = [
         step: UI.step,
         get: () => uiScale(),
         set: (value) => run("view.uiScale", value),
+      },
+      {
+        type: "toggle",
+        key: "sidebar-new",
+        label: "New-buffer button in the sidebar",
+        hint:
+          "The big + at the top of the sidebar. A phone has the round + over " +
+          "the editor as well, so this one can go. A setting of this device.",
+        get: () => sidebarNewButtonShown(),
+        set: () => run("view.sidebarNewButton"),
       },
     ],
   },

@@ -571,6 +571,29 @@ this: it scales the document and the chrome together.
 - No keyboard shortcut. Ctrl and Cmd belong to the browser, and Alt is spent
   on the chords that already exist.
 
+### New buffer on a phone (user report, 2026-10-09, shipped)
+
+On a phone the sidebar "+" sits behind the drawer, so a new buffer was two
+taps. From real-device use: a round "+" floats over the bottom-right corner of
+the editor instead, and the sidebar "+" becomes optional.
+
+- `#new-fab` lives inside `#editor-host`, so it clears the status bar on its
+  own and the drawer, the scrim and the settings panel all cover it. Shown by
+  app.css under the 700px breakpoint only. Grey, not the caret orange.
+- It hides while the on-screen keyboard is up. The signal is the visual
+  viewport: `innerHeight - visualViewport.height * scale` over 150px means a
+  keyboard, and the scale factor keeps a pinch zoom from counting as one. The
+  reason is iOS: an absolute element keeps its place in the layout viewport,
+  which the keyboard does not shrink, so without this the button would sit
+  under the keys or float over the text once the page scrolls to the caret.
+  The dismissal is "back", not a timer or a focus check.
+- "New-buffer button in the sidebar" (Appearance): a device-local toggle in
+  localStorage (`vrtti.sidebarNewButton`), default on, on every platform. Off
+  hides `#new-buffer`; Alt+N and the floating button still work.
+- `ui/newbutton.js` owns the setting, the command `view.sidebarNewButton`
+  and the keyboard rule. No `sidebar.autoclose` on the floating tap: the
+  scrim covers the button whenever the drawer is open.
+
 ## 10. Twemoji plan (agreed 2026-09-01)
 
 Goal: render color emoji (Twemoji SVGs) in the editor instead of platform
@@ -749,6 +772,11 @@ Open: none.
   From the user's report of a relaunch that brought back the wrong
   windows: the folder sat in main and the notes in a secondary, and
   nothing showed which was which.
+
+- New buffer on a phone (2026-10-09, §9): a floating "+" over the editor
+  under the drawer breakpoint, hidden while the keyboard is up (visual
+  viewport rule), and the sidebar "+" behind a device-local toggle. From
+  real-device use: two taps for the app's main action was one too many.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
