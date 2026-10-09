@@ -26,6 +26,7 @@ import {
 import { tags } from "@lezer/highlight";
 import { run } from "../commands/registry.js";
 import { twemoji } from "./emoji.js";
+import { marks } from "./markdown.js";
 import { spellcheck } from "./spellcheck.js";
 import {
   extensionForLang,
@@ -75,6 +76,16 @@ export const marianaTheme = EditorView.theme(
     "&.cm-focused .cm-cursor": { borderLeftColor: CARET },
     // Sublime's caret_style default is "solid", not blinking.
     ".cm-cursorLayer": { animation: "none" },
+    // Markdown marks that editor/markdown.js classes rather than tags (its
+    // header says why). Same Sublime colours as the tag rules below: bullets
+    // yellow, numbers green, heading hashes orange with level one red.
+    ".cm-md-bullet": { color: "#F9AE58" },
+    ".cm-md-number": { color: "#99C794" },
+    ".cm-md-heading": { color: "#F97B58" },
+    ".cm-md-heading1": { color: "#EC5F66" },
+    // Table filler: the dashes it adds to a short delimiter cell must look
+    // like the pipes next to them.
+    ".cm-table-fill": { color: GUTTER_FG },
 
     // drawSelection() paints the selection as its own layer and hides the
     // native ::selection with !important, so only .cm-selectionBackground
@@ -147,7 +158,17 @@ export const marianaHighlight = HighlightStyle.define([
   { tag: [tags.link, tags.url], color: "#6699CC" },
   { tag: tags.monospace, backgroundColor: "#3E4852" },
   { tag: tags.quote, color: "#99C794" },
+  { tag: tags.strikethrough, textDecoration: "line-through" },
   { tag: tags.invalid, color: "#F7F7F7", backgroundColor: "#EC5F66" },
+  // Markdown marks, split by editor/markdown.js so each can take the colour
+  // Sublime's Markdown scopes give it (sublime-defaults.md 2.6): quotes,
+  // rules and task boxes yellow, emphasis punctuation purple. The bullet,
+  // number and heading marks are classes in marianaTheme above, for the
+  // reason in that module's header. Tables have no Sublime scope; their
+  // pipes take the gutter grey so the cells stand out.
+  { tag: [marks.quote, marks.task, tags.contentSeparator], color: "#F9AE58" },
+  { tag: marks.emphasis, color: "#C695C6" },
+  { tag: marks.table, color: GUTTER_FG },
 ]);
 
 /**

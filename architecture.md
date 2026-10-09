@@ -594,6 +594,48 @@ the editor instead, and the sidebar "+" becomes optional.
   and the keyboard rule. No `sidebar.autoclose` on the floating tap: the
   scrim covers the button whenever the drawer is open.
 
+### Markdown marks and tables (user request, 2026-10-09, shipped)
+
+A note is read far more often than it is written, and Markdown read as a
+wall of one colour. From real use: lists needed their marks coloured, and a
+table did not look like a table. Both fixes live in `editor/markdown.js`
+and both are view-only: the bytes of the note never change.
+
+- GitHub flavour. The mode was CommonMark, so tables, task lists and `~~`
+  were plain paragraph text. The base is now `markdownLanguage`.
+- Marks get a look of their own. The grammar gives every mark the one tag
+  `processingInstruction`, so a theme could only paint them all alike.
+  `editor.js` colours them the way Sublime's Markdown scopes do
+  (sublime-defaults.md 2.6): bullets, quotes, rules and task boxes yellow,
+  numbers green, heading hashes orange with level one red, emphasis
+  punctuation purple. Heading text stays bold and uncoloured, as in
+  Sublime. Tables have no Sublime scope; pipes and the delimiter row take
+  the gutter grey.
+- Two mechanisms for those marks, and the grammar is the reason. A mark
+  whose kind is its own node (`QuoteMark`, `EmphasisMark`, `TableDelimiter`,
+  `TaskMarker`) takes a new tag through a `styleTags` prop: a context-free
+  rule added later replaces the grammar's. A mark whose kind is its parent
+  (`ListMark` under `BulletList` or `OrderedList`, `HeaderMark` under a
+  level-one heading) cannot: the rule merge in `@lezer/highlight` 1.2.3
+  puts the grammar's context-free rule before any deeper rule, and the
+  lookup takes the first match (found 2026-10-09 in the browser check).
+  Those get a mark decoration with a class from the same tree walk that
+  aligns the tables, and the theme colours the class.
+- Tables line up. The font is monospace, so a table is a grid once every
+  pipe of a column sits on the same character column. A view plugin walks
+  each `Table` node that touches the viewport, measures every cell in
+  character cells (code points, a pictograph counts as two for the Twemoji
+  square), and places a filler widget before each short cell's closing
+  pipe: spaces in a cell, dashes in the delimiter row, and before a trailing
+  `:` there so `:---:` keeps its shape. Widgets are text and not CSS width,
+  because a dash filler must read as more of the rule. A copy takes the
+  document, so the filler never leaves the screen. Rows without outer pipes
+  align too; text after a row's last pipe has nothing to align against.
+- Not done, on purpose: a rendered grid that replaces the source (the
+  Obsidian way). It fights the plain-text idea and is where editors get
+  buggy. If a wrapped row on a phone turns out to hurt, the fix is to
+  scroll the table rows sideways, not to render them.
+
 ## 10. Twemoji plan (agreed 2026-09-01)
 
 Goal: render color emoji (Twemoji SVGs) in the editor instead of platform
@@ -777,6 +819,11 @@ Open: none.
   under the drawer breakpoint, hidden while the keyboard is up (visual
   viewport rule), and the sidebar "+" behind a device-local toggle. From
   real-device use: two taps for the app's main action was one too many.
+
+- Markdown marks and tables (2026-10-09, §9): GitHub flavour on, every
+  mark its own tag with Sublime's colours, and tables aligned on screen by
+  filler widgets before short cells' pipes. View-only, the note's bytes
+  never change. No rendered grid, on purpose.
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 

@@ -15,7 +15,7 @@
 import { Compartment } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdownMode } from "./markdown.js";
 import {
   javascript,
   javascriptLanguage,
@@ -79,7 +79,7 @@ function resolveFenceLanguage(info) {
  * @type {Record<string, () => import("@codemirror/state").Extension>}
  */
 const MODES = {
-  markdown: () => markdown({ codeLanguages: resolveFenceLanguage }),
+  markdown: () => markdownMode(resolveFenceLanguage),
   javascript: () => javascript(),
   jsx: () => javascript({ jsx: true }),
   // No JSX in a plain .ts file: `<T>value` there is a type assertion, and the
