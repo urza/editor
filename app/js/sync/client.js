@@ -13,14 +13,24 @@
 // 409 path, which costs a round trip and a conflict copy; pulling first makes
 // most of those disappear before they happen.
 
-import { getSetting, putSetting } from "../storage/idb.js";
+import { deleteSetting, getSetting, putSetting } from "../storage/idb.js";
 import { on, post } from "../model/channel.js";
-import { KEYRING_ID } from "../model/docs.js";
+import { DEFAULT_SPACE, KEYRING_ID, KEYRING_SPACE } from "../model/docs.js";
 import { hasDisk } from "../model/capabilities.js";
 
 const CONFIG_KEY = "sync.config";
-const CURSOR_KEY = "sync.cursor";
 const DEFAULT_ON_KEY = "sync.defaultOn";
+// Spaces (architecture.md §25): the device's mode per space, its default
+// space, and one pull cursor per space.
+const SPACES_KEY = "sync.spaces";
+const DEFAULT_SPACE_KEY = "sync.defaultSpace";
+const CURSORS_KEY = "sync.cursors";
+// The single cursor from before spaces. load() turns it into the cursors of
+// `personal` and `keyring`, then deletes it.
+const LEGACY_CURSOR_KEY = "sync.cursor";
+// How long the server's space list stays fresh. The settings panel asks on
+// every paint; ten seconds is a repaint burst, not a stale answer.
+const SPACES_TTL = 10000;
 
 const PAGE = 200;
 // Slow poll. The responsive triggers are visibility, online, and the edit
@@ -32,6 +42,34 @@ const DEBOUNCE = 2000;
 // A guard, not a limit: `more` comes from the server, and a server that always
 // answers true would otherwise spin here for ever.
 const MAX_PAGES = 100;
+
+/**
+ * The server's rule for a space name (architecture.md §25). The client checks
+ * it too, so a typo is refused at the settings row and never becomes a 400
+ * on every push of a note.
+ * @param {unknown} name @returns {name is string}
+ */
+export function isValidSpace(name) {
+  return typeof name === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(name);
+}
+
+/**
+ * A plain map with no prototype. Space names are user text, and `constructor`
+ * and `__proto__` pass the name rule: on an ordinary object the first reads
+ * back as Object's own function (a "mode" for a space nobody set) and the
+ * second assigns the prototype instead of a key. Every map keyed by a space
+ * name goes through here, including the ones read back from IndexedDB, which
+ * come back as ordinary objects.
+ * @template T
+ * @param {Record<string, T> | undefined | null} [from]
+ * @returns {Record<string, T>}
+ */
+function dict(from) {
+  return Object.assign(Object.create(null), from ?? {});
+}
+
+/** @typedef {import("../model/docs.js").SpaceMode} SpaceMode */
+/** @typedef {'tab' | 'list'} StoredMode */
 
 /**
  * @typedef {Object} SyncStatus
@@ -49,8 +87,22 @@ export function createSyncClient({ store, keyring }) {
 
   /** @type {{url: string, token: string} | null} */
   let config = null;
-  /** The seq of the last change applied. The server's paging cursor (§13.5). */
-  let cursor = 0;
+  /**
+   * The seq of the last change applied, per received space: the server's
+   * paging cursor (§13.5, §25). The leader writes it, as one settings row.
+   * @type {Record<string, number>}
+   */
+  let cursors = dict();
+  /**
+   * The device's mode per space (§25). An absent name is Not here. Starts as
+   * the no-setting answer, so a store question before load() finds the
+   * behaviour of a device that never touched spaces.
+   * @type {Record<string, StoredMode>}
+   */
+  let modes = dict({ [DEFAULT_SPACE]: "tab" });
+  let defaultSpaceName = DEFAULT_SPACE;
+  /** @type {{at: number, list: {space: string, count: number}[]} | null} */
+  let spacesCache = null;
   /** @type {boolean | undefined} An explicit choice; undefined means "platform". */
   let defaultOn;
   /** @type {SyncStatus} */
@@ -117,21 +169,57 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
-   * Pull every change since the cursor and apply it in order.
+   * The spaces this device pulls: the keyring, then every mode in the map.
+   * The keyring goes first in a round, as it came first in the one feed
+   * before spaces: a note encrypted to a device this one has not met yet
+   * must find the device list already merged (§13.3, §20).
+   */
+  function receivedSpaces() {
+    return [KEYRING_SPACE, ...Object.keys(modes)];
+  }
+
+  /** @param {string} space */
+  function isReceived(space) {
+    return space === KEYRING_SPACE || Object.hasOwn(modes, space);
+  }
+
+  /** Pull each received space in turn (§25). */
+  async function pull() {
+    for (const space of receivedSpaces()) await pullSpace(space);
+  }
+
+  /**
+   * Pull every change of one space since its cursor and apply it in order.
+   *
+   * One request per space, never `spaces=a,b`: each space keeps its own
+   * cursor, so a space the device starts to receive can start at 0 and
+   * arrive whole while the others go on from where they were.
    *
    * The cursor moves after each applied page, never before: a failure in the
    * middle of a page re-delivers it, and applyRemote is idempotent (a change
    * whose rev the record already agreed with is skipped).
+   * @param {string} space
    */
-  async function pull() {
+  async function pullSpace(space) {
     for (let page = 0; page < MAX_PAGES; page++) {
-      const res = await request("/api/changes?since=" + cursor + "&limit=" + PAGE);
+      // The settings can change during a page (another window, a click):
+      // a space dropped since must not get its cursor back.
+      if (!isReceived(space)) return;
+      const since = cursors[space] ?? 0;
+      const res = await request(
+        "/api/changes?since=" + since + "&limit=" + PAGE +
+          "&spaces=" + encodeURIComponent(space)
+      );
       if (!res.ok) throw httpError(res);
       const body = await res.json();
       for (const change of body.changes ?? []) await store.applyRemote(change);
-      if (typeof body.next === "number" && body.next !== cursor) {
-        cursor = body.next;
-        await putSetting(CURSOR_KEY, cursor);
+      // Compare and set: a reset to 0 while this page was in flight (a space
+      // turned from From server to Open as tab) must win over this page's
+      // `next`, or the listed notes would never arrive as tabs.
+      if ((cursors[space] ?? 0) !== since || !isReceived(space)) return;
+      if (typeof body.next === "number" && body.next !== since) {
+        cursors[space] = body.next;
+        await putSetting(CURSORS_KEY, { ...cursors });
       }
       if (!body.more) return;
     }
@@ -179,7 +267,9 @@ export function createSyncClient({ store, keyring }) {
     if (res.status === 409) {
       const body = await res.json().catch(() => ({}));
       // The server's current version goes through the same door as a pulled
-      // one, so the conflict rule stays in one place (model/docs.js).
+      // one, so the conflict rule stays in one place (model/docs.js). The
+      // space rules too: a `current` from a space this device does not
+      // receive (the note moved elsewhere) detaches the record there.
       if (body && body.current) return store.applyRemote(body.current);
       if (!attach) return pushOne(record, true);
       return;
@@ -217,7 +307,7 @@ export function createSyncClient({ store, keyring }) {
   }
 
   async function ensureKeyringSynced() {
-    if (keyringNeedsAttach()) await store.setSync(KEYRING_ID, true);
+    if (keyringNeedsAttach()) await store.setSync(KEYRING_ID, true, KEYRING_SPACE);
   }
 
   /** Pull, then push. Single-flight; a call during a run buys one more run. */
@@ -308,6 +398,93 @@ export function createSyncClient({ store, keyring }) {
     }
   }
 
+  /**
+   * The newest server row of one document, for a click on a From server stub
+   * (§25). Throws the HTTP error with its status, so the caller can tell a
+   * document the server no longer has (404) from a network failure.
+   * @param {string} id
+   * @returns {Promise<import("../model/docs.js").Change>}
+   */
+  async function fetchDoc(id) {
+    const res = await request("/api/docs/" + encodeURIComponent(id));
+    if (!res.ok) throw httpError(res);
+    const change = await res.json();
+    change.space ??= DEFAULT_SPACE;
+    return change;
+  }
+
+  /**
+   * The server's spaces with a count of live documents each, for the settings
+   * panel (§25). `keyring` is left out: no list ever shows it.
+   * @returns {Promise<{space: string, count: number}[]>}
+   */
+  async function listSpaces() {
+    if (!isConfigured()) return [];
+    if (spacesCache && Date.now() - spacesCache.at < SPACES_TTL) return spacesCache.list;
+    const res = await request("/api/spaces");
+    // A server from before spaces has no such endpoint. Its notes are all in
+    // `personal`, which the panel lists from the device's own map anyway.
+    if (res.status === 404) return [];
+    if (!res.ok) throw httpError(res);
+    /** @type {{space: string, count: number}[]} */
+    const all = await res.json();
+    const list = all.filter((entry) => entry.space !== KEYRING_SPACE);
+    spacesCache = { at: Date.now(), list };
+    return list;
+  }
+
+  /** What this device does with a space; undefined is Not here. @param {string} space @returns {SpaceMode} */
+  function modeOf(space) {
+    if (space === KEYRING_SPACE) return "tab";
+    return Object.hasOwn(modes, space) ? modes[space] : undefined;
+  }
+
+  /** @returns {string} */
+  function defaultSpace() {
+    return defaultSpaceName;
+  }
+
+  /**
+   * Give a space a mode, or take it off this device with null (§25). Any
+   * window can call this. It only writes the setting; the leader's reload
+   * diffs the modes and does the cursor resets, the detach and the stub
+   * removal, because those touch the records and the cursors it owns.
+   * @param {string} space @param {StoredMode | null} mode
+   * @returns {Promise<boolean>} false for a refused change
+   */
+  async function setSpaceMode(space, mode) {
+    if (!isValidSpace(space) || space === KEYRING_SPACE) return false;
+    if (mode !== "tab" && mode !== "list" && mode !== null) return false;
+    // The default space is always received: a note this device attaches
+    // must be able to come back to it.
+    if (mode === null && space === defaultSpaceName) return false;
+    const next = dict(modes);
+    if (mode === null) delete next[space];
+    else next[space] = mode;
+    await putSetting(SPACES_KEY, { ...next });
+    post("setting", { key: SPACES_KEY });
+    await reloadSettings();
+    return true;
+  }
+
+  /**
+   * Where this device's new syncs go (§25). A space that was Not here turns
+   * Open as tab in the same step, so the default is always received.
+   * @param {string} name @returns {Promise<boolean>} false for a refused name
+   */
+  async function setDefaultSpace(name) {
+    if (!isValidSpace(name) || name === KEYRING_SPACE) return false;
+    if (!Object.hasOwn(modes, name)) {
+      await putSetting(SPACES_KEY, { ...modes, [name]: "tab" });
+    }
+    await putSetting(DEFAULT_SPACE_KEY, name);
+    // One message for both rows: a reload re-reads every space setting, and
+    // two messages would run the leader's diff twice.
+    post("setting", { key: DEFAULT_SPACE_KEY });
+    await reloadSettings();
+    return true;
+  }
+
   /** @param {string} id @returns {Promise<any[]>} */
   async function history(id) {
     const res = await request("/api/docs/" + encodeURIComponent(id) + "/revisions");
@@ -350,21 +527,89 @@ export function createSyncClient({ store, keyring }) {
    */
   async function load() {
     config = (await getSetting(CONFIG_KEY)) ?? null;
-    cursor = (await getSetting(CURSOR_KEY)) ?? 0;
     defaultOn = await getSetting(DEFAULT_ON_KEY);
+    await loadSpaces();
     setStatus({ state: isConfigured() ? "idle" : "off" });
   }
 
+  /** The space settings and the cursors (§25), with their two defaults. */
+  async function loadSpaces() {
+    const storedName = await getSetting(DEFAULT_SPACE_KEY);
+    defaultSpaceName =
+      isValidSpace(storedName) && storedName !== KEYRING_SPACE ? storedName : DEFAULT_SPACE;
+    /** @type {Record<string, StoredMode>} */
+    const next = dict();
+    const stored = await getSetting(SPACES_KEY);
+    // Unset means a device that never touched spaces: it takes `personal`
+    // as tabs, exactly as sync worked before.
+    for (const [name, mode] of Object.entries(stored ?? { [DEFAULT_SPACE]: "tab" })) {
+      // `keyring` is received apart from the map, always, so it is never a
+      // mode a setting could turn off.
+      if (!isValidSpace(name) || name === KEYRING_SPACE) continue;
+      if (mode === "tab" || mode === "list") next[name] = mode;
+    }
+    // The default is always received (setDefaultSpace writes it so). A map
+    // that lost it by hand still gets it here, in memory only.
+    if (!Object.hasOwn(next, defaultSpaceName)) next[defaultSpaceName] = "tab";
+    modes = next;
+    // The leader owns the cursors and keeps them in memory; a re-read here
+    // could land between its page and that page's write and step back.
+    if (!started) await readCursors();
+  }
+
+  /** The cursors, with the one-time move from the single legacy cursor. */
+  async function readCursors() {
+    let storedCursors = await getSetting(CURSORS_KEY);
+    if (storedCursors === undefined) {
+      const legacy = await getSetting(LEGACY_CURSOR_KEY);
+      if (typeof legacy === "number") {
+        // Before spaces every row was in one of these two, so both have
+        // seen everything up to the old cursor.
+        storedCursors = { [DEFAULT_SPACE]: legacy, [KEYRING_SPACE]: legacy };
+        await putSetting(CURSORS_KEY, storedCursors);
+        await deleteSetting(LEGACY_CURSOR_KEY);
+      }
+    }
+    cursors = dict(storedCursors);
+  }
+
+  /**
+   * Re-read the settings after a write here or in another window. The leader
+   * then applies what changed in the modes (§25): a space that appears, or
+   * turns from From server to Open as tab, starts again at 0 so its notes
+   * arrive whole and as tabs; a space that goes loses its cursor, its
+   * records' sync and its stubs. Only the leader does this, because only it
+   * writes the cursors and the stubs.
+   */
+  async function reloadSettings() {
+    const before = modes;
+    await load();
+    if (!started) return;
+    let reset = false;
+    for (const space of Object.keys(modes)) {
+      const was = Object.hasOwn(before, space) ? before[space] : undefined;
+      if (was === undefined || (was === "list" && modes[space] === "tab")) {
+        cursors[space] = 0;
+        reset = true;
+      }
+    }
+    for (const space of Object.keys(before)) {
+      if (Object.hasOwn(modes, space)) continue;
+      delete cursors[space];
+      reset = true;
+      await store.detachSpace(space);
+    }
+    if (reset) await putSetting(CURSORS_KEY, { ...cursors });
+    syncNow();
+  }
+
   // A setting written in another window (architecture.md §14.2): the leader
-  // picks up a new server or default without a reload, and a window that
-  // does not run the schedule still answers syncDefaultOn() correctly.
+  // picks up a new server, default or space without a reload, and a window
+  // that does not run the schedule still answers syncDefaultOn(), modeOf()
+  // and defaultSpace() correctly.
   on("setting", ({ key }) => {
-    if (key !== CONFIG_KEY && key !== DEFAULT_ON_KEY) return;
-    load()
-      .then(() => {
-        if (started) syncNow();
-      })
-      .catch((err) => console.log("[vrtti] sync settings reload failed", err));
+    if (![CONFIG_KEY, DEFAULT_ON_KEY, SPACES_KEY, DEFAULT_SPACE_KEY].includes(key)) return;
+    reloadSettings().catch((err) => console.log("[vrtti] sync settings reload failed", err));
   });
 
   /** Wire the triggers and run once. Call after store.start(). */
@@ -396,7 +641,11 @@ export function createSyncClient({ store, keyring }) {
       }, DEBOUNCE);
     });
 
-    syncNow();
+    // A window can wait long for the lock, and the old leader moved the
+    // cursors meanwhile: read them fresh, or the first run replays all of it.
+    readCursors()
+      .catch((err) => console.log("[vrtti] sync cursors read failed", err))
+      .then(() => syncNow());
   }
 
   return {
@@ -410,6 +659,18 @@ export function createSyncClient({ store, keyring }) {
     revision,
     syncDefaultOn,
     toggleSyncDefault,
+    // Spaces (architecture.md §25).
+    modeOf,
+    defaultSpace,
+    receivedSpaces,
+    setSpaceMode,
+    setDefaultSpace,
+    fetchDoc,
+    listSpaces,
+    isValidSpace,
+    get spaces() {
+      return { modes: { ...modes }, defaultSpace: defaultSpaceName };
+    },
     get status() {
       return status;
     },

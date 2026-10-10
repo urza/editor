@@ -36,12 +36,15 @@
 import {
   deleteBuffer,
   deleteHandle,
+  deleteRemote,
   getAllBuffers,
   getAllHandles,
   getHandle,
+  getRemotes,
   newBufferRecord,
   putBuffer,
   putHandle,
+  putRemote,
   MAIN_WORKSPACE,
 } from "../storage/idb.js";
 import {
@@ -70,10 +73,34 @@ import { detectFromName, isLang } from "../editor/lang.js";
 import { on, post } from "./channel.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
+/** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
+
+/**
+ * What a device does with a space (architecture.md §25): 'tab' takes the
+ * notes and opens them in main, 'list' keeps a title stub until a click,
+ * undefined is Not here.
+ * @typedef {'tab' | 'list' | undefined} SpaceMode
+ */
+
+/**
+ * The store's view of the device's space settings. The sync client owns them;
+ * the store only asks, the same way it asks `syncDefault`.
+ * @typedef {Object} SpacesDep
+ * @property {() => string} defaultSpace
+ * @property {(space: string) => SpaceMode} modeOf
+ */
 
 // Fixed id, not a UUID: every device must arrive at the same record so sync
 // merges one keyring instead of forking one per device (architecture.md §13.3).
 export const KEYRING_ID = "keyring";
+// The space every note had before spaces existed, and a device's default
+// until the user picks another (architecture.md §25). A change or a record
+// without a space reads as this one, which keeps an old server whole.
+export const DEFAULT_SPACE = "personal";
+// The keyring record's reserved space. Every device receives it, whatever its
+// settings say: a device that misses the device list cannot read what the
+// others encrypt to it (§13.3). It is never in the modes map.
+export const KEYRING_SPACE = "keyring";
 const SAVE_DELAY = 300;
 // Slow poll for external edits. Window focus is the responsive trigger; this
 // only covers a window that stays focused while another program writes.
@@ -139,6 +166,7 @@ export function titleOf(record) {
 /**
  * @param {{keyring: import("../crypto/keyring.js").KeyRing,
  *          syncDefault?: () => boolean,
+ *          spaces?: SpacesDep,
  *          workspaces: ReturnType<typeof import("./workspace.js").createWorkspaces>}} deps
  *   The keyring is a dependency, not an import: the codec resolves recipients
  *   and identities through it, and the store must follow its lock state
@@ -148,8 +176,18 @@ export function titleOf(record) {
  *   while the app runs. `workspaces` is this window's workspace and the
  *   others (architecture.md §14): "open" means a tab there, and the store
  *   writes its membership through it, never around it.
+ *   `spaces` answers which space a new sync goes to and what this device does
+ *   with a pulled space (§25); the default is a device with no setting yet.
  */
-export function createDocStore({ keyring, syncDefault = () => false, workspaces }) {
+export function createDocStore({
+  keyring,
+  syncDefault = () => false,
+  spaces = {
+    defaultSpace: () => DEFAULT_SPACE,
+    modeOf: (space) => (space === DEFAULT_SPACE ? "tab" : undefined),
+  },
+  workspaces,
+}) {
   /** @type {Map<string, BufferRecord>} */
   const buffers = new Map();
   /**
@@ -181,6 +219,13 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
   // Same "log once, not once per keystroke" reason as diskFailed.
   /** @type {Set<string>} */
   const encodeSkipped = new Set();
+  /**
+   * The From server stubs (architecture.md §25), by document id. Every window
+   * loads them at start and follows the `remote` messages; the sync leader
+   * writes them.
+   * @type {Map<string, RemoteStub>}
+   */
+  const remotes = new Map();
   const events = new EventTarget();
   /** @type {string | null} */
   let activeId = null;
@@ -207,6 +252,78 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       record.file && !record.file.unwritten ? withoutBody(record) : record;
     await putBuffer(row);
     post("buffer", { record: row });
+    // A stub dies the moment a record with its id exists here (§25).
+    // createFromChange removes it already; this catches every other door a
+    // record can come in by, so the sidebar never lists a note twice.
+    if (remotes.has(record.id)) await dropRemote(record.id);
+  }
+
+  // ---- From server stubs (architecture.md §25) -----------------------------
+
+  /** @param {RemoteStub} stub */
+  async function putStub(stub) {
+    remotes.set(stub.id, stub);
+    await putRemote(stub);
+    post("remote", { stub });
+    emit("change");
+  }
+
+  /** Remove one stub, if there is one. @param {string} id */
+  async function dropRemote(id) {
+    if (!remotes.has(id)) return;
+    remotes.delete(id);
+    await deleteRemote(id);
+    post("remote-deleted", { id });
+    emit("change");
+  }
+
+  /** Remove every stub of one space (it turned Not here). @param {string} space */
+  async function forgetRemotes(space) {
+    for (const stub of [...remotes.values()]) {
+      if (stub.space === space) await dropRemote(stub.id);
+    }
+  }
+
+  /** The stubs for the sidebar, newest first. @returns {RemoteStub[]} */
+  function remoteList() {
+    return [...remotes.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  on("remote", ({ stub }) => {
+    remotes.set(stub.id, stub);
+    emit("change");
+  });
+
+  on("remote-deleted", ({ id }) => {
+    if (remotes.delete(id)) emit("change");
+  });
+
+  /**
+   * A pulled change for a document this device does not hold, in a `list`
+   * space: keep its title, drop its text (§25). The text stays on the server
+   * until a click fetches it (remote.open).
+   * @param {Change} change @param {string} space
+   */
+  async function applyStub(change, space) {
+    const existing = remotes.get(change.docId);
+    // Same rule as the echo test of applyRemote: a cursor reset re-delivers
+    // older rows, and they must not bring back an older title.
+    if (existing && change.rev <= existing.rev) return;
+    if (change.kind !== "text") return dropRemote(change.docId);
+    const meta = change.meta || {};
+    /** @type {RemoteStub} */
+    const stub = {
+      id: change.docId,
+      space,
+      // Most notes carry no user title, so the first line stands in, taken
+      // now because the text is not kept. An encrypted note's text is
+      // ciphertext: its first line is base64, never a title.
+      title: meta.title || (meta.enc ? "" : firstLineTitle(change.content ?? "")),
+      rev: change.rev,
+      updatedAt: change.clientTime || Date.now(),
+    };
+    if (meta.enc) stub.enc = true;
+    await putStub(stub);
   }
 
   /** @param {BufferRecord} record @returns {BufferRecord} */
@@ -930,7 +1047,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     const record = newBufferRecord();
     // rev 0 means "never pushed", and dirty gets it into the first push, which
     // attaches it with baseRev null (architecture.md §13.6).
-    if (syncDefault()) record.sync = { rev: 0, dirty: true };
+    if (syncDefault()) record.sync = { rev: 0, dirty: true, space: spaces.defaultSpace() };
     buffers.set(record.id, record);
     await persist(record);
     await workspaces.addTab(record.id);
@@ -1479,6 +1596,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * @property {string} deviceId
    * @property {number} clientTime
    * @property {number} serverTime
+   * @property {string} [space]  Absent from a server older than spaces (§25),
+   *   which every reader takes as DEFAULT_SPACE.
    */
 
   /**
@@ -1501,14 +1620,19 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
    * push lands, in clearSync().
    *
    * @param {string} id @param {boolean} on
+   * @param {string} [space] Where a new sync goes; the device's default
+   *   space when absent (§25). An existing sync keeps its space: a move
+   *   between spaces is not built, and a second "Sync to" must not fake one.
    */
-  async function setSync(id, on) {
+  async function setSync(id, on, space) {
     const record = buffers.get(id);
     if (!record) return null;
     if (on) {
       // An already attached record is left alone: overwriting its rev with 0
       // would make the next push claim a revision the server passed long ago.
-      if (!record.sync) record.sync = { rev: 0, dirty: true };
+      if (!record.sync) {
+        record.sync = { rev: 0, dirty: true, space: space ?? spaces.defaultSpace() };
+      }
       else if (record.sync.tombstone) {
         // Turned off and on again before the tombstone was pushed. The last
         // click wins, so the pending detach is dropped instead of being sent
@@ -1584,8 +1708,19 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       meta,
       deviceId: await deviceId(),
       clientTime: record.updatedAt,
+      space: spaceOf(record),
     };
     return { payload, sentMtime };
+  }
+
+  /**
+   * The space a synced record pushes to. The fallback covers a record from
+   * before the v6 backfill, which a window of an older build can still
+   * write; it is the same rule the backfill applies.
+   * @param {BufferRecord} record @returns {string}
+   */
+  function spaceOf(record) {
+    return record.sync?.space ?? (record.kind === "keyring" ? KEYRING_SPACE : DEFAULT_SPACE);
   }
 
   /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
@@ -1687,7 +1822,11 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     }
     record.content = incoming;
     applyMeta(record, change.meta || {});
-    record.sync = { rev: change.rev, dirty: false };
+    record.sync = {
+      rev: change.rev,
+      dirty: false,
+      space: change.space ?? record.sync?.space ?? DEFAULT_SPACE,
+    };
     record.updatedAt = Date.now();
     // The decoded text belongs to the ciphertext this just replaced.
     plain.delete(id);
@@ -1727,6 +1866,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     next.sync = {
       rev: change.rev,
       dirty: JSON.stringify(merged) !== JSON.stringify(mergeKeyringContent(null, remote)),
+      space: KEYRING_SPACE,
     };
     await putSystemRecord(next);
   }
@@ -1807,12 +1947,52 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     if (record && record.sync && change.rev <= record.sync.rev) return;
 
     const meta = change.meta || {};
+    // An old server sends no space; every row it holds is from before spaces,
+    // so it is `personal` (§25). Set on the change itself, so a routed copy,
+    // adoptRemote and createFromChange all read the same value. This is the
+    // one door for pulls, 409s and routed changes alike.
+    change.space ??= DEFAULT_SPACE;
+    const space = change.space;
+    const isKeyring =
+      id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring";
+
+    // An unknown document outside an Open as tab space never becomes a
+    // record (§25). Decided here, before routing: the stubs belong to the
+    // leader, which is the window running this, and no window owns the id.
+    if (!record && !isKeyring) {
+      const mode = spaces.modeOf(space);
+      if (mode === "list") return applyStub(change, space);
+      if (mode === undefined || change.kind !== "text") {
+        // Not here: nothing is stored. A tombstone for an unknown id has no
+        // record to act on in any mode, but a stub with this id may be left
+        // from a list space that turned Open as tab, or from a note that
+        // left a listed space; either way its title is stale now.
+        return dropRemote(id);
+      }
+    }
+
     if (!options.local) {
       const target = await routeTarget(id, record, meta);
       if (target && (await deliverRemote(target, change))) return;
     }
-    if (id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring") {
+    // The keyring is never a stub and never detached by space: every device
+    // receives `keyring`, whatever its settings say.
+    if (isKeyring) {
       return applyRemoteKeyring(record, change);
+    }
+
+    // A change from a space this device does not receive is a detach,
+    // whatever its kind (§25). It still reaches a known record two ways: as
+    // the `current` of a 409 after the note moved spaces on another device,
+    // and as a routed or in-flight row after the user turned the space to
+    // Not here. The local copy stays, exactly as for a `detached` tombstone;
+    // adopting the text would sync a note into a space this device ignores.
+    if (record && spaces.modeOf(space) === undefined) {
+      if (!record.sync) return;
+      delete record.sync;
+      await persist({ ...record });
+      emit("change");
+      return;
     }
 
     // A tombstone never applies to a record that was just attached by hand
@@ -1878,22 +2058,8 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     }
 
     if (!record) {
-      /** @type {BufferRecord} */
-      const created = {
-        id,
-        content: change.content ?? "",
-        createdAt: Date.now(),
-        // The other device's clock: it is what the row's age should show, and
-        // this device never saw the document before now.
-        updatedAt: change.clientTime || Date.now(),
-        sync: { rev: change.rev, dirty: false },
-      };
-      applyMeta(created, meta);
-      buffers.set(id, created);
-      await persist({ ...created });
       // A document that arrives from sync opens in the main workspace (§14).
-      await workspaces.addTab(id, MAIN_WORKSPACE);
-      emit("change");
+      await createFromChange(change, MAIN_WORKSPACE);
       return;
     }
 
@@ -1941,6 +2107,57 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
       }
     }
     await adoptRemote(record, change, forked);
+  }
+
+  /**
+   * A synced record from a server row this device has no record for: the
+   * unknown-id branch of applyRemote, and remote.open's click on a From
+   * server stub (§25), which passes its own window instead of main.
+   * @param {Change} change @param {string} ws The workspace that gets the tab.
+   * @returns {Promise<BufferRecord>}
+   */
+  async function createFromChange(change, ws) {
+    const id = change.docId;
+    // A pull can land between the click's fetch and this call; a second
+    // record for one id would split the buffer's one writer in two.
+    const existing = buffers.get(id);
+    if (existing) return existing;
+    /** @type {BufferRecord} */
+    const created = {
+      id,
+      content: change.content ?? "",
+      createdAt: Date.now(),
+      // The other device's clock: it is what the row's age should show, and
+      // this device never saw the document before now.
+      updatedAt: change.clientTime || Date.now(),
+      sync: { rev: change.rev, dirty: false, space: change.space ?? DEFAULT_SPACE },
+    };
+    applyMeta(created, change.meta || {});
+    buffers.set(id, created);
+    // persist() also removes the stub with this id (§25).
+    await persist({ ...created });
+    await workspaces.addTab(id, ws);
+    emit("change");
+    return created;
+  }
+
+  /**
+   * Turn a space to Not here for the records (§25): each synced record of the
+   * space drops `sync` and keeps its text, and the space's stubs go. The
+   * leader runs this for every window. A record another window owns reaches
+   * it through the ordinary `buffer` message, which carries `sync` and leaves
+   * the text of that window's tab alone, so the one-writer rule holds.
+   * @param {string} space
+   */
+  async function detachSpace(space) {
+    for (const record of buffers.values()) {
+      // The keyring's space is received by every device, always.
+      if (!record.sync || record.kind === "keyring" || spaceOf(record) !== space) continue;
+      delete record.sync;
+      await persist({ ...record });
+    }
+    await forgetRemotes(space);
+    emit("change");
   }
 
   /**
@@ -2334,6 +2551,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
 
   async function load() {
     for (const record of await getAllBuffers()) buffers.set(record.id, record);
+    for (const stub of await getRemotes()) remotes.set(stub.id, stub);
     // Handles come back from IndexedDB with their permission possibly back at
     // "prompt". Nothing prompts here: that needs a user gesture. Nothing is
     // read here either: a file body is read when its tab is shown (§23).
@@ -2540,6 +2758,12 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     clearSync,
     clearPurge,
     applyRemote,
+    // From server (architecture.md §25).
+    remotes: remoteList,
+    dropRemote,
+    forgetRemotes,
+    detachSpace,
+    createFromChange,
     pushPayload,
     dirtyRecords,
     afterPush,

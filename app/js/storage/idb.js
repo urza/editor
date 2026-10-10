@@ -13,6 +13,8 @@
 // membership in a workspace's `tabs` is the one truth for "open" (§14.1).
 // v5 deleted `content` and `file.lastSyncAt` from every record with `file`:
 // a file-backed note keeps its body in the file and nowhere else (§23).
+// v6 added the "remote" store for From server stubs and `sync.space` on every
+// synced record (§25).
 
 /**
  * @typedef {Object} FileLink
@@ -50,6 +52,26 @@
  * @property {'deleted' | 'detached'} [tombstone]  A pending push of that kind.
  * @property {true} [purge]  Ask the push loop to delete older server revisions
  *                           after the next successful push (encrypt conversion, §5).
+ * @property {string} [space]  The server space the doc lives in (architecture.md
+ *                           §25). Set when the sync starts and kept for life:
+ *                           a move between spaces is not built yet. Absent
+ *                           only before the v6 backfill ran.
+ */
+
+/**
+ * A From server entry (architecture.md §25): a note of a `list` space that
+ * this device has not fetched. A stub, not a record, so it is in no list,
+ * no search and no trash, and it dies when a record with its id appears.
+ *
+ * @typedef {Object} RemoteStub
+ * @property {string} id  The document id, the same as the record's would be.
+ * @property {string} space
+ * @property {string} title  `meta.title`, else the first line of the text at
+ *                           stub time; "" for an encrypted note without a title.
+ * @property {number} rev  The newest revision seen, so a re-delivered older
+ *                           row does not overwrite a newer title.
+ * @property {true} [enc]  The note is encrypted.
+ * @property {number} updatedAt  The other device's clock, for the sort.
  */
 
 /**
@@ -122,11 +144,12 @@
 import { reviveHandle } from "./native.js";
 
 const DB_NAME = "vrtti";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const STORE = "buffers";
 const HANDLES = "handles";
 const SETTINGS = "settings";
 const WORKSPACES = "workspaces";
+const REMOTE = "remote";
 export const MAIN_WORKSPACE = "main";
 // Where v3 kept the active buffer. v4 moves it into the main workspace
 // record; the migration reads the key once and deletes it.
@@ -148,10 +171,10 @@ export function openDb() {
       // Every version's stores are created here, each behind a "does it exist"
       // check. That makes the handler idempotent, so one code path upgrades
       // any older database and creates a fresh one. v1 to v3 never rewrote a
-      // record, because every field they added was optional. v4 and v5
+      // record, because every field they added was optional. v4, v5 and v6
       // rewrite the buffers once each (drop `closed`; drop the second body of
-      // a file record), and those steps need the old version number: a fresh
-      // database (oldVersion 0) has nothing to migrate.
+      // a file record; give `sync` its space), and those steps need the old
+      // version number: a fresh database (oldVersion 0) has nothing to migrate.
       req.onupgradeneeded = (event) => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) {
@@ -166,14 +189,21 @@ export function openDb() {
         if (!db.objectStoreNames.contains(WORKSPACES)) {
           db.createObjectStore(WORKSPACES, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(REMOTE)) {
+          db.createObjectStore(REMOTE, { keyPath: "id" });
+        }
         const tx = req.transaction;
-        if (event.oldVersion > 0 && event.oldVersion < 4 && tx) {
-          // v5 runs from inside v4's callback, after v4 queued its puts: two
-          // getAll() issued side by side would both read the v3 rows, and the
-          // v5 put would bring `closed` back.
-          migrateToWorkspaces(tx, () => migrateToOneBody(tx));
-        } else if (event.oldVersion === 4 && tx) {
-          migrateToOneBody(tx);
+        const old = event.oldVersion;
+        // Each step runs from inside the previous one's callback, after it
+        // queued its puts: two getAll() issued side by side would both read
+        // the old rows, and the later put would bring back what the earlier
+        // step removed (`closed`, a file record's second body).
+        if (old > 0 && old < 4 && tx) {
+          migrateToWorkspaces(tx, () => migrateToOneBody(tx, () => migrateToSpaces(tx)));
+        } else if (old === 4 && tx) {
+          migrateToOneBody(tx, () => migrateToSpaces(tx));
+        } else if (old === 5 && tx) {
+          migrateToSpaces(tx);
         }
       };
       req.onsuccess = () => {
@@ -263,8 +293,9 @@ function migrateToWorkspaces(tx, then) {
  * Same shape as migrateToWorkspaces: no await inside the upgrade transaction,
  * and running it twice changes nothing.
  * @param {IDBTransaction} tx
+ * @param {() => void} [then]  The next migration, started once the puts are queued.
  */
-function migrateToOneBody(tx) {
+function migrateToOneBody(tx, then) {
   const buffers = tx.objectStore(STORE);
   buffers.getAll().onsuccess = (event) => {
     /** @type {any[]} */
@@ -273,6 +304,28 @@ function migrateToOneBody(tx) {
       if (!record.file) continue;
       delete record.content;
       delete record.file.lastSyncAt;
+      buffers.put(record);
+    }
+    then?.();
+  };
+}
+
+/**
+ * v5 to v6: every synced record gets its space (architecture.md §25). Before
+ * spaces every server row was one of two kinds, so the keyring record goes to
+ * `keyring` and every other one to `personal`, which is where the server's
+ * own migration puts the same rows. The strings are repeated here, not
+ * imported from the model: this layer imports nothing it does not store.
+ * @param {IDBTransaction} tx
+ */
+function migrateToSpaces(tx) {
+  const buffers = tx.objectStore(STORE);
+  buffers.getAll().onsuccess = (event) => {
+    /** @type {any[]} */
+    const all = /** @type {IDBRequest} */ (event.target).result;
+    for (const record of all) {
+      if (!record.sync || record.sync.space) continue;
+      record.sync.space = record.kind === "keyring" ? "keyring" : "personal";
       buffers.put(record);
     }
   };
@@ -303,6 +356,39 @@ export async function deleteBuffer(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Remote store (architecture.md §25): the From server stubs. model/docs.js
+// owns them; the sync leader writes them, every window reads them at start.
+
+/** @returns {Promise<RemoteStub[]>} */
+export async function getRemotes() {
+  const db = await openDb();
+  return request(db.transaction(REMOTE, "readonly").objectStore(REMOTE).getAll());
+}
+
+/** @param {RemoteStub} stub */
+export async function putRemote(stub) {
+  const db = await openDb();
+  const tx = db.transaction(REMOTE, "readwrite");
+  tx.objectStore(REMOTE).put(stub);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(stub);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/** @param {string} id */
+export async function deleteRemote(id) {
+  const db = await openDb();
+  const tx = db.transaction(REMOTE, "readwrite");
+  tx.objectStore(REMOTE).delete(id);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 

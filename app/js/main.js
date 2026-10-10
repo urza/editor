@@ -19,11 +19,17 @@ import {
   isDesktop,
   requestPersistence,
 } from "./model/capabilities.js";
-import { createDocStore, firstLineTitle, KEYRING_ID } from "./model/docs.js";
+import {
+  createDocStore,
+  DEFAULT_SPACE,
+  firstLineTitle,
+  KEYRING_ID,
+  KEYRING_SPACE,
+} from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
 import { register, run } from "./commands/registry.js";
-import { createSyncClient } from "./sync/client.js";
+import { createSyncClient, isValidSpace } from "./sync/client.js";
 import * as age from "./crypto/age.js";
 import {
   KeyRing,
@@ -92,6 +98,13 @@ async function start() {
   const store = createDocStore({
     keyring,
     syncDefault: () => Boolean(sync && sync.syncDefaultOn()),
+    // Same late binding as syncDefault (§25). Before the client exists the
+    // answer is a device with no space setting, never Not here: a routed
+    // change arriving that early must not detach a record.
+    spaces: {
+      defaultSpace: () => (sync ? sync.defaultSpace() : DEFAULT_SPACE),
+      modeOf: (space) => (sync ? sync.modeOf(space) : "tab"),
+    },
     workspaces,
   });
   await store.load();
@@ -661,17 +674,20 @@ async function start() {
   register({
     id: "doc.sync.on",
     title: "Sync this document",
-    // No arg means the active buffer, like buffer.close.
-    run: async (id) => {
+    // No arg means the active buffer, like buffer.close. `{ id, space }` is
+    // the row menu's "Sync to" (§25); a bare id goes to the default space.
+    run: async (arg) => {
+      const { id, space } = typeof arg === "object" && arg ? arg : { id: arg, space: undefined };
       const target = id ?? store.activeId;
       if (!target) return false;
+      if (space !== undefined && (!isValidSpace(space) || space === KEYRING_SPACE)) return false;
       if (!sync.isConfigured) {
         // A log, not a dialog: the row menu already carries the hint that says
         // where a server is set, and this path is only reachable around it.
         console.log("[vrtti] sync: no server configured");
         return false;
       }
-      await store.setSync(target, true);
+      await store.setSync(target, true, space);
       return true;
     },
   });
@@ -704,6 +720,49 @@ async function start() {
       }
       return true;
     },
+  });
+  // Spaces (architecture.md §25).
+  register({
+    id: "remote.open",
+    title: "Open a note from the server",
+    // A click on a From server stub: fetch the note now, open it in THIS
+    // window (not main, where a pulled note goes), and sync it from then on.
+    run: async (id) => {
+      if (!id || !sync.isConfigured) return false;
+      let change;
+      try {
+        change = await sync.fetchDoc(id);
+      } catch (err) {
+        // Gone from the server: the title is all that was left of it.
+        if (/** @type {any} */ (err)?.status === 404) await store.dropRemote(id);
+        else console.log("[vrtti] fetching a server note failed", id, err);
+        return false;
+      }
+      // Deleted or detached since the stub was written: same as gone.
+      if (change.kind !== "text") {
+        await store.dropRemote(id);
+        return false;
+      }
+      // A pull can bring the record in while the fetch is in flight, and
+      // then it may be a tab of another window: reopen goes there instead.
+      if (store.get(id)) {
+        await run("buffer.reopen", id);
+        return true;
+      }
+      await store.createFromChange(change, workspaces.id);
+      await run("buffer.activate", id);
+      return true;
+    },
+  });
+  register({
+    id: "sync.spaceMode",
+    title: "Set what this device does with a space",
+    run: ({ space, mode }) => sync.setSpaceMode(space, mode),
+  });
+  register({
+    id: "sync.defaultSpace",
+    title: "Set where new notes sync to",
+    run: (name) => sync.setDefaultSpace(name),
   });
   register({
     id: "sync.defaultToggle",
@@ -942,6 +1001,11 @@ async function start() {
     // reaches all of this through commands and the settings panel.
     sync,
     applyRemote: (change) => store.applyRemote(change),
+    // From server stubs (architecture.md §25).
+    remotes: () => store.remotes(),
+    createFromChange: (change, ws) => store.createFromChange(change, ws ?? workspaces.id),
+    // Any command by id, for the checks that drive one with no UI yet.
+    run,
     dirtyRecords: () => store.dirtyRecords(),
     trashed: () => store.trashed(),
     restore: (id) => store.restore(id),
