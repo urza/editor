@@ -14,7 +14,7 @@ import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
-import { titleOf } from "../model/docs.js";
+import { titleOf, KEYRING_SPACE } from "../model/docs.js";
 
 /**
  * The keyring the Security section reports on, handed in by mountSettings.
@@ -43,6 +43,16 @@ let store = null;
 let testResult = "";
 
 /**
+ * The server's spaces as the last `/api/spaces` answer gave them (§25). The
+ * Spaces list paints from this at once and asks again in the background,
+ * because a list row's `rows()` is synchronous.
+ * @type {{space: string, count: number}[]}
+ */
+let serverSpaces = [];
+/** A request is out; a repaint while it runs must not start a second one. */
+let spacesLoading = false;
+
+/**
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
@@ -68,15 +78,20 @@ let testResult = "";
  * @property {string} [button]                           action: button label.
  * @property {() => any} [act]                           action: dispatch the action.
  * @property {string} [text]                             note: one paragraph.
- * @property {() => ListRow[]} [rows]                    list: the rows, read on every paint.
+ * @property {(repaint: () => void) => ListRow[]} [rows] list: the rows, read
+ *                             on every paint. A list whose source is fetched
+ *                             calls `repaint` when the answer lands.
  * @property {{ text: string, href: string }[]} [links]  note: external links.
  */
 
 /**
  * One row of a `list` item: a label with a value line under it, and an
- * optional button. Read fresh on every paint, so a list follows its source.
+ * optional button or select. Read fresh on every paint, so a list follows its
+ * source. `select.set` dispatches the picked value, like a toggle's `set`.
  * @typedef {{ key: string, label: string, value: string, hint?: string,
- *            button?: string, act?: () => any }} ListRow
+ *            button?: string, act?: () => any,
+ *            select?: { value: string, options: { value: string, label: string }[],
+ *                       set: (value: string) => Promise<unknown> | unknown } }} ListRow
  */
 
 /**
@@ -121,6 +136,61 @@ function syncStatusText() {
     text += " · last sync " + new Date(lastSyncAt).toLocaleTimeString();
   }
   return text;
+}
+
+/** The three modes of a space (§25), in the order the select offers them. */
+const SPACE_MODES = [
+  { value: "none", label: "Not here" },
+  { value: "list", label: "From server" },
+  { value: "tab", label: "Open as tab" },
+];
+
+/**
+ * The Spaces list (§25): the server's spaces, the device's map and its
+ * default space, minus `keyring`, by name. Each paint also asks the server
+ * again; `listSpaces()` caches for ten seconds, and only an answer that
+ * differs repaints, so a paint never loops into another request.
+ * @param {() => void} repaint
+ * @returns {ListRow[]}
+ */
+function spaceRows(repaint) {
+  if (!sync) return [];
+  const client = sync;
+  if (!spacesLoading) {
+    spacesLoading = true;
+    client
+      .listSpaces()
+      .then((list) => {
+        if (JSON.stringify(list) === JSON.stringify(serverSpaces)) return;
+        serverSpaces = list;
+        repaint();
+      })
+      // Offline or a failing server: the list shows what the device knows,
+      // and the status row already says why sync is down.
+      .catch(() => {})
+      .finally(() => (spacesLoading = false));
+  }
+  const counts = new Map(serverSpaces.map((entry) => [entry.space, entry.count]));
+  const { modes, defaultSpace } = client.spaces;
+  const names = new Set([...counts.keys(), ...Object.keys(modes), defaultSpace]);
+  names.delete(KEYRING_SPACE);
+  return [...names].sort().map((name) => {
+    const count = counts.get(name);
+    const isDefault = name === defaultSpace;
+    return {
+      key: "space-" + name,
+      label: isDefault ? name + " · default" : name,
+      value: count === undefined ? "" : count === 1 ? "1 note" : count + " notes",
+      select: {
+        value: client.modeOf(name) ?? "none",
+        // The default space is always received (§25), so Not here is not
+        // offered for it; the client would refuse it anyway.
+        options: isDefault ? SPACE_MODES.filter((mode) => mode.value !== "none") : SPACE_MODES,
+        set: (value) =>
+          run("sync.spaceMode", { space: name, mode: value === "none" ? null : value }),
+      },
+    };
+  });
 }
 
 /** @type {Section[]} */
@@ -266,6 +336,27 @@ const SECTIONS = [
         hint: "Unset follows the platform: on for a phone, off where there is a disk.",
         get: () => Boolean(sync?.syncDefaultOn()),
         set: () => run("sync.defaultToggle"),
+      },
+      {
+        type: "list",
+        key: "sync-spaces",
+        label: "Spaces",
+        hint: "Not here: ignored. From server: titles in the From server list, fetched on click. Open as tab: arrives and opens, as before.",
+        visible: () => Boolean(sync?.isConfigured),
+        rows: spaceRows,
+      },
+      {
+        type: "text",
+        key: "sync-default-space",
+        label: "New notes go to",
+        hint: "The space a note joins when it starts to sync here. A new name makes a new space. Letters, digits, - and _ only.",
+        placeholder: "personal",
+        get: () => sync?.defaultSpace() ?? "",
+        // The command answers false for a name the server would refuse, and
+        // stores nothing. The repaint after the commit then puts the old name
+        // back in the field, which is the whole error message.
+        set: (value) => run("sync.defaultSpace", String(value ?? "").trim()),
+        visible: () => Boolean(sync?.isConfigured),
       },
       {
         type: "action",
@@ -647,7 +738,13 @@ function makeRow(item, refresh) {
     list.className = "settings-list";
     row.appendChild(list);
     paintOwn = () => {
-      const rows = item.rows ? item.rows() : [];
+      // Never while a select in the list has the focus: a repaint arrives
+      // from every sync status event and every store change, and replacing
+      // the select would close its dropdown under the user. The select's own
+      // change handler blurs it before it asks for the repaint.
+      const focused = document.activeElement;
+      if (focused instanceof HTMLSelectElement && list.contains(focused)) return;
+      const rows = item.rows ? item.rows(refresh) : [];
       list.replaceChildren(
         ...rows.map((entry) => {
           const line = document.createElement("div");
@@ -678,6 +775,32 @@ function makeRow(item, refresh) {
               }
             });
             line.appendChild(button);
+          }
+          const choice = entry.select;
+          if (choice) {
+            const select = document.createElement("select");
+            select.className = "settings-select";
+            select.setAttribute("aria-label", entry.label);
+            for (const option of choice.options) {
+              const el = document.createElement("option");
+              el.value = option.value;
+              el.textContent = option.label;
+              select.appendChild(el);
+            }
+            select.value = choice.value;
+            select.addEventListener("change", async () => {
+              select.disabled = true;
+              try {
+                await choice.set(select.value);
+              } finally {
+                // The repaint replaces this select with one that shows the
+                // stored mode, also when the command refused the change. The
+                // blur first, or the focus guard in paintOwn skips it.
+                select.blur();
+                refresh();
+              }
+            });
+            line.appendChild(select);
           }
           return line;
         })

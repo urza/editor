@@ -146,6 +146,15 @@
         <h2 class="sidebar-heading" id="recent-heading"></h2>
         <ul id="recent-list" class="buffer-list" hidden></ul>
       </div>
+      <!-- From server (architecture.md §25): the titles of notes in a space
+           this device lists but does not store. Same shape and rules as
+           Recent above it: closed at start, nothing persists that, hidden
+           while empty. A click fetches the note. ui/sidebar.js owns both
+           hidden attributes. -->
+      <div id="fromserver" hidden>
+        <h2 class="sidebar-heading" id="fromserver-heading"></h2>
+        <ul id="fromserver-list" class="buffer-list" hidden></ul>
+      </div>
       <button id="sidebar-settings" type="button" title="Settings">⚙ settings</button>
     </aside>
     <div id="resizer"></div>

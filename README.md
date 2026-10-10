@@ -86,6 +86,7 @@ The text in the note keeps the normal emoji characters.
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
 - When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Trash** restores it. A wrong or forged delete from the server cannot wipe a note.
+- A synced note lives in a named **space**, `personal` unless you pick another. Each device decides per space what it receives: everything as tabs, titles only under **From server** in the sidebar (a click fetches the note), or nothing. A work computer can take the `work` space and never see your personal notes. One token serves every device.
 
 ![The history of a synced note with three revisions](docs/screenshots/history.png)
 

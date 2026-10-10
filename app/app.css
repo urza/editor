@@ -159,6 +159,35 @@ body {
   overflow-y: auto;
 }
 
+/* From server (architecture.md §25) copies Recent's rules, so the two pinned
+   blocks behave alike: closed until clicked, the list scrolls inside the
+   block, and the cap keeps the Open list in view. */
+#fromserver {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
+  max-height: 50%;
+}
+#fromserver[hidden] { display: none; }  /* the display: flex above would beat the attribute */
+#fromserver-heading { cursor: pointer; }
+#fromserver-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The name of a space over its rows in From server, when more than one space
+   lists there. A label, not a row: no pointer, no hover, nothing to click. */
+.buffer-subheading {
+  padding: 4px 10px 1px;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Header row: the collapse toggle and the primary action side by side. The
    8px top is what #sidebar's padding used to give the "+", before the scroller
    took that padding over. */
@@ -555,7 +584,8 @@ body {
 #sidebar.searching #open-actions,
 #sidebar.searching #open-list,
 #sidebar.searching #folder-sections,
-#sidebar.searching #recent {
+#sidebar.searching #recent,
+#sidebar.searching #fromserver {
   display: none;
 }
 
@@ -1158,8 +1188,26 @@ body {
   font-size: var(--ui-sm);
 }
 
+/* A mode picker on a list entry (the Spaces list, architecture.md §25). It
+   takes the panel button's frame, so a select and a button side by side in
+   one list look like one family of controls. */
+.settings-select {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.settings-select:hover { background: var(--st-sidebar-selected); }
+.settings-select:disabled { opacity: 0.4; cursor: default; }
+
 /* One focus ring for everything in the panel, the same as the inputs had. */
-#settings-panel :is(button, input, a):focus-visible {
+#settings-panel :is(button, input, select, a):focus-visible {
   outline: 1px solid var(--st-caret);
   outline-offset: 2px;
 }

@@ -1,5 +1,5 @@
 // @ts-check
-// Sidebar: the Open list, one section per opened folder, and Recent. Reads the
+// Sidebar: the Open list, one section per opened folder, Recent and From server. Reads the
 // stores, dispatches commands, owns its DOM region. All user-derived text goes
 // through textContent.
 //
@@ -7,7 +7,7 @@
 // (one per keystroke), and a folder tree can hold hundreds of rows that have
 // nothing to do with the text being typed.
 
-import { titleOf } from "../model/docs.js";
+import { titleOf, DEFAULT_SPACE, KEYRING_SPACE } from "../model/docs.js";
 import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
 import { run } from "../commands/registry.js";
@@ -15,6 +15,7 @@ import { openMenu } from "./menu.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
+/** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
 
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
@@ -75,6 +76,20 @@ export function mountSidebar(store, folders, sync) {
   let recentCollapsed = true;
   recentHeading.addEventListener("click", () => {
     recentCollapsed = !recentCollapsed;
+    render();
+  });
+
+  const fromserverBlock = /** @type {HTMLElement} */ (document.getElementById("fromserver"));
+  const fromserverHeading = /** @type {HTMLElement} */ (
+    document.getElementById("fromserver-heading")
+  );
+  const fromserverList = /** @type {HTMLElement} */ (document.getElementById("fromserver-list"));
+
+  // The same rule as Recent (architecture.md §25): closed in every new
+  // window, open for this window's lifetime after a click, never stored.
+  let fromserverCollapsed = true;
+  fromserverHeading.addEventListener("click", () => {
+    fromserverCollapsed = !fromserverCollapsed;
     render();
   });
 
@@ -173,22 +188,7 @@ export function mountSidebar(store, folders, sync) {
     }
 
     items.push({ separator: true });
-    items.push(
-      sync?.isConfigured
-        ? {
-            label: "Sync",
-            // One item, both directions, like Encrypt below.
-            checked: Boolean(record.sync),
-            act: () =>
-              run(record.sync ? "doc.sync.off" : "doc.sync.on", record.id),
-          }
-        : {
-            label: "Sync",
-            checked: false,
-            disabled: true,
-            hint: "Set a server in settings",
-          }
-    );
+    items.push(...syncItems(record));
     // History is the server's, so it only exists for a document the server
     // knows about.
     if (record.sync && sync?.isConfigured) {
@@ -218,6 +218,48 @@ export function mountSidebar(store, folders, sync) {
         : { label: "Reopen", act: () => run("buffer.reopen", record.id) }
     );
     return items;
+  }
+
+  /**
+   * The Sync item, and the "Sync to" items of an unsynced note (§25). The
+   * hint names the space: where a synced note lives, or where "Sync" will
+   * put this one. A synced note gets no "Sync to": a move between spaces is
+   * Stop sync, then attach again, because the old space would never hear of
+   * a direct move. Flat items, since the menu has no submenus and two or
+   * three spaces need none.
+   *
+   * @param {BufferRecord} record
+   * @returns {import("./menu.js").MenuItem[]}
+   */
+  function syncItems(record) {
+    if (!sync?.isConfigured) {
+      return [{ label: "Sync", checked: false, disabled: true, hint: "Set a server in settings" }];
+    }
+    if (record.sync) {
+      return [
+        {
+          label: "Sync",
+          // One item, both directions, like Encrypt below. A record from
+          // before spaces may lack the field, and every reader takes that as
+          // DEFAULT_SPACE, as the migration does.
+          checked: true,
+          hint: record.sync.space ?? DEFAULT_SPACE,
+          act: () => run("doc.sync.off", record.id),
+        },
+      ];
+    }
+    const target = sync.defaultSpace();
+    const others = sync
+      .receivedSpaces()
+      .filter((name) => name !== KEYRING_SPACE && name !== target)
+      .sort();
+    return [
+      { label: "Sync", checked: false, hint: "to " + target, act: () => run("doc.sync.on", record.id) },
+      ...others.map((name) => ({
+        label: "Sync to " + name,
+        act: () => run("doc.sync.on", { id: record.id, space: name }),
+      })),
+    ];
   }
 
   /** @param {BufferRecord} record @param {{closable: boolean}} opts */
@@ -330,6 +372,73 @@ export function mountSidebar(store, folders, sync) {
       run("sidebar.autoclose");
     });
     return li;
+  }
+
+  /**
+   * A From server row (§25). Its own builder, not a mode of makeRow: a stub
+   * is no record, and has no menu, no close and no drag. The ☁ says where
+   * the text is; a click fetches it and opens it as a tab here.
+   * @param {RemoteStub} stub
+   */
+  function makeStubRow(stub) {
+    const li = document.createElement("li");
+    li.className = "buffer-row";
+    li.dataset.id = stub.id;
+
+    const cloud = document.createElement("span");
+    cloud.className = "buffer-mark";
+    cloud.textContent = "☁";
+    cloud.title = "On the server";
+    li.appendChild(cloud);
+
+    if (stub.enc) {
+      const lock = document.createElement("span");
+      lock.className = "buffer-mark";
+      lock.textContent = "🔒";
+      lock.title = "Encrypted";
+      li.appendChild(lock);
+    }
+
+    const title = document.createElement("span");
+    title.className = "buffer-title";
+    // An encrypted stub has no readable first line to fall back on (§5).
+    title.textContent = stub.title || (stub.enc ? "encrypted" : "untitled");
+    li.appendChild(title);
+
+    li.addEventListener("click", () => {
+      run("remote.open", stub.id);
+      run("sidebar.autoclose");
+    });
+    return li;
+  }
+
+  /**
+   * The From server rows, newest first. With stubs from two or more spaces,
+   * a heading names each space over its group; the groups follow their
+   * newest stub, so the newest note is still on top. One space needs no
+   * heading: the block's own heading already says what the rows are.
+   * @param {RemoteStub[]} stubs newest first, as store.remotes() gives them
+   * @returns {HTMLElement[]}
+   */
+  function stubRows(stubs) {
+    /** @type {Map<string, RemoteStub[]>} */
+    const groups = new Map();
+    // Insertion order is the order of each space's newest stub.
+    for (const stub of stubs) {
+      const group = groups.get(stub.space);
+      if (group) group.push(stub);
+      else groups.set(stub.space, [stub]);
+    }
+    if (groups.size < 2) return stubs.map(makeStubRow);
+    /** @type {HTMLElement[]} */
+    const rows = [];
+    for (const [space, group] of groups) {
+      const heading = document.createElement("li");
+      heading.className = "buffer-subheading";
+      heading.textContent = space;
+      rows.push(heading, ...group.map(makeStubRow));
+    }
+    return rows;
   }
 
   // ---- Reorder by drag (architecture.md §9, Manual order) -----------------
@@ -601,6 +710,15 @@ export function mountSidebar(store, folders, sync) {
     recentList.replaceChildren(
       ...(recentCollapsed ? [] : closed.map((b) => makeRow(b, { closable: false })))
     );
+
+    // The store emits "change" when a stub comes or goes, in any window
+    // (§25), so this block follows the same event as the lists above.
+    const stubs = store.remotes();
+    fromserverBlock.hidden = stubs.length === 0;
+    fromserverHeading.textContent =
+      (fromserverCollapsed ? "▸" : "▾") + " From server (" + stubs.length + ")";
+    fromserverList.hidden = fromserverCollapsed;
+    fromserverList.replaceChildren(...(fromserverCollapsed ? [] : stubRows(stubs)));
   }
 
   store.events.addEventListener("change", render);
