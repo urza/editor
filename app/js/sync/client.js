@@ -369,6 +369,8 @@ export function createSyncClient({ store, keyring }) {
    * @param {{url?: string, token?: string}} next
    */
   async function configure(next) {
+    // A new server may have the spaces endpoint the old one lacked.
+    spacesCache = null;
     const url = (next.url ?? "").trim().replace(/\/+$/, "");
     const token = (next.token ?? "").trim();
     config = { url, token };
@@ -424,7 +426,12 @@ export function createSyncClient({ store, keyring }) {
     const res = await request("/api/spaces");
     // A server from before spaces has no such endpoint. Its notes are all in
     // `personal`, which the panel lists from the device's own map anyway.
-    if (res.status === 404) return [];
+    // Remembered until the server config changes: the panel asks on every
+    // paint, and Chrome logs every 404 as an error of its own.
+    if (res.status === 404) {
+      spacesCache = { at: Infinity, list: [] };
+      return [];
+    }
     if (!res.ok) throw httpError(res);
     /** @type {{space: string, count: number}[]} */
     const all = await res.json();
