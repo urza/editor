@@ -445,6 +445,16 @@ body {
 .buffer-row:hover { background: #2A2F34; }
 .buffer-row.active { background: var(--st-sidebar-selected); }
 
+/* Reorder by drag (ui/sidebar.js). The row under the pointer fades, and a
+   line marks where it will land: the top edge of the row it goes before, or
+   the bottom edge of the last row. An inset shadow, not a border: a border
+   would move every row below by its width while the pointer is over it. */
+#open-list.reordering { cursor: grabbing; }
+#open-list.reordering .buffer-row { cursor: grabbing; }
+.buffer-row.dragging { opacity: 0.4; }
+.buffer-row.drop-before { box-shadow: inset 0 2px 0 0 var(--st-caret); }
+.buffer-row.drop-after { box-shadow: inset 0 -2px 0 0 var(--st-caret); }
+
 /* Disk marker on a file-backed row. Dim and small: it separates disk from
    scratch at a glance without competing with the file name. */
 .buffer-mark {
@@ -476,6 +486,10 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A press on a row may become a drag (ui/sidebar.js); without this a slow
+     one starts selecting titles down the list. On the span, not the row: the
+     rename box replaces this span, and its text must stay selectable. */
+  user-select: none;
 }
 
 /* One section per opened folder, between Open and Recent (architecture.md §9).

@@ -245,6 +245,12 @@ async function start() {
     title: "Reopen buffer",
     run: (id) => store.reopen(id),
   });
+  // The sidebar drag (architecture.md §9). `before` null puts the buffer last.
+  register({
+    id: "buffer.move",
+    title: "Move buffer",
+    run: ({ id, before }) => store.moveTab(id, before),
+  });
 
   // Windows (architecture.md §14): a workspace is one window's context. The
   // browser opens a tab for it; the shell opens a native window (unit 14.4).

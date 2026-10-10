@@ -2321,6 +2321,17 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     emit("change");
   }
 
+  /**
+   * The sidebar drag (architecture.md §9): the Open list is this workspace's
+   * tab order, so a move is a workspace write and a redraw, nothing on the
+   * buffer record. `beforeId` null means last.
+   * @param {string} id @param {string | null} beforeId
+   */
+  async function moveTab(id, beforeId) {
+    await workspaces.moveTab(id, beforeId);
+    emit("change");
+  }
+
   async function load() {
     for (const record of await getAllBuffers()) buffers.set(record.id, record);
     // Handles come back from IndexedDB with their permission possibly back at
@@ -2503,6 +2514,7 @@ export function createDocStore({ keyring, syncDefault = () => false, workspaces 
     create,
     close,
     reopen,
+    moveTab,
     activate,
     textOf,
     // The encoded body of any record, read from its file when this window

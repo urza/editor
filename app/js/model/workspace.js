@@ -162,6 +162,28 @@ export function createWorkspaces({ id }) {
     await save(record);
   }
 
+  /**
+   * Reorder this workspace's tabs: put `bufferId` before `beforeId`, or last
+   * when `beforeId` is null. The tabs array is the sidebar's order (§9 Manual
+   * order), so a drag changes nothing but this list. By neighbour id, not by
+   * index: the sidebar skips a tab whose record is gone, so its row indices
+   * and the array indices can differ.
+   *
+   * @param {string} bufferId @param {string | null} beforeId
+   */
+  async function moveTab(bufferId, beforeId) {
+    const record = current();
+    const from = record.tabs.indexOf(bufferId);
+    if (from < 0 || bufferId === beforeId) return;
+    const to = beforeId === null ? record.tabs.length : record.tabs.indexOf(beforeId);
+    if (to < 0) return;
+    const next = record.tabs.filter((tab) => tab !== bufferId);
+    next.splice(to - (from < to ? 1 : 0), 0, bufferId);
+    if (next.every((tab, i) => tab === record.tabs[i])) return;
+    record.tabs = next;
+    await save(record);
+  }
+
   /** @param {string | null} bufferId */
   async function setActive(bufferId) {
     const record = current();
@@ -392,6 +414,7 @@ export function createWorkspaces({ id }) {
     liveSet,
     addTab,
     removeTab,
+    moveTab,
     setActive,
     addFolder,
     removeFolder,

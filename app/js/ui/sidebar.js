@@ -320,6 +320,9 @@ export function mountSidebar(store, folders, sync) {
     }
 
     li.addEventListener("click", () => {
+      // The pointer that dragged this row is released over it, and the
+      // browser sends a click for that. Dropping a row is not opening it.
+      if (dropped) return;
       if (closable) run("buffer.activate", record.id);
       else run("buffer.reopen", record.id);
       // On a phone the sidebar is a drawer over the editor, so it has to get
@@ -327,6 +330,114 @@ export function mountSidebar(store, folders, sync) {
       run("sidebar.autoclose");
     });
     return li;
+  }
+
+  // ---- Reorder by drag (architecture.md §9, Manual order) -----------------
+
+  // Pointer events, not the HTML5 drag and drop API: the desktop shell takes
+  // the native drag events for file drops (src-tauri, §24), and on Windows
+  // that leaves an in-page HTML5 drag with no dragover and no drop. Pointer
+  // events belong to the page alone, in every webview.
+  //
+  // Mouse and pen only. A finger on a row is how the list scrolls, so a
+  // touch drag would need touch-action: none on every row, and the list
+  // could not scroll any more. The row menu stays the phone's way around.
+
+  // The press that may become a drag, then the drag. Null between gestures.
+  /** @type {{ li: HTMLElement, id: string, startY: number, moved: boolean, beforeId: string | null | undefined } | null} */
+  let drag = null;
+  // True from the drop until the click that follows it has been swallowed.
+  let dropped = false;
+  // A press turns into a drag after this many pixels: a click wobbles less.
+  const DRAG_SLOP = 4;
+
+  openList.addEventListener("pointerdown", (event) => {
+    if (drag || event.button !== 0 || event.pointerType === "touch") return;
+    const target = /** @type {HTMLElement} */ (event.target);
+    // A press on the ⋯, the × or the rename box is theirs, not a drag.
+    if (target.closest("button, input")) return;
+    const li = target.closest(".buffer-row");
+    if (!(li instanceof HTMLElement) || !li.dataset.id || !li.parentElement) return;
+    // No preventDefault here: it would keep the focus where it is, and a
+    // rename box commits on blur, so a press on another row must still take
+    // the focus away from it. Titles are user-select: none (app.css) instead,
+    // so a slow press does not start selecting them across the list.
+    drag = { li, id: li.dataset.id, startY: event.clientY, moved: false, beforeId: undefined };
+    li.setPointerCapture(event.pointerId);
+  });
+
+  openList.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    if (!drag.moved) {
+      if (Math.abs(event.clientY - drag.startY) < DRAG_SLOP) return;
+      drag.moved = true;
+      drag.li.classList.add("dragging");
+      openList.classList.add("reordering");
+    }
+    showDropTarget(event.clientY);
+  });
+
+  openList.addEventListener("pointerup", (event) => {
+    if (!drag) return;
+    const { id, moved, beforeId } = drag;
+    endDrag();
+    if (!moved) return;
+    // The click comes right after this event, in the same task; the flag
+    // outlives it by one tick and no more, so a lost click cannot leave it
+    // set for the next real one.
+    dropped = true;
+    setTimeout(() => (dropped = false), 0);
+    event.preventDefault();
+    if (beforeId !== undefined) run("buffer.move", { id, before: beforeId });
+  });
+  openList.addEventListener("pointercancel", endDrag);
+
+  /**
+   * The insertion point for the pointer's height: before the first row whose
+   * middle is below the pointer, else last. The mark goes on that row's top
+   * edge, or the last row's bottom edge. A drop beside the row itself (just
+   * above or just below it) is no move, and shows no mark.
+   * @param {number} y
+   */
+  function showDropTarget(y) {
+    if (!drag) return;
+    const rows = /** @type {HTMLElement[]} */ ([...openList.children]);
+    for (const row of rows) row.classList.remove("drop-before", "drop-after");
+    let index = rows.length;
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i].getBoundingClientRect();
+      if (y < rect.top + rect.height / 2) {
+        index = i;
+        break;
+      }
+    }
+    const from = rows.indexOf(drag.li);
+    if (index === from || index === from + 1) {
+      drag.beforeId = undefined;
+      return;
+    }
+    if (index < rows.length) {
+      rows[index].classList.add("drop-before");
+      drag.beforeId = rows[index].dataset.id ?? null;
+    } else {
+      rows[rows.length - 1].classList.add("drop-after");
+      drag.beforeId = null;
+    }
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    const { moved } = drag;
+    drag = null;
+    openList.classList.remove("reordering");
+    for (const row of openList.children) {
+      row.classList.remove("dragging", "drop-before", "drop-after");
+    }
+    // Only after a real drag: the redraw that stood down runs now, and the
+    // move's own "change" (if any) draws the new order right after. A plain
+    // press must keep its row, or the click that follows the release has no
+    // element to land on and never fires, and the row does not activate.
+    if (moved) render();
   }
 
   // ---- Folder sections (architecture.md §2, §9) ----------------------------
@@ -473,8 +584,10 @@ export function mountSidebar(store, folders, sync) {
   function render() {
     // A rename input lives inside one of these rows, and every keystroke in
     // the editor emits "change". Redrawing now would delete the box the user
-    // is typing in; startRename() calls render() itself when it is done.
-    if (renamingId) return;
+    // is typing in; startRename() calls render() itself when it is done. A
+    // drag holds its rows the same way: a sync arriving mid-drag must not
+    // swap the row under the pointer; endDrag() redraws.
+    if (renamingId || drag) return;
 
     openList.replaceChildren(
       ...store.openBuffers().map((b) => makeRow(b, { closable: true }))

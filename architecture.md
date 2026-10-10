@@ -343,7 +343,10 @@ Field notes (revised 2026-09-02, see section 13):
   revisions after the next successful push (encrypt conversion, section 5).
 - `kind: 'keyring'` marks the one hidden record that carries the device list
   (section 13.3). The sidebar never shows it.
-- `group` and `order` serve manual sidebar ordering and grouping (section 9).
+- `group` and `order` serve manual sidebar grouping (section 9). The Open
+  list's manual order is the workspace `tabs` array since section 14, so
+  `order` is unused there and only a future Favorites section would rank by
+  it.
 - `closed` is gone since workspaces (section 14, unit 14.1). Membership in a
   workspace `tabs` list is the single truth for "open"; a buffer in no
   workspace is in Recent.
@@ -390,6 +393,30 @@ of this kind, so the pattern already exists in miniature.
   toggling the mode must not write anything.
 - **Open folder**: a folder section can hold hundreds of rows. Rendering
   stays plain replaceChildren until it measurably lags; virtualize only then.
+
+### Manual order of the Open list (user request, 2026-10-10, shipped)
+
+The use case: a few documents stay at the top, the rest come and go under
+them. A row in the Open list drags to a new place, and the order is kept.
+
+- **The order is the tab list.** A workspace's `tabs` array is already the
+  Open list's order (§14), so a drop is one write to the workspace record
+  (`workspaces.moveTab(id, beforeId)`, by neighbour id, because the sidebar
+  skips a tab whose record is gone and row indices can differ from array
+  indices). No `order` rank on the buffer record, no renormalizing.
+  The order survives a reload with the workspace, and never syncs,
+  like everything else in the record.
+- **Pointer events, not HTML5 drag and drop.** The desktop shell takes the
+  native drag events for file drops (§24), and on Windows that leaves an
+  in-page HTML5 drag without dragover or drop. A press of 4px starts the
+  drag; the row fades and a line marks the landing edge. A drop just
+  above or below the row itself is no move. The click the browser sends
+  after the drop is swallowed, so dropping a row never activates it.
+- **Mouse and pen only.** A finger on a row scrolls the list, and a touch
+  drag would need `touch-action: none` on every row, which would stop the
+  scroll. The phone keeps the row menu.
+- **The redraw stands down during a drag**, like during a rename: a sync
+  arriving mid-drag must not replace the row under the pointer.
 
 ### Where a file is (2026-09-22, shipped)
 
