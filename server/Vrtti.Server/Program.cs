@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Primitives;
 using Vrtti.Server;
 
@@ -28,6 +29,11 @@ var origins = (Environment.GetEnvironmentVariable("VRTTI_ORIGINS") is { Length: 
 // One revision carries a whole document. 10 MB is far above any text file a person
 // edits by hand, and it stops a single request from filling the disk.
 const long maxBodyBytes = 10L * 1024 * 1024;
+
+// A push without a space comes from a client older than spaces (architecture.md section
+// 25). Its notes belong where the migration put every old row.
+const string defaultSpace = "personal";
+const string badSpace = "space must be 1-32 letters, digits, - or _";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxBodyBytes);
@@ -65,14 +71,23 @@ var api = app.MapGroup("/api");
 // No auth: a monitor or a reverse proxy must be able to see the server is alive.
 api.MapGet("/health", () => Results.Ok(new { ok = true }));
 
-api.MapGet("/changes", (Db db, long? since, int? limit) =>
+api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
 {
     var from = since is > 0 ? since.Value : 0;
     var take = Math.Clamp(limit ?? 200, 1, 500);
 
+    // "spaces=a,b" is a subscription, not a grant: one token sees every space, and the
+    // filter only keeps a device from storing what it does not want. Absent or empty
+    // means every space, so a client from before spaces still gets all documents.
+    var names = (spaces ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (!names.All(IsSpaceName))
+    {
+        return Results.BadRequest(new ErrorResponse(badSpace));
+    }
+
     using var conn = db.Open();
     // One row over the page size answers "is there more?" without a second count query.
-    var changes = Revisions.Changes(conn, from, take + 1);
+    var changes = Revisions.Changes(conn, from, take + 1, names);
     var more = changes.Count > take;
     if (more)
     {
@@ -94,6 +109,14 @@ api.MapPost("/docs/{id}/revisions", (Db db, string id, PushRequest request) =>
     if (string.IsNullOrWhiteSpace(request.DeviceId))
     {
         return Results.BadRequest(new ErrorResponse("deviceId is required"));
+    }
+
+    // The name is the only thing the server checks about a space. A new name makes a new
+    // space; there is no list of spaces to register in.
+    var space = request.Space ?? defaultSpace;
+    if (!IsSpaceName(space))
+    {
+        return Results.BadRequest(new ErrorResponse(badSpace));
     }
 
     // The meta object is stored as the exact JSON text the client sent. The server never
@@ -120,10 +143,18 @@ api.MapPost("/docs/{id}/revisions", (Db db, string id, PushRequest request) =>
     var rev = current + 1;
     var seq = Revisions.Insert(
         conn, id, rev, request.Kind, request.Content, meta,
-        request.DeviceId, request.ClientTime, serverTime);
+        request.DeviceId, request.ClientTime, serverTime, space);
     transaction.Commit();
 
     return Results.Created($"/api/docs/{id}/revisions/{rev}", new PushResponse(rev, seq));
+});
+
+// The settings panel lists the spaces a device can subscribe to. Counts, not documents:
+// a device must not need to pull a space to learn that it exists.
+api.MapGet("/spaces", (Db db) =>
+{
+    using var conn = db.Open();
+    return Results.Ok(Revisions.Spaces(conn));
 });
 
 api.MapGet("/docs/{id}", (Db db, string id) =>
@@ -183,4 +214,13 @@ static bool IsAuthorized(StringValues header, byte[] expected)
 }
 
 // WebApplicationFactory<Program> in the test project needs a public Program type.
-public partial class Program;
+public partial class Program
+{
+    // A space name goes into URLs, settings keys and the sidebar, so it stays a plain
+    // token. \z and not $: $ also matches before a trailing newline, and "work\n" would
+    // pass as a name.
+    [GeneratedRegex(@"^[A-Za-z0-9_-]{1,32}\z")]
+    private static partial Regex SpaceNameRule();
+
+    static bool IsSpaceName(string name) => SpaceNameRule().IsMatch(name);
+}

@@ -7,6 +7,11 @@ namespace Vrtti.Server;
 /// <c>Meta</c> is a <see cref="JsonElement"/> and never a typed shape: the server is
 /// content-agnostic. The client owns the meta fields and may add new ones at any time,
 /// so the server stores the raw JSON text and hands it back unchanged.
+/// <para>
+/// <c>Space</c> is the bucket of this row (architecture.md section 25). The newest row's
+/// space is the document's space, so a move is one more row and the table stays
+/// append-only.
+/// </para>
 /// </remarks>
 public record Change(
     string DocId,
@@ -17,7 +22,8 @@ public record Change(
     JsonElement? Meta,
     string DeviceId,
     long ClientTime,
-    long ServerTime);
+    long ServerTime,
+    string Space);
 
 /// <summary>One history entry: everything but the content.</summary>
 public record RevisionInfo(
@@ -33,6 +39,10 @@ public record RevisionInfo(
 /// <remarks>
 /// <c>BaseRev</c> null means "attach without a claim": the push always appends.
 /// A number is a claim about the current revision, and a mismatch is a 409.
+/// <para>
+/// <c>Space</c> null means <c>personal</c>, so a client from before spaces keeps working
+/// and its notes land where the migration put the old ones.
+/// </para>
 /// </remarks>
 public record PushRequest(
     long? BaseRev,
@@ -40,7 +50,8 @@ public record PushRequest(
     string? Content,
     JsonElement? Meta,
     string? DeviceId,
-    long ClientTime);
+    long ClientTime,
+    string? Space = null);
 
 public record PushResponse(long Rev, long Seq);
 
@@ -50,5 +61,8 @@ public record ConflictResponse(Change? Current);
 public record ChangesResponse(IReadOnlyList<Change> Changes, long Next, bool More);
 
 public record PurgeResponse(int Purged);
+
+/// <summary>One entry of <c>GET /api/spaces</c>: a space and its live documents.</summary>
+public record SpaceInfo(string Space, long Count);
 
 public record ErrorResponse(string Error);

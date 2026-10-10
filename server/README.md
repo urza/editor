@@ -101,7 +101,8 @@ limited to 10 MB.
 | Method   | Path                              | Result                                                |
 | -------- | --------------------------------- | ----------------------------------------------------- |
 | `GET`    | `/api/health`                     | `{ ok: true }`. No token needed.                      |
-| `GET`    | `/api/changes?since=&limit=`      | `{ changes, next, more }`. Newest revision per document with `seq > since`. `since` defaults to 0, `limit` to 200, capped at 500. |
+| `GET`    | `/api/changes?since=&limit=&spaces=` | `{ changes, next, more }`. Newest revision per document with `seq > since`. `since` defaults to 0, `limit` to 200, capped at 500. `spaces` filters by space, see below. |
+| `GET`    | `/api/spaces`                     | `[{ space, count }]`, ordered by name. See Spaces.    |
 | `POST`   | `/api/docs/{id}/revisions`        | 201 `{ rev, seq }`. 409 `{ current }` when `baseRev` is a number and is not the current revision. |
 | `GET`    | `/api/docs/{id}`                  | The current revision, or 404.                         |
 | `GET`    | `/api/docs/{id}/revisions`        | History, newest first, without content.               |
@@ -117,9 +118,12 @@ Push body:
   "content": "…",
   "meta": { "title": "Notes", "lang": "markdown" },
   "deviceId": "…",
-  "clientTime": 1700000000000
+  "clientTime": 1700000000000,
+  "space": "personal"
 }
 ```
+
+`space` is optional. A missing or null `space` means `personal`.
 
 `kind` is `text`, `deleted` or `detached`. `baseRev: null` means "attach without a
 claim" and always appends. `deleted` tells other devices to remove their copy;
@@ -129,9 +133,41 @@ Purge exists for the conversion of a plaintext document to an encrypted one. The
 revisions still hold the readable text, so the client purges them after the first
 encrypted push.
 
+A change row (from `/api/changes`, `/api/docs/{id}` and one revision) has the fields
+`docId`, `rev`, `seq`, `kind`, `content`, `meta`, `deviceId`, `clientTime`,
+`serverTime` and `space`.
+
+## Spaces
+
+A space is a named bucket. Every row has one, and the space of a document's newest row
+is the space of the document. A push with another space moves the document; the table
+stays append-only. See `architecture.md`, section 25.
+
+- Names are 1 to 32 characters from `A-Z a-z 0-9 - _`. Any other name is a 400
+  `{ error: "space must be 1-32 letters, digits, - or _" }`, on a push and on each item
+  of `spaces=`. A new name makes a new space; nothing registers it.
+- `spaces=a,b` on `/api/changes` returns only documents whose newest row is in one of
+  those spaces. A document that moved out of them is left out. Items are trimmed and
+  empty items are ignored. Absent or empty means every space.
+- `GET /api/spaces` counts, per space, the documents whose newest row is `text`. A
+  document whose newest row is `deleted` or `detached` does not count.
+- `keyring` holds the keyring record. The server treats it as any other space; the
+  client reserves it.
+
+The filter is a subscription, not access control. The one token can still ask for every
+space.
+
+## Migration
+
+The server migrates the database at start, with no manual step. A database from before
+spaces gets the `space` column: existing rows become `personal`, and rows whose meta has
+`"kind": "keyring"` become `keyring`. Then the `revisions_space` index is created. A
+second start finds the column and changes nothing.
+
 ## Paging
 
 `next` is the largest `seq` in the page, or the `since` you sent when the page is empty.
 Call again with `since = next` while `more` is true. The cursor never skips a document:
 every returned row is a document's newest row, so a document left out of the page has
-its newest `seq` above the cursor and appears in a later page.
+its newest `seq` above the cursor and appears in a later page. The `spaces` filter
+keeps this true, because it drops whole documents and never an older row.

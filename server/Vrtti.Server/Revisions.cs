@@ -6,7 +6,7 @@ namespace Vrtti.Server;
 /// <summary>Every query against the <c>revisions</c> table.</summary>
 public static class Revisions
 {
-    const string Columns = "doc_id, rev, seq, kind, content, meta, device_id, client_time, server_time";
+    const string Columns = "doc_id, rev, seq, kind, content, meta, device_id, client_time, server_time, space";
 
     /// <summary>The newest revision of each document with a row after <paramref name="since"/>.</summary>
     /// <remarks>
@@ -19,9 +19,30 @@ public static class Revisions
     /// with <c>since = next</c> finds it again. A document inside the page cannot come back
     /// unless it gets a new row, and that row has a seq above the cursor as well.
     /// </para>
+    /// <para>
+    /// <paramref name="spaces"/> filters on the space of that outer row, the document's
+    /// newest row, and never on older rows: the newest row decides where a document lives.
+    /// A document that moved out of the named spaces is therefore omitted, even when older
+    /// rows sit in them. Null or empty means every space, which keeps an old client whole.
+    /// The paging argument above still holds, because the filter only drops whole
+    /// documents and every row it keeps is still a newest row.
+    /// </para>
     /// </remarks>
-    public static List<Change> Changes(SqliteConnection conn, long since, int limit)
+    public static List<Change> Changes(
+        SqliteConnection conn,
+        long since,
+        int limit,
+        IReadOnlyList<string>? spaces = null)
     {
+        // One parameter per name: the names are validated, but they still never go into
+        // the SQL text.
+        var names = spaces ?? [];
+        var filter = names.Count > 0
+            ? $"AND r.space IN ({string.Join(", ", names.Select((_, i) => $"$s{i}"))})"
+            : "";
+        var args = new List<(string, object?)> { ("$since", since), ("$limit", limit) };
+        args.AddRange(names.Select((name, i) => ($"$s{i}", (object?)name)));
+
         using var cmd = Db.Command(
             conn,
             $"""
@@ -30,11 +51,11 @@ public static class Revisions
              WHERE r.seq > $since
                AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2
                             WHERE r2.doc_id = r.doc_id AND r2.seq > $since)
+               {filter}
              ORDER BY r.seq
              LIMIT $limit
              """,
-            ("$since", since),
-            ("$limit", limit));
+            [.. args]);
 
         using var reader = cmd.ExecuteReader();
         var changes = new List<Change>();
@@ -44,6 +65,36 @@ public static class Revisions
         }
 
         return changes;
+    }
+
+    /// <summary>Every space with its count of live documents, ordered by name.</summary>
+    /// <remarks>
+    /// A document counts in the space of its newest row, and only when that row is
+    /// <c>text</c>: a <c>deleted</c> or <c>detached</c> tombstone means the document is gone
+    /// from sync, and an older row in another space means it moved away. The reserved
+    /// <c>keyring</c> space is in the list too; the client hides it.
+    /// </remarks>
+    public static List<SpaceInfo> Spaces(SqliteConnection conn)
+    {
+        using var cmd = Db.Command(
+            conn,
+            """
+            SELECT r.space, COUNT(*)
+            FROM revisions r
+            WHERE r.kind = 'text'
+              AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id)
+            GROUP BY r.space
+            ORDER BY r.space
+            """);
+
+        using var reader = cmd.ExecuteReader();
+        var list = new List<SpaceInfo>();
+        while (reader.Read())
+        {
+            list.Add(new SpaceInfo(reader.GetString(0), reader.GetInt64(1)));
+        }
+
+        return list;
     }
 
     /// <summary>The current revision number, or 0 when the document has no rows.</summary>
@@ -121,13 +172,14 @@ public static class Revisions
         string? meta,
         string deviceId,
         long clientTime,
-        long serverTime)
+        long serverTime,
+        string space)
     {
         using var cmd = Db.Command(
             conn,
             """
-            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time)
-            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime)
+            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time, space)
+            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime, $space)
             RETURNING seq
             """,
             ("$id", docId),
@@ -137,7 +189,8 @@ public static class Revisions
             ("$meta", meta),
             ("$device", deviceId),
             ("$clientTime", clientTime),
-            ("$serverTime", serverTime));
+            ("$serverTime", serverTime),
+            ("$space", space));
         return (long)cmd.ExecuteScalar()!;
     }
 
@@ -175,7 +228,8 @@ public static class Revisions
         Meta: reader.IsDBNull(5) ? null : ParseMeta(reader.GetString(5)),
         DeviceId: reader.GetString(6),
         ClientTime: reader.GetInt64(7),
-        ServerTime: reader.GetInt64(8));
+        ServerTime: reader.GetInt64(8),
+        Space: reader.GetString(9));
 
     /// <summary>Turns the stored meta text back into a JSON value.</summary>
     /// <remarks>

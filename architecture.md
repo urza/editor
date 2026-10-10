@@ -851,6 +851,14 @@ Open: none.
   mark its own tag with Sublime's colours, and tables aligned on screen by
   filler widgets before short cells' pipes. View-only, the note's bytes
   never change. No rendered grid, on purpose.
+- Spaces (2026-10-10, §25): a synced note lives in one named space, a
+  column on the server and `sync.space` on the record; one token stays,
+  and each device subscribes per space with one of three modes (Not
+  here, From server, Open as tab), one cursor per space. From server
+  lists titles as stubs in a sidebar block and fetches on click. From
+  the user's dev VM, which showed every phone note; multiple tokens
+  refused, encryption plus "never pair the VM" is the trust boundary.
+
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
@@ -2537,3 +2545,205 @@ same tab, a directory root adds a folder to the sidebar, and a root the
 mock does not know logs and opens nothing. Real shell: the user's
 Windows run (drop, Open with, a second drop of the same file, a folder
 drop, Shift+drop on the taskbar).
+
+## 25. Spaces: where a synced note lives, and what a device receives (agreed 2026-10-10)
+
+Sync was one flat namespace with one token (§3): every device pulled every
+synced note, and a note nobody held opened as a tab in main (§14.3). The
+user writes notes on the phone and the home desktop, and every one of them
+turned up in the dev VM, which also runs vrtti. The VM is a less trusted
+place than the home desktop, so the notes should not land on its disk at
+all, not only stay out of its tabs. Multiple tokens were considered and
+refused: one token stays. The boundary against a stolen token is
+encryption, and the VM is simply never paired into the keyring.
+
+### Decisions
+
+- **A space is a named bucket on the server.** Every synced note is in
+  exactly one space. Names are free strings of 1 to 32 characters from
+  `A-Z a-z 0-9 - _`; a new name makes a new space. The default space is
+  `personal`, and the migration puts every existing row there. The keyring
+  record lives in the reserved space `keyring`, which every device always
+  receives and no list ever shows.
+- **The space is a column, not meta.** `revisions.space` on the server,
+  `sync.space` on the record. A push carries it, a change returns it. The
+  newest row's space is the document's space, so the table stays
+  append-only and a move is just a text push with another space. The
+  server validates the name and nothing else; it still never reads text.
+- **One token, per-device subscriptions.** `GET /api/changes` takes
+  `spaces=a,b` and returns only documents whose newest row is in those
+  spaces. Omitted means all, which keeps an old client whole. The server
+  cannot tell devices apart, so this is a subscription, not a grant:
+  under normal use nothing from an unsubscribed space reaches the device,
+  while a stolen token can still ask for everything. Accepted.
+- **Each device gives each space one of three modes.** *Not here*: the
+  space is ignored, nothing listed, nothing stored. *From server*: new
+  notes of the space show as titles in a "From server" block of the
+  sidebar, and the content stays on the server until a click fetches the
+  note, opens it as a tab in the clicking window, and syncs it from then
+  on like any note. *Open as tab*: the note arrives with its content and
+  opens in main, as sync worked before. A device's `sync.spaces` is
+  `{ name: 'tab' | 'list' }`; an absent name is Not here. A device with
+  no setting yet gets `{ personal: 'tab' }`, so nothing changes until the
+  user touches it. The `keyring` space is always `tab` and never in the
+  map.
+- **One cursor per space.** `sync.cursors` is `{ name: seq }`. The leader
+  pulls once per received space and round, `since` from that cursor and
+  `spaces=` that one name. A space the device starts to receive starts
+  at 0 and arrives whole; a space that turns from From server to Open as
+  tab also restarts at 0, so its listed notes arrive as tabs. The old
+  single `sync.cursor` becomes the cursor of `personal` and of `keyring`
+  on first load, because before spaces every row was one of the two. A
+  cursor reset re-delivers rows a device applied already; `applyRemote`
+  skips a revision the record agreed with, so that costs bandwidth and
+  nothing else.
+- **A From server entry is a stub, not a record.** The leader keeps
+  stubs in a new IndexedDB store `remote`:
+  `{ id, space, title, rev, enc?, updatedAt }`. A pulled change for an
+  unknown id in a From server space upserts the stub and drops the
+  content; a `deleted` or `detached` change removes it. The title is
+  `meta.title`, or else the first line of the content by `firstLineTitle`,
+  taken at stub time, because most notes carry no user title. A stub
+  dies the moment a record with its id exists on the device. Stubs are
+  not Recent, not searched by Find in files, never trashed: a server
+  delete of a stub just drops the title.
+- **A change from a space this device does not receive is a detach.**
+  The device can meet one through a 409 after a note moved spaces, or
+  after it turned a space to Not here. The record drops `sync` and the
+  local copy stays, the same as a `detached` tombstone. Turning a space
+  to Not here does the same for every record of the space at once, from
+  the leader, and removes the space's stubs; other windows adopt the
+  records through the ordinary `buffer` message, which does not touch
+  the text.
+- **The default space.** `sync.defaultSpace`, device-local, `personal`
+  until set. A note gets its space when it starts to sync: the phone's
+  "new docs sync by default" and the row menu's "Sync" use it, and
+  "Sync all current docs" too. The default space is always received:
+  setting it turns a Not here space to Open as tab, and the Spaces list
+  does not offer Not here for it. Only one rule, so a note this device
+  attaches can always come back to it.
+- **Moving a note between spaces is not in this unit.** A device that
+  receives only the old space never hears of the move, keeps a stale
+  synced copy, and detaches it on its next push (the 409 rule above).
+  The row menu therefore offers "Sync to" only to a note that does not
+  sync yet; a synced note shows its space as the hint of the Sync item.
+  Stop sync, then attach again elsewhere, is the manual move. A proper
+  move needs the old space to learn that the note left, one more row
+  kind: later, when missed.
+- **Settings › Sync** gains a Spaces list and "New notes go to". The
+  list is the union of the server's spaces (`GET /api/spaces`, names
+  with a count of live documents each, fetched when the panel paints and
+  cached ten seconds), the device's map and its default space, minus
+  `keyring`. Each entry carries a select with the three modes, which is
+  one addition to the `list` row of §21. "New notes go to" is a text
+  row; a name typed there that the server has not seen is a new space.
+  Both rows show only when a server is configured, like Test connection.
+- **The sidebar block.** `#fromserver` sits between `#recent` and the
+  settings button, the same shape and rules as Recent (§9): pinned,
+  closed at start in every window, nothing persists the state, capped at
+  half the sidebar with its own scroll, hidden while empty and under
+  `#sidebar.searching`. A row is the ☁ mark, the title and 🔒 when the
+  stub is encrypted; no "⋯" menu. Rows sort by `updatedAt`, newest
+  first; when two or more spaces are in From server mode, a small
+  heading row names each space. A click runs `remote.open`, which
+  fetches `GET /api/docs/{id}` and creates the record as the unknown-id
+  branch of `applyRemote` does, but opens the tab in this window and
+  activates it; then the sidebar autocloses as for any row. The block
+  renders from the store's stub map, which every window loads at start
+  and keeps current through a `remote` channel message the leader posts
+  with each stub write.
+- **Compatibility.** An old client against the new server pushes without
+  a space (the server fills `personal`) and pulls without a filter (all
+  rows): the old behaviour. A new client against the old server gets
+  changes without `space`; the client reads a missing space as
+  `personal`, and the unknown `spaces=` filter returns everything for
+  each subscribed space, which the cursors and the skip rule absorb.
+  The order of the real deploy does not matter, but the user must pull
+  the new server image before a second space can exist.
+
+### 25.1 Server (unit 1)
+
+`server/Vrtti.Server/Db.cs`: after the `CREATE TABLE IF NOT EXISTS`, the
+first migration step of the server: when `PRAGMA table_info(revisions)`
+lacks `space`, `ALTER TABLE revisions ADD COLUMN space TEXT NOT NULL
+DEFAULT 'personal'`, then `UPDATE revisions SET space = 'keyring' WHERE
+json_extract(meta, '$.kind') = 'keyring'`, then
+`CREATE INDEX IF NOT EXISTS revisions_space ON revisions(space, seq)`.
+`Dtos.cs`: `Space` on `Change` and `PushRequest`, a `SpaceInfo(Space,
+Count)`. `Revisions.cs`: the column in `Columns`, `Insert` and
+`ReadChange`; `Changes` takes an optional list of spaces and adds
+`AND r.space IN (...)` on the outer row; a `Spaces` query groups the
+newest `text` row of every document by space. `Program.cs`: the name
+rule (400 "space must be 1-32 letters, digits, - or _", applied to the
+push body and to every item of `spaces=`), a null push space is
+`personal`, `GET /api/spaces`. `server/README.md`: the column, the
+query, the endpoint, the migration note. Tests follow `SyncApiTests`:
+a push without a space reads back as `personal`; a bad name is 400 on
+push and on the filter; the filter returns only the newest rows of the
+named spaces and omits a document that moved out; `/api/spaces` counts
+live documents per space and leaves out one whose newest row is a
+tombstone; the migration adds the column to a database created with
+the old schema and sends a keyring row to `keyring`.
+
+### 25.2 Client core (unit 2)
+
+`storage/idb.js`: `DB_VERSION` 6, the `remote` store (keyPath `id`),
+`space` on `SyncState`, and an upgrade step that gives every record
+with `sync` and no `sync.space` the value `keyring` for the keyring
+record and `personal` for the rest; `getRemotes`, `putRemote`,
+`deleteRemote`. `sync/client.js`: `sync.spaces`, `sync.defaultSpace`,
+`sync.cursors` in place of `sync.cursor` (migrated in `load`), the
+pull per received space, `fetchDoc(id)`, `listSpaces()` with its
+cache, `setSpaceMode(space, mode)` and `setDefaultSpace(name)` (both
+write the setting and post `setting`; the leader's reload diffs the
+modes and owns the cursor resets, the detach and the stub removal),
+`receivedSpaces()`, `modeOf(space)`, `defaultSpace()`. The client
+rejects a name the server would. `model/docs.js`: the `remotes` map
+loaded at start and shared through the `remote` message; the stub
+rules in `applyRemote` (unknown id in a `list` space, the unreceived
+space as detach); `sync.space` set by `setSync(id, true, space)`, by
+`create` under the default and by `adoptRemote`; `space` in
+`pushPayload`; `detachSpace(space)`; `createFromChange(change, ws)`
+factored out of the unknown-id branch and reused by `remote.open`;
+`remotes()` for the sidebar. The store takes a `spaces` dependency
+`{ defaultSpace(), modeOf(space) }` from `main.js`, next to
+`syncDefault`. `main.js`: `remote.open`, `sync.spaceMode`,
+`sync.defaultSpace`; `doc.sync.on` accepts `id` or `{ id, space }`;
+the `window.vrtti` hooks gain `remotes` and `sync` already exposes the
+rest.
+
+### 25.3 Sidebar, settings, menu (unit 3)
+
+`index.html` and `app.css`: the `#fromserver` block and its rows,
+copied from `#recent`, and the `#sidebar.searching` rule. `ui/sidebar.js`:
+the block's render from `store.remotes()`, the space heading rows, the
+click. `ui/settings.js`: the `select` option on a list entry, the
+Spaces list, the "New notes go to" text row, both under
+`visible: isConfigured`. `ui/sidebar.js` `rowMenu`: the Sync item's
+hint shows the space of a synced note; an unsynced note gets one
+"Sync to <name>" item per received space other than the default, flat,
+since the menu has no submenus and two or three spaces need none.
+
+### Gate
+
+Playwright against a stateful mock of the server that knows `space`,
+`spaces=`, `/api/spaces` and `/api/docs/{id}`, with the pattern of
+§22's gate (route on an https origin, `sync.config` through the
+settings hook, reload), plus `dotnet test` for 25.1: a device with
+`{ personal: 'tab' }` behaves as before (a pushed note from a second
+context opens as a tab in main); a work note pushed by another context
+never reaches a device with no `work` entry and the device's pull
+carries no `work` filter; with `work: 'list'` the note shows under From
+server with its first line as the title and no record exists; a click
+fetches it, opens it in this window, removes the stub, and a later edit
+from the other context lands in the tab; a server delete of a listed
+note drops the title with no trash entry; `work` to Open as tab
+restarts the cursor and the listed notes become tabs; `work` to Not
+here detaches its records (local copies stay, ☁ gone) and empties the
+list; "New notes go to: work" turns `work` on and a new note on a
+"sync by default" device pushes with `space: "work"`; a note attached
+by "Sync to work" pushes with that space while "Sync" alone uses the
+default; the old `sync.cursor` migrates to both cursors; a change with
+no `space` from an old server reads as `personal`; a second window
+shows the same From server list and loses the entry after the first
+window's click.
