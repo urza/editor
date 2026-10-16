@@ -14,6 +14,8 @@ import {
   defaultKeymap,
   history,
   historyKeymap,
+  indentLess,
+  insertTab,
   isolateHistory,
 } from "@codemirror/commands";
 import { searchKeymap } from "@codemirror/search";
@@ -21,6 +23,7 @@ import {
   HighlightStyle,
   bracketMatching,
   indentOnInput,
+  indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -188,7 +191,20 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
     indentOnInput(),
     bracketMatching(),
     EditorView.lineWrapping,
-    keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+    // Sublime indents with a real tab (translate_tabs_to_spaces is false).
+    // CodeMirror's default unit is two spaces, which would make Tab on a
+    // selection indent by spaces while Tab at a caret inserts "\t".
+    indentUnit.of("\t"),
+    keymap.of([
+      // CodeMirror leaves Tab unbound on purpose, so the browser moved focus
+      // out of the editor (user report, 2026-10-16). Bound as in Sublime: a
+      // tab at the caret, indent or unindent the lines of a selection.
+      // Escape then Tab still leaves the editor, CodeMirror's keyboard exit.
+      { key: "Tab", run: insertTab, shift: indentLess },
+      ...defaultKeymap,
+      ...historyKeymap,
+      ...searchKeymap,
+    ]),
     // The document language, in a compartment so "set syntax" and a paste can
     // swap it with one dispatch instead of rebuilding the state and losing the
     // undo history (architecture.md §9).
