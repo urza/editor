@@ -40,8 +40,10 @@ export function closeMenu({ restoreFocus = false } = {}) {
   if (restoreFocus && anchor.isConnected) anchor.focus();
   // After the focus, not before: a sidebar row drops its buttons out of the
   // layout once the menu is gone and no button has the focus (app.css), and a
-  // button with display: none cannot take the focus.
-  anchor.setAttribute("aria-expanded", "false");
+  // button with display: none cannot take the focus. Only a button that
+  // declares the popup carries the state: the editor's text is an anchor too
+  // (editor/spellcheck.js), and "expanded" would mean nothing on it.
+  if (anchor.hasAttribute("aria-haspopup")) anchor.setAttribute("aria-expanded", "false");
 }
 
 /** @param {HTMLElement} el @returns {HTMLButtonElement[]} */
@@ -52,11 +54,10 @@ function enabledItems(el) {
 }
 
 /**
- * Place the menu under its anchor, and keep it inside the window.
- * @param {HTMLElement} el @param {HTMLElement} anchor
+ * Place the menu under a rectangle, and keep it inside the window.
+ * @param {HTMLElement} el @param {{left: number, top: number, bottom: number}} rect
  */
-function place(el, anchor) {
-  const rect = anchor.getBoundingClientRect();
+function place(el, rect) {
   const width = el.offsetWidth;
   const height = el.offsetHeight;
   const left = Math.max(GAP, Math.min(rect.left, window.innerWidth - width - GAP));
@@ -70,10 +71,14 @@ function place(el, anchor) {
 }
 
 /**
- * @param {HTMLElement} anchor The button the menu belongs to.
+ * @param {HTMLElement} anchor The button the menu belongs to. It gets the
+ *   focus back when the menu closes by keyboard.
  * @param {MenuItem[]} items
+ * @param {{at?: {left: number, top: number, bottom: number}}} [opts] Where
+ *   the menu hangs when not under the anchor: the spelling menu hangs under
+ *   a word in the editor, whose content is the anchor (editor/spellcheck.js).
  */
-export function openMenu(anchor, items) {
+export function openMenu(anchor, items, { at } = {}) {
   closeMenu();
   // A row can be redrawn between the click and this call (a rename committing
   // on blur redraws the list). A detached anchor has a zero rect, and the menu
@@ -131,7 +136,7 @@ export function openMenu(anchor, items) {
   }
 
   document.body.appendChild(el);
-  place(el, anchor);
+  place(el, at ?? anchor.getBoundingClientRect());
 
   /** @param {KeyboardEvent} event */
   const onKey = (event) => {
@@ -166,8 +171,9 @@ export function openMenu(anchor, items) {
   window.addEventListener("resize", onAway);
   current = { el, anchor, onKey, onDown, onAway };
   // Screen readers announce it, and app.css keeps a sidebar row's buttons on
-  // screen by it while the pointer is in the menu, off the row.
-  anchor.setAttribute("aria-expanded", "true");
+  // screen by it while the pointer is in the menu, off the row. The guard is
+  // explained in closeMenu.
+  if (anchor.hasAttribute("aria-haspopup")) anchor.setAttribute("aria-expanded", "true");
 
   const first = enabledItems(el)[0];
   if (first) first.focus();

@@ -13,9 +13,10 @@
 // Nothing here touches the document by itself. The only writes are the
 // dispatches a user makes by clicking a suggestion button.
 
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import { language } from "@codemirror/language";
-import { forceLinting, linter } from "@codemirror/lint";
+import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
+import { openMenu } from "../ui/menu.js";
 import * as hunspell from "./hunspell.js";
 import { languagesOf, segments } from "./textlang.js";
 
@@ -223,7 +224,13 @@ function toAction(suggestion) {
         kind === INSERT_AFTER
           ? { from: to, to, insert: text }
           : { from, to, insert: kind === REMOVE ? "" : text };
-      view.dispatch({ changes: change, userEvent: "input.complete" });
+      // The caret lands after the fix, where typing continues; left to the
+      // mapping it would sit before the word, as the old range collapsed.
+      view.dispatch({
+        changes: change,
+        selection: { anchor: change.from + change.insert.length },
+        userEvent: "input.complete",
+      });
     },
   };
 }
@@ -345,7 +352,11 @@ function replaceWith(text) {
   return {
     name: text,
     apply: (view, from, to) =>
-      view.dispatch({ changes: { from, to, insert: text }, userEvent: "input.complete" }),
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: from + text.length },
+        userEvent: "input.complete",
+      }),
   };
 }
 
@@ -502,12 +513,46 @@ const spellcheckTheme = EditorView.theme({
 });
 
 /**
+ * Visual Studio's Ctrl+. (user request, 2026-10-17): the suggestions for the
+ * word under the caret as a menu (ui/menu.js), so a misspelling is fixed
+ * without the mouse. Arrows pick, Enter applies, Escape goes back to the
+ * text. The hover tooltip stays for the pointer. With no diagnostic under
+ * the caret the key is left alone.
+ * @type {import("@codemirror/view").Command}
+ */
+function fixAtCursor(view) {
+  const head = view.state.selection.main.head;
+  /** @type {{d: import("@codemirror/lint").Diagnostic, from: number, to: number}[]} */
+  const hits = [];
+  forEachDiagnostic(view.state, (d, from, to) => {
+    // The caret at either edge of the word counts: that is where it stands
+    // right after the word was typed.
+    if (from <= head && head <= to) hits.push({ d, from, to });
+  });
+  const hit = hits[0];
+  if (!hit) return false;
+  const { d, from, to } = hit;
+  // from/to are the diagnostic's current positions, as the lint package
+  // maps them (see toAction). A menu without a fix still has one item, so
+  // Enter or Escape dismisses it like any other.
+  const items = d.actions?.length
+    ? d.actions.map((action) => ({ label: action.name, act: () => action.apply(view, from, to) }))
+    : [{ label: "No suggestions" }];
+  const at = view.coordsAtPos(from);
+  if (!at) return false;
+  // The editor's content is the anchor: that is where the focus returns.
+  openMenu(view.contentDOM, items, { at });
+  return true;
+}
+
+/**
  * The spellcheck extension. No lint gutter on purpose: underlines and hover
  * tooltips only, so the gutter keeps showing line numbers alone.
  * @returns {import("@codemirror/state").Extension}
  */
 export function spellcheck() {
   return [
+    keymap.of([{ key: "Mod-.", run: fixAtCursor }]),
     linter(spellSource, {
       delay: LINT_DELAY,
       // The second test catches a mode switch. A compartment reconfigure
