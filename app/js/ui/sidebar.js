@@ -10,7 +10,7 @@
 import { titleOf, DEFAULT_SPACE, KEYRING_SPACE } from "../model/docs.js";
 import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
-import { run } from "../commands/registry.js";
+import { register, run } from "../commands/registry.js";
 import { openMenu } from "./menu.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
@@ -23,6 +23,7 @@ import { openMenu } from "./menu.js";
  * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
  */
 export function mountSidebar(store, folders, sync) {
+  const sidebar = /** @type {HTMLElement} */ (document.getElementById("sidebar"));
   const openList = /** @type {HTMLElement} */ (document.getElementById("open-list"));
   const recentList = /** @type {HTMLElement} */ (document.getElementById("recent-list"));
   const folderSections = /** @type {HTMLElement} */ (
@@ -262,10 +263,34 @@ export function mountSidebar(store, folders, sync) {
     ];
   }
 
+  /**
+   * A row is an <li>, so the keyboard has to be given it by hand: a tab stop,
+   * and Enter or Space as the click. The target check matters: Enter on the
+   * row's ⋯ or × button bubbles here too, and must not also open the row.
+   * @param {HTMLElement} li
+   */
+  function keyboardRow(li) {
+    li.tabIndex = 0;
+    li.addEventListener("keydown", (event) => {
+      if (event.target !== li) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      li.click();
+    });
+  }
+
+  /** The rows the keyboard can land on, in sidebar order, hidden lists left out. */
+  function keyboardRows() {
+    return Array.from(sidebar.querySelectorAll("li[tabindex='0']")).filter(
+      (li) => li instanceof HTMLElement && li.offsetParent !== null
+    );
+  }
+
   /** @param {BufferRecord} record @param {{closable: boolean}} opts */
   function makeRow(record, { closable }) {
     const li = document.createElement("li");
     li.className = "buffer-row";
+    keyboardRow(li);
     // The rename box finds its row by this id, after the menu that asked for
     // it is already gone.
     li.dataset.id = record.id;
@@ -383,6 +408,7 @@ export function mountSidebar(store, folders, sync) {
   function makeStubRow(stub) {
     const li = document.createElement("li");
     li.className = "buffer-row";
+    keyboardRow(li);
     li.dataset.id = stub.id;
 
     const cloud = document.createElement("span");
@@ -569,6 +595,7 @@ export function mountSidebar(store, folders, sync) {
 
     const li = document.createElement("li");
     li.className = "tree-row " + (isDir ? "dir" : "file");
+    keyboardRow(li);
     // Inline indent: the depth is unbounded, so no fixed set of classes can
     // cover it. 10px is the padding every other sidebar row uses. The calc
     // keeps the step proportional to the interface text size (ui/textsize.js),
@@ -690,6 +717,28 @@ export function mountSidebar(store, folders, sync) {
     folderSections.replaceChildren(...folders.openFolders().map(folderSection));
   }
 
+  /**
+   * Which row the keyboard is on, so a redraw can put the focus back. Every
+   * replaceChildren below destroys the focused row, and a sync or another
+   * window can redraw while the user is arrowing through the list. A row is
+   * found again by its id in the same list; a row that vanished (closed,
+   * fetched) leaves the focus where the browser drops it.
+   */
+  function focusedRow() {
+    const el = document.activeElement;
+    if (!(el instanceof HTMLElement) || !sidebar.contains(el)) return null;
+    const list = el.parentElement;
+    const id = el.dataset.id;
+    return list && id ? { list, id } : null;
+  }
+
+  /** @param {{list: HTMLElement, id: string} | null} row */
+  function refocusRow(row) {
+    if (!row) return;
+    const li = row.list.querySelector(`li[data-id="${CSS.escape(row.id)}"]`);
+    if (li instanceof HTMLElement) li.focus();
+  }
+
   function render() {
     // A rename input lives inside one of these rows, and every keystroke in
     // the editor emits "change". Redrawing now would delete the box the user
@@ -697,6 +746,7 @@ export function mountSidebar(store, folders, sync) {
     // drag holds its rows the same way: a sync arriving mid-drag must not
     // swap the row under the pointer; endDrag() redraws.
     if (renamingId || drag) return;
+    const focused = focusedRow();
 
     openList.replaceChildren(
       ...store.openBuffers().map((b) => makeRow(b, { closable: true }))
@@ -719,7 +769,46 @@ export function mountSidebar(store, folders, sync) {
       (fromserverCollapsed ? "▸" : "▾") + " From server (" + stubs.length + ")";
     fromserverList.hidden = fromserverCollapsed;
     fromserverList.replaceChildren(...(fromserverCollapsed ? [] : stubRows(stubs)));
+    refocusRow(focused);
   }
+
+  // Keyboard travel between rows. Tab already walks everything in the
+  // sidebar top to bottom (the buttons, then every row); Up and Down skip
+  // the buttons and move row to row, and Escape goes back to the text.
+  sidebar.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      // A menu's Escape has already closed the menu and put the focus back
+      // on the ⋯ (ui/menu.js). The search view and a rename box stop the
+      // event before it gets here, so theirs are not seen at all.
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      run("editor.focus");
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const rows = keyboardRows();
+    const at = rows.indexOf(/** @type {HTMLElement} */ (event.target));
+    if (at < 0) return;
+    event.preventDefault();
+    const next = rows[at + (event.key === "ArrowDown" ? 1 : -1)];
+    if (next) next.focus();
+  });
+
+  // Sublime's Ctrl+0: the keyboard's way out of the editor, which keeps Tab
+  // for itself (editor/editor.js). Lands on the open document's row, the
+  // place the user is, or on the first row, or on "+" when there is none.
+  register({
+    id: "sidebar.focus",
+    title: "Focus sidebar",
+    keys: "Ctrl+Digit0",
+    run: () => {
+      // A collapsed sidebar is inert, and focus() on it does nothing.
+      run("sidebar.show");
+      const active = openList.querySelector("li.active");
+      const target = active instanceof HTMLElement ? active : keyboardRows()[0] ?? newButton;
+      target.focus();
+    },
+  });
 
   store.events.addEventListener("change", render);
   store.events.addEventListener("active", render);

@@ -726,6 +726,14 @@ body {
   outline: none;
 }
 
+/* An outline, not the selected background: the active row already has that
+   background, and the focus has to show on it too. */
+.buffer-row:focus-visible,
+.tree-row:focus-visible {
+  outline: 1px solid var(--st-caret);
+  outline-offset: -1px;
+}
+
 /* A fixed slot, so the line texts line up however wide the numbers get. */
 .hit-line {
   flex: 0 0 calc(26px * var(--ui-scale));

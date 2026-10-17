@@ -904,6 +904,19 @@ async function start() {
   // Kept, unlike before: search in files reveals a hit through this controller
   // (architecture.md §16).
   const editor = mountEditor(host, store);
+  // Sublime's Ctrl+1 (focus group 1), the partner of Ctrl+0 in ui/sidebar.js.
+  // In a browser tab Ctrl+1 is "first tab" and may never arrive; it is for
+  // the installed app and the desktop shell. Escape in the sidebar does the
+  // same without the chord.
+  register({
+    id: "editor.focus",
+    title: "Focus editor",
+    keys: "Ctrl+Digit1",
+    run: () => {
+      run("sidebar.autoclose");
+      editor.view.focus();
+    },
+  });
 
   // Mounted before its command, because the command dispatches into the
   // controller the mount returns. The sidebar button below dispatches the id.

@@ -11,12 +11,15 @@ import {
   lineNumbers,
 } from "@codemirror/view";
 import {
+  cursorMatchingBracket,
   defaultKeymap,
   history,
   historyKeymap,
   indentLess,
   insertTab,
   isolateHistory,
+  selectMatchingBracket,
+  toggleTabFocusMode,
 } from "@codemirror/commands";
 import { searchKeymap } from "@codemirror/search";
 import {
@@ -200,7 +203,13 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       // out of the editor (user report, 2026-10-16). Bound as in Sublime: a
       // tab at the caret, indent or unindent the lines of a selection.
       { key: "Tab", run: insertTab, shift: indentLess },
-      ...defaultKeymap,
+      // Sublime's Ctrl+M: jump to the matching bracket, Shift selects up to
+      // it. CodeMirror gives the same key to toggleTabFocusMode, which the
+      // filter below drops: the keyboard way out of the editor is Ctrl+0
+      // (sidebar.focus, ui/sidebar.js), and a mode that silently turns Tab
+      // into "move focus" would look like the old Tab bug coming back.
+      { key: "Ctrl-m", run: cursorMatchingBracket, shift: selectMatchingBracket },
+      ...defaultKeymap.filter((binding) => binding.run !== toggleTabFocusMode),
       ...historyKeymap,
       ...searchKeymap,
     ]),
@@ -208,8 +217,7 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
     // seconds moves focus out of the editor. The user does not want that
     // (2026-10-17). Lowest precedence, so every Escape binding (close find,
     // drop extra cursors) still runs first, and claiming the key here skips
-    // only the built-in handler that arms the mode. Ctrl+M (defaultKeymap)
-    // stays as the keyboard way out of the editor.
+    // only the built-in handler that arms the mode.
     Prec.lowest(
       EditorView.domEventHandlers({ keydown: (event) => event.key === "Escape" })
     ),
