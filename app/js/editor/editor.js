@@ -2,7 +2,7 @@
 // highlight style. We assemble the extensions by hand instead of using
 // `basicSetup` so the defaults can match Sublime Text 4 exactly.
 
-import { EditorState } from "@codemirror/state";
+import { EditorState, Prec } from "@codemirror/state";
 import {
   EditorView,
   drawSelection,
@@ -199,12 +199,20 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       // CodeMirror leaves Tab unbound on purpose, so the browser moved focus
       // out of the editor (user report, 2026-10-16). Bound as in Sublime: a
       // tab at the caret, indent or unindent the lines of a selection.
-      // Escape then Tab still leaves the editor, CodeMirror's keyboard exit.
       { key: "Tab", run: insertTab, shift: indentLess },
       ...defaultKeymap,
       ...historyKeymap,
       ...searchKeymap,
     ]),
+    // A bare Escape arms CodeMirror's tab-focus mode: a Tab in the next two
+    // seconds moves focus out of the editor. The user does not want that
+    // (2026-10-17). Lowest precedence, so every Escape binding (close find,
+    // drop extra cursors) still runs first, and claiming the key here skips
+    // only the built-in handler that arms the mode. Ctrl+M (defaultKeymap)
+    // stays as the keyboard way out of the editor.
+    Prec.lowest(
+      EditorView.domEventHandlers({ keydown: (event) => event.key === "Escape" })
+    ),
     // The document language, in a compartment so "set syntax" and a paste can
     // swap it with one dispatch instead of rebuilding the state and losing the
     // undo history (architecture.md §9).
