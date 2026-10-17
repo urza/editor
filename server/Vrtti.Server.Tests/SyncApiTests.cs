@@ -19,6 +19,18 @@ public class SyncApiTests
         Assert.True(body.GetProperty("ok").GetBoolean());
     }
 
+    [Fact]
+    public async Task Version_needs_no_token_and_reports_the_build_minute()
+    {
+        using var app = new TestApp();
+        using var response = await app.Client(token: null).GetAsync("/api/version");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        // yyyyMMddHHmm: twelve digits, so any build after 2000 lands in this range.
+        Assert.InRange(body.GetProperty("build").GetInt64(), 200001010000, 999912312359);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("wrong-token")]

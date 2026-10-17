@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -55,7 +56,9 @@ var expectedToken = Encoding.UTF8.GetBytes(token);
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path;
-    var guarded = path.StartsWithSegments("/api") && !path.StartsWithSegments("/api/health");
+    var guarded = path.StartsWithSegments("/api")
+        && !path.StartsWithSegments("/api/health")
+        && !path.StartsWithSegments("/api/version");
     if (guarded && !IsAuthorized(context.Request.Headers.Authorization, expectedToken))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -70,6 +73,13 @@ var api = app.MapGroup("/api");
 
 // No auth: a monitor or a reverse proxy must be able to see the server is alive.
 api.MapGet("/health", () => Results.Ok(new { ok = true }));
+
+// The build stamp is the UTC minute of the build, set in the project file. No auth: it
+// exists to check that a deploy took, and that check is easiest from a plain browser tab.
+var build = long.Parse(typeof(Program).Assembly
+    .GetCustomAttributes<AssemblyMetadataAttribute>()
+    .First(attribute => attribute.Key == "BuildStamp").Value!);
+api.MapGet("/version", () => Results.Ok(new { build }));
 
 api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
 {

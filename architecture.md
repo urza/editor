@@ -992,10 +992,13 @@ revisions(seq INTEGER PRIMARY KEY AUTOINCREMENT, doc_id TEXT NOT NULL,
 index revisions_doc(doc_id, seq)
 ```
 
-Endpoints under `/api`, bearer token on all but health, constant-time compare,
+Endpoints under `/api`, bearer token on all but health and version, constant-time compare,
 CORS allows the configured origins with the Authorization header:
 
 - `GET /health` -> `{ ok: true }`.
+- `GET /version` -> `{ build }`, the UTC minute of the build as `yyyyMMddHHmm`,
+  stamped by the project file. It tells whether the running server is the one
+  just built. Git is not available in the Docker build, so no commit hash.
 - `GET /changes?since=<seq>&limit=<n, max 500>` -> `{ changes, next, more }`.
   Returns the newest revision per doc among rows with `seq > since`, ordered
   by seq. `next` is the largest seq returned. Paging by `next` is correct

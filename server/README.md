@@ -95,12 +95,13 @@ Generate a token with `openssl rand -hex 32`. One static token serves the single
 
 ## Endpoints
 
-All paths need `Authorization: Bearer <token>`, except health. Request bodies are
+All paths need `Authorization: Bearer <token>`, except health and version. Request bodies are
 limited to 10 MB.
 
 | Method   | Path                              | Result                                                |
 | -------- | --------------------------------- | ----------------------------------------------------- |
 | `GET`    | `/api/health`                     | `{ ok: true }`. No token needed.                      |
+| `GET`    | `/api/version`                    | `{ build: 202610171403 }`. The UTC minute of the build, `yyyyMMddHHmm`. No token needed. Compare it with your last build to see that a deploy took. |
 | `GET`    | `/api/changes?since=&limit=&spaces=` | `{ changes, next, more }`. Newest revision per document with `seq > since`. `since` defaults to 0, `limit` to 200, capped at 500. `spaces` filters by space, see below. |
 | `GET`    | `/api/spaces`                     | `[{ space, count }]`, ordered by name. See Spaces.    |
 | `POST`   | `/api/docs/{id}/revisions`        | 201 `{ rev, seq }`. 409 `{ current }` when `baseRev` is a number and is not the current revision. |

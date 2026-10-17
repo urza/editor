@@ -6,7 +6,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The UTC minute of the build, as one number that grows with every build. GET
+         /api/version returns it, so a deploy is checked without git (the Docker build
+         has no .git) and without a hand-bumped constant. A build in a new minute changes the
+         property, which regenerates the assembly info and forces a recompile. -->
+    <BuildStamp>$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</BuildStamp>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BuildStamp" Value="$(BuildStamp)" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
