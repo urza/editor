@@ -25,7 +25,9 @@ import { searchKeymap } from "@codemirror/search";
 import {
   HighlightStyle,
   bracketMatching,
+  ensureSyntaxTree,
   indentOnInput,
+  indentRange,
   indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language";
@@ -178,6 +180,26 @@ export const marianaHighlight = HighlightStyle.define([
 ]);
 
 /**
+ * Visual Studio's Ctrl+K, Ctrl+D (user request, 2026-10-17): every line
+ * reindented by the language's rules, a tab per level (indentUnit below).
+ * Markdown and plain text declare no indentation, so a note comes through
+ * untouched; code (JS, CSS, HTML, JSON, the clike modes) is reindented.
+ * @type {import("@codemirror/view").Command}
+ */
+const formatDocument = (view) => {
+  if (view.state.readOnly) return false;
+  const end = view.state.doc.length;
+  // The parser stops a little past the viewport, and indentRange skips every
+  // line the tree does not reach. Parse to the end first; the empty dispatch
+  // then moves that tree into the state, where indentRange reads it.
+  ensureSyntaxTree(view.state, end, 5000);
+  view.dispatch({});
+  const changes = indentRange(view.state, 0, end);
+  if (!changes.empty) view.dispatch({ changes, userEvent: "indent" });
+  return true;
+};
+
+/**
  * @param {string} lang Language id for the whole document (editor/lang.js).
  * @param {(content: string) => void} [onDocChanged]
  * @param {(content: string) => void} [onDominantPaste] Called after a paste
@@ -209,6 +231,7 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       // (sidebar.focus, ui/sidebar.js), and a mode that silently turns Tab
       // into "move focus" would look like the old Tab bug coming back.
       { key: "Ctrl-m", run: cursorMatchingBracket, shift: selectMatchingBracket },
+      { key: "Mod-k Mod-d", run: formatDocument },
       ...defaultKeymap.filter((binding) => binding.run !== toggleTabFocusMode),
       ...historyKeymap,
       ...searchKeymap,
