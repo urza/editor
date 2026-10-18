@@ -188,6 +188,10 @@ export function mountSidebar(store, folders, sync) {
       }
     }
 
+    // The whole text to the clipboard. On a phone this menu is the one place
+    // for it: there is no keyboard for Ctrl+A, Ctrl+C.
+    items.push({ label: "Copy text", act: () => run("doc.copy", record.id) });
+
     items.push({ separator: true });
     items.push(...syncItems(record));
     // History is the server's, so it only exists for a document the server

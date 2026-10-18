@@ -120,8 +120,28 @@ export function mountStatusbar(store, sync) {
 
   store.events.addEventListener("change", renderTitle);
   store.events.addEventListener("active", renderTitle);
+
+  // The save slot doubles as the notice slot: "copied" sits where "saved" was
+  // for a moment, then the save status comes back. One span, no toast layer.
+  // A save event during a notice only updates what comes back, so the notice
+  // is never cut short by the keystroke debounce.
+  let saveStatus = statusSave.textContent ?? "";
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let noticeTimer;
   store.events.addEventListener("save", (event) => {
-    statusSave.textContent = /** @type {CustomEvent} */ (event).detail.status;
+    saveStatus = /** @type {CustomEvent} */ (event).detail.status;
+    if (noticeTimer === undefined) statusSave.textContent = saveStatus;
   });
+  /** @param {string} text */
+  function notice(text) {
+    clearTimeout(noticeTimer);
+    statusSave.textContent = text;
+    noticeTimer = setTimeout(() => {
+      noticeTimer = undefined;
+      statusSave.textContent = saveStatus;
+    }, 1500);
+  }
+
   renderTitle();
+  return { notice };
 }

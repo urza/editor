@@ -782,6 +782,35 @@ async function start() {
       return true;
     },
   });
+  register({
+    id: "doc.copy",
+    title: "Copy text",
+    // The whole document to the system clipboard. On a phone, a finger
+    // select-all over a long note is the slow part; one menu tap replaces it.
+    // The text comes from the store, not the editor: the row menu may target
+    // a buffer that is not the active one.
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !target) return false;
+      // An encrypted body needs the key, as reading it does.
+      if (record.enc && !keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      // `statusbar` is declared further down in start(); every run() comes
+      // after the mount, so the reference is never ahead of it.
+      try {
+        // Still inside the click's activation window: a loaded plaintext doc
+        // resolves at once, and a decode or file read takes well under the
+        // seconds browsers grant before a clipboard write needs a new tap.
+        await navigator.clipboard.writeText(await store.textOf(target));
+      } catch (err) {
+        console.log("[vrtti] copy failed", err);
+        statusbar.notice("copy failed");
+        return false;
+      }
+      statusbar.notice("copied");
+      return true;
+    },
+  });
 
   // Desktop disk files (architecture.md §2, §17). Registered only where some
   // backend can reach disk, so a Firefox or iOS build has no command that
@@ -943,7 +972,7 @@ async function start() {
   mountShell();
   mountNewButton();
   mountSidebar(store, folders, sync);
-  mountStatusbar(store, sync);
+  const statusbar = mountStatusbar(store, sync);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({

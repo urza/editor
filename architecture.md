@@ -493,7 +493,9 @@ the popup: one menu at a time, rendered into `document.body` at fixed
 coordinates, because `#sidebar-scroll` would clip a menu built inside a row.
 Escape, an outside click, a scroll, or a resize closes it; arrows walk it.
 
-Items: Rename, "Use first line" on a renamed scratch buffer, Sync, Encrypt,
+Items: Rename, "Use first line" on a renamed scratch buffer, "Copy text" (the
+whole document to the clipboard, the phone's stand-in for Ctrl+A, Ctrl+C; the
+status bar's save slot says "copied" for a moment), Sync, Encrypt,
 then Close or Reopen. Sync and Encrypt are listed and **disabled** until
 sections 3 and 5 ship. A toggle that says "encrypted" while nothing encrypts
 would be the one lie this app cannot afford; an empty menu slot is honest.
