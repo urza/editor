@@ -352,6 +352,32 @@ export function createLockedState(text = LOCKED_TEXT) {
 export function mountEditor(host, store) {
   const view = new EditorView({ parent: host });
   const states = new Map(); // id -> EditorState
+  // id -> scroll snapshot effect, parked next to the state. A state carries no
+  // scroll position: setState() swaps the document inside the one scroller,
+  // and the scroller keeps whatever offset the previous buffer left it at. So
+  // without this, scrolling down in one document scrolled the next one too.
+  // The snapshot is kept, not consumed, on restore: a decode puts the buffer
+  // up twice (placeholder, then document) and the lock/unlock round trip
+  // rebuilds the state from the same text, and the scroll belongs to each.
+  /** @type {Map<string, import("@codemirror/state").StateEffect<unknown>>} */
+  const scrolls = new Map();
+
+  /**
+   * Put the scroller where this buffer left it, or at the top of a buffer
+   * that was never on screen. Only for a document state: the effect's
+   * position is clipped to the document, so on the placeholder it would
+   * scroll to the end of "Locked." and the next decode would redo it anyway.
+   * @param {string} id
+   */
+  function restoreScroll(id) {
+    // Both branches scroll through an effect, never by writing scrollTop.
+    // CodeMirror's focus observer treats a scroller at 0 as "the browser
+    // reset the scroll on focus" and puts its last offset back. A sidebar
+    // click takes focus from the editor, so a direct write to 0 followed by
+    // view.focus() came back at the previous buffer's offset.
+    const snapshot = scrolls.get(id) ?? EditorView.scrollIntoView(0, { y: "start", x: "start" });
+    view.dispatch({ effects: snapshot });
+  }
 
   /**
    * A paste that redefines the buffer re-runs detection. The id is captured
@@ -466,6 +492,7 @@ export function mountEditor(host, store) {
         if (id !== store.activeId || placeholderId !== id) return;
         placeholderId = null;
         view.setState(state);
+        restoreScroll(id);
         view.focus();
         // The document is finally up, so a search hit can be selected in it.
         runPendingReveal(id);
@@ -565,8 +592,12 @@ export function mountEditor(host, store) {
     // Park the live state before swapping, so undo history survives the
     // switch. Never the placeholder though: parking it would cache "Locked."
     // as the document's text and show it even after an unlock.
-    if (previousId && previousId !== placeholderId) states.set(previousId, view.state);
+    if (previousId && previousId !== placeholderId) {
+      states.set(previousId, view.state);
+      scrolls.set(previousId, view.scrollSnapshot());
+    }
     view.setState(stateFor(id));
+    if (placeholderId !== id) restoreScroll(id);
     view.focus();
     runPendingReveal(id);
   });
@@ -605,6 +636,7 @@ export function mountEditor(host, store) {
   store.events.addEventListener("evict", (event) => {
     const { id } = /** @type {CustomEvent} */ (event).detail;
     states.delete(id);
+    scrolls.delete(id);
     // A closed buffer's placeholder is gone with it; leaving the id here would
     // make the next "active" skip parking a state that is a real document.
     if (placeholderId === id) placeholderId = null;
@@ -643,8 +675,20 @@ export function mountEditor(host, store) {
       // typed in the last half second, and one Ctrl+Z would undo both.
       annotations: isolateHistory.of("full"),
     });
-    if (live) view.dispatch(transaction);
-    else states.set(id, transaction.state);
+    if (live) {
+      view.dispatch(transaction);
+      return;
+    }
+    states.set(id, transaction.state);
+    // The parked scroll snapshot points into the old text. Mapped through the
+    // change it keeps roughly the same place; a snapshot the change swallowed
+    // whole is dropped, and the buffer comes back at the top.
+    const snapshot = scrolls.get(id);
+    if (snapshot) {
+      const mapped = snapshot.map(transaction.changes);
+      if (mapped) scrolls.set(id, mapped);
+      else scrolls.delete(id);
+    }
   });
 
   return { view, states, reveal };
