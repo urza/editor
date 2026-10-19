@@ -7,7 +7,8 @@
 <p align="center">
   A scratchpad text editor in the spirit of Sublime Text.<br>
   Your notes survive a restart without a save, and closing a note never asks a question.<br>
-  It runs in the browser, as an installed app on a desktop or a phone, and in a small desktop shell.
+  It runs in the browser, as an installed app on a desktop or a phone, and in a small desktop shell.<br>
+  It has optional sync across devices and strong encryption.
 </p>
 
 <p align="center">
