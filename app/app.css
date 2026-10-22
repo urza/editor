@@ -968,7 +968,9 @@ body {
 .settings-head {
   position: sticky;
   top: 0;
-  z-index: 1;
+  /* Above the sticky section headings: the next section pushes the current
+     heading up, and it slides under the head, not over it. */
+  z-index: 2;
   background: var(--st-ui-bg);
 }
 
@@ -1057,19 +1059,38 @@ body {
   .settings-main { max-width: none; }
 }
 
-.settings-section { margin-top: calc(36px * var(--ui-scale)); }
+/* The gap between sections is the section's own bottom padding, not a margin
+   on the next one. A sticky heading stays inside its section's box, so with a
+   margin there would be 36px of scroll with no heading pinned at all; this
+   way the next heading pushes the current one out directly. */
+.settings-section { padding-bottom: calc(36px * var(--ui-scale)); }
 .settings-section:first-child { margin-top: 14px; }
 
 /* One strong rule under the heading, weak rules between the rows: two levels
-   of structure, no boxes. */
+   of structure, no boxes.
+
+   Sticky under the head, so the reader always sees which section the rows
+   belong to (most useful on a phone, where there is no rail). The background
+   hides the rows that scroll under it. line-height is fixed because the rows'
+   scroll margin below computes the heading's height from it. */
 .settings-section > h3 {
+  position: sticky;
+  top: var(--ui-top-h);
+  z-index: 1;
   margin: 0;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--st-selection-border);
+  background: var(--st-ui-bg);
   font-size: var(--ui-lg);
+  line-height: 1.4;
   font-weight: normal;
   color: var(--st-sidebar-heading);
 }
+
+/* The panel's scroll-padding clears only the head. Keyboard focus on a
+   control also has to clear the pinned heading, so each control in a row
+   carries the heading's height (line + padding + rule) as a scroll margin. */
+.settings-row * { scroll-margin-top: calc(var(--ui-lg) * 1.4 + 9px); }
 
 /* Label left, value right. flex-wrap is load-bearing: an age key is 62
    characters, it cannot share a phone row with its label, and without the
