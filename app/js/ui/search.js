@@ -401,6 +401,10 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       len: Number(row.dataset.len),
     };
     const id = row.dataset.id;
+    // The settings panel covers the editor; a hit opened behind it would be
+    // invisible. Before the open, not after: closing hands focus back to the
+    // element it was taken from, which would undo the editor's own focus.
+    run("settings.close");
     if (id) {
       // Reopen, not activate: the rows are a snapshot, and the tab may have
       // been closed since the search ran. reopen activates an open tab, puts

@@ -30,11 +30,23 @@ export function mountSidebar(store, folders, sync) {
     document.getElementById("folder-sections")
   );
 
-  const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
-  newButton.addEventListener("click", () => {
-    run("buffer.new");
+  /**
+   * Every gesture that opens a document goes through here, so the document
+   * ends up visible: the settings panel covers the editor on a PC, and on a
+   * phone the drawer covers both. Settings close before the open, not after:
+   * closing hands focus back to where it was taken from (the Settings button,
+   * say), which would undo the focus the editor takes on "active". The drawer
+   * closes after; a no-op on a PC.
+   * @param {() => unknown} act
+   */
+  function open(act) {
+    run("settings.close");
+    act();
     run("sidebar.autoclose");
-  });
+  }
+
+  const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
+  newButton.addEventListener("click", () => open(() => run("buffer.new")));
 
   // Pinned outside the scroller by app.css, so a long buffer list never hides
   // it (architecture.md §9). The panel itself is ui/settings.js.
@@ -56,7 +68,9 @@ export function mountSidebar(store, folders, sync) {
     const openFolder = /** @type {HTMLElement} */ (document.getElementById("open-folder"));
     openFile.hidden = false;
     openFolder.hidden = false;
-    openFile.addEventListener("click", () => run("file.open"));
+    // Through open() too: a file picked while settings are up must show.
+    // A cancelled picker leaves settings closed, which is fine.
+    openFile.addEventListener("click", () => open(() => run("file.open")));
     openFolder.addEventListener("click", () => run("folder.open"));
   }
 
@@ -394,11 +408,7 @@ export function mountSidebar(store, folders, sync) {
       // The pointer that dragged this row is released over it, and the
       // browser sends a click for that. Dropping a row is not opening it.
       if (dropped) return;
-      if (closable) run("buffer.activate", record.id);
-      else run("buffer.reopen", record.id);
-      // On a phone the sidebar is a drawer over the editor, so it has to get
-      // out of the way of the document it just opened. A no-op on a PC.
-      run("sidebar.autoclose");
+      open(() => run(closable ? "buffer.activate" : "buffer.reopen", record.id));
     });
     return li;
   }
@@ -435,10 +445,7 @@ export function mountSidebar(store, folders, sync) {
     title.textContent = stub.title || (stub.enc ? "encrypted" : "untitled");
     li.appendChild(title);
 
-    li.addEventListener("click", () => {
-      run("remote.open", stub.id);
-      run("sidebar.autoclose");
-    });
+    li.addEventListener("click", () => open(() => run("remote.open", stub.id)));
     return li;
   }
 
@@ -628,8 +635,8 @@ export function mountSidebar(store, folders, sync) {
         // which folder a file came from; the absolute path is not available
         // to a page (architecture.md §2).
         const folderName = folders.folders.get(folderId)?.name ?? "";
-        run("folder.openFile", { handle: entry.handle, path: folderName + "/" + entry.path });
-        run("sidebar.autoclose");
+        const path = folderName + "/" + entry.path;
+        open(() => run("folder.openFile", { handle: entry.handle, path }));
         return;
       }
       if (expanded.has(key)) expanded.delete(key);

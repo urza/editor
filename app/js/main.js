@@ -955,6 +955,14 @@ async function start() {
     title: "Settings",
     run: () => settings.toggle(),
   });
+  // The panel covers the editor, so whatever opens a document from the
+  // sidebar (a row, a search hit, the "+") closes it first, or the document
+  // opens behind it.
+  register({
+    id: "settings.close",
+    title: "Close settings",
+    run: () => settings.close(),
+  });
 
   const search = mountSearch({ store, folders, workspaces, editor });
   register({
