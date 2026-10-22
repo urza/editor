@@ -25,6 +25,11 @@ const DEFAULT_ON_KEY = "sync.defaultOn";
 const SPACES_KEY = "sync.spaces";
 const DEFAULT_SPACE_KEY = "sync.defaultSpace";
 const CURSORS_KEY = "sync.cursors";
+// The server URL the stored cursors were advanced against. A cursor is a
+// position in one server's change log, so another server starts at 0. The
+// reset waits for that server's first answer (see pullSpace), so a URL
+// mistyped and put back never rewinds.
+const CURSORS_URL_KEY = "sync.cursorsUrl";
 // The single cursor from before spaces. load() turns it into the cursors of
 // `personal` and `keyring`, then deletes it.
 const LEGACY_CURSOR_KEY = "sync.cursor";
@@ -93,6 +98,8 @@ export function createSyncClient({ store, keyring }) {
    * @type {Record<string, number>}
    */
   let cursors = dict();
+  /** The URL `cursors` belong to; "" before any page ever advanced one. */
+  let cursorsUrl = "";
   /**
    * The device's mode per space (§25). An absent name is Not here. Starts as
    * the no-setting answer, so a store question before load() finds the
@@ -162,7 +169,7 @@ export function createSyncClient({ store, keyring }) {
 
   /** @param {Response} res */
   function httpError(res) {
-    const err = new Error("server said " + res.status);
+    const err = new Error("server error " + res.status);
     // @ts-ignore - carried so the status handler can tell 401 from the rest
     err.status = res.status;
     return err;
@@ -205,12 +212,25 @@ export function createSyncClient({ store, keyring }) {
       // The settings can change during a page (another window, a click):
       // a space dropped since must not get its cursor back.
       if (!isReceived(space)) return;
-      const since = cursors[space] ?? 0;
+      // Another server than the cursors know: start at 0, and forget the old
+      // positions only once this server has answered. A typo in the URL and
+      // the way back to the real server then cost nothing.
+      const url = config?.url ?? "";
+      const stale = cursorsUrl !== url;
+      const since = stale ? 0 : cursors[space] ?? 0;
       const res = await request(
         "/api/changes?since=" + since + "&limit=" + PAGE +
           "&spaces=" + encodeURIComponent(space)
       );
       if (!res.ok) throw httpError(res);
+      if (stale) {
+        cursors = dict();
+        // Cursors first, URL second: a crash between the two leaves the old
+        // positions under the old URL, and the next run finds them stale again.
+        await putSetting(CURSORS_KEY, {});
+        cursorsUrl = url;
+        await putSetting(CURSORS_URL_KEY, url);
+      }
       const body = await res.json();
       for (const change of body.changes ?? []) await store.applyRemote(change);
       // Compare and set: a reset to 0 while this page was in flight (a space
@@ -292,8 +312,27 @@ export function createSyncClient({ store, keyring }) {
     }
   }
 
+  /**
+   * Push every dirty record. One refused note (too large for the server, a
+   * server bug on one row) must not hold back the notes after it in every
+   * round, so the loop goes on and rethrows the first error at the end, for
+   * the status. A wrong token or no network would fail every record alike,
+   * so those stop the round at once.
+   */
   async function push() {
-    for (const record of store.dirtyRecords()) await pushOne(record);
+    /** @type {unknown} */
+    let firstError;
+    for (const record of store.dirtyRecords()) {
+      try {
+        await pushOne(record);
+      } catch (err) {
+        const status = err && /** @type {any} */ (err).status;
+        if (status === 401 || err instanceof TypeError) throw err;
+        if (firstError === undefined) firstError = err;
+        console.log("[vrtti] push failed", record.id, err);
+      }
+    }
+    if (firstError !== undefined) throw firstError;
   }
 
   /**
@@ -348,13 +387,20 @@ export function createSyncClient({ store, keyring }) {
       // can do nothing about. The status element is the report.
       const code = err && /** @type {any} */ (err).status;
       if (code === 401) {
-        setStatus({ state: "error", message: "unauthorized", lastSyncAt });
+        setStatus({ state: "error", message: "wrong token", lastSyncAt });
       } else if (!navigator.onLine) {
         // Nothing is lost: every dirty record stays dirty and the next online
         // event runs this again.
         setStatus({ state: "offline", lastSyncAt });
       } else {
-        const message = err instanceof Error ? err.message : String(err);
+        // fetch reports a server it could not reach as a TypeError, with a
+        // text that differs per browser; one sentence of ours says it better.
+        const message =
+          err instanceof TypeError
+            ? "no answer from the server"
+            : err instanceof Error
+              ? err.message
+              : String(err);
         setStatus({ state: "error", message, lastSyncAt });
       }
       console.log("[vrtti] sync failed", err);
@@ -380,10 +426,9 @@ export function createSyncClient({ store, keyring }) {
       setStatus({ state: "off" });
       return;
     }
-    // A new server is a new namespace, but the cursor is not reset here: the
-    // user's own server can be re-entered after a typo, and rewinding to 0
-    // would replay every change as a conflict. Clearing the setting is the
-    // deliberate way to start over.
+    // A new server is a new namespace. The cursors are not touched here:
+    // pullSpace compares the URL they belong to and starts at 0 on another
+    // server once it answers, so a typo put back costs nothing.
     await syncNow();
   }
 
@@ -392,11 +437,11 @@ export function createSyncClient({ store, keyring }) {
     if (!isConfigured()) return { ok: false, message: "no server configured" };
     try {
       const res = await request("/api/changes?since=0&limit=1");
-      if (res.status === 401) return { ok: false, message: "unauthorized" };
-      if (!res.ok) return { ok: false, message: "server said " + res.status };
+      if (res.status === 401) return { ok: false, message: "wrong token" };
+      if (!res.ok) return { ok: false, message: "server error " + res.status };
       return { ok: true };
     } catch {
-      return { ok: false, message: "unreachable" };
+      return { ok: false, message: "no answer from the server" };
     }
   }
 
@@ -578,6 +623,17 @@ export function createSyncClient({ store, keyring }) {
       }
     }
     cursors = dict(storedCursors);
+    // Cursors from before the URL key were advanced against the server that
+    // is configured now: adopt it, or every old install would pull its whole
+    // history again. Stored at once, so a URL changed later and a restart
+    // before the new server answers cannot adopt the new URL for old positions.
+    const storedUrl = await getSetting(CURSORS_URL_KEY);
+    if (typeof storedUrl === "string") {
+      cursorsUrl = storedUrl;
+    } else {
+      cursorsUrl = config?.url ?? "";
+      await putSetting(CURSORS_URL_KEY, cursorsUrl);
+    }
   }
 
   /**

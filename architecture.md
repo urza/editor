@@ -861,6 +861,32 @@ Open: none.
   the user's dev VM, which showed every phone note; multiple tokens
   refused, encryption plus "never pair the VM" is the trust boundary.
 
+- Copy in the user's words (2026-10-22, §9 settings panel): the panel,
+  the dialogs, the row menu, History and the editor placeholders say
+  note, sync / stop syncing, your devices, space, and never doc, buffer,
+  attach, keyring, bearer, flag, CryptoKey or a section number. One
+  table (`SYNC_LABEL`) gives the sync state its words in the status bar
+  and in Settings alike. The row menu names the direction ("Sync to
+  personal", "Stop syncing", "Decrypt") instead of a checked item, and
+  the mode names are Open as tabs, Titles only, Nothing. From the user's
+  review: the hints described the implementation, not what to expect.
+  Three gaps closed on the way: a refused space name says why under the
+  row, Encrypt, Decrypt, a failed unlock or approval and a lost From
+  server fetch report in the status bar, and a device that joins an
+  existing set of devices gets a dialog that says so and names the next
+  step. Decrypting a synced note asks once, because the readable text
+  goes to the server.
+- Cursors belong to a server (2026-10-22, §13.6): `sync.cursorsUrl`
+  records the URL the cursors were advanced against. On another URL a
+  pull starts at 0 and forgets the old positions only after that server
+  answered, so a mistyped URL put back never rewinds. Before, a changed
+  server kept the old positions and could miss notes already on it.
+- A push round goes on past one refused note (2026-10-22, §13.6): a
+  note the server refuses (too large, a server bug on one row) is logged
+  and the round continues; the first error is rethrown at the end for the
+  status. A wrong token or no network stops the round at once, since
+  every record would fail alike.
+
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
 
