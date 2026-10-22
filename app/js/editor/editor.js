@@ -60,10 +60,11 @@ export const marianaTheme = EditorView.theme(
       color: FOREGROUND,
       fontFamily:
         'Consolas, Menlo, "DejaVu Sans Mono", "Cascadia Mono", monospace',
-      // A CSS variable, not a literal: ui/textsize.js changes the document
-      // size by writing --editor-font-size on :root. Baking the number in
-      // here would make every size change a theme reconfigure instead.
-      fontSize: "var(--editor-font-size, 14px)",
+      // CSS variables, not a literal: ui/textsize.js sets the size of every
+      // note by writing --editor-font-size on :root, and ui/zoom.js scales
+      // the open note alone by writing --note-zoom on the editor host. Baking
+      // a number in here would make every size change a theme reconfigure.
+      fontSize: "calc(var(--editor-font-size, 14px) * var(--note-zoom, 1))",
       height: "100%",
     },
     ".cm-content": {

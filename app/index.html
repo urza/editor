@@ -180,6 +180,9 @@
   <footer id="statusbar">
     <span id="status-title"></span>
     <span id="status-save">saved</span>
+    <!-- Note zoom. Hidden here and shown by ui/statusbar.js while the open
+         note is zoomed (ui/zoom.js): at 100% there is nothing to say. -->
+    <button id="status-zoom" class="icon-button" type="button" hidden></button>
     <span id="status-build"></span>
     <!-- No title and no state class here: ui/statusbar.js owns both, because
          the spellcheck state comes from localStorage, not from the markup. -->

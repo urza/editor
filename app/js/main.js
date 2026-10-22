@@ -53,6 +53,7 @@ import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/de
 import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
+import { mountZoom } from "./ui/zoom.js";
 import { mountNewButton } from "./ui/newbutton.js";
 import { showHistory } from "./ui/history.js";
 
@@ -972,6 +973,9 @@ async function start() {
   // Kept, unlike before: search in files reveals a hit through this controller
   // (architecture.md §16).
   const editor = mountEditor(host, store);
+  // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
+  // variable, and nothing from the editor controller.
+  const zoom = mountZoom(host, store);
   // Sublime's Ctrl+1 (focus group 1), the partner of Ctrl+0 in ui/sidebar.js.
   // In a browser tab Ctrl+1 is "first tab" and may never arrive; it is for
   // the installed app and the desktop shell. Escape in the sidebar does the
@@ -1019,7 +1023,7 @@ async function start() {
   mountShell();
   mountNewButton();
   mountSidebar(store, folders, sync);
-  const statusbar = mountStatusbar(store, sync);
+  const statusbar = mountStatusbar(store, sync, zoom);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({

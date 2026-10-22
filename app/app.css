@@ -455,6 +455,10 @@ body {
 #status-sync.off { opacity: 0.35; text-decoration: line-through; }
 #status-sync.off:hover { opacity: 0.6; }
 
+/* Note zoom indicator (ui/zoom.js): the label is the percent, and the button
+   only shows while the open note is not at 100 %. A click resets. */
+#status-zoom { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
+
 .buffer-list {
   list-style: none;
   margin: 0;

@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "456751248dbb",
+  "version": "c43a2849ec3e",
   "files": [
     "./",
     "./app.css",
@@ -18,6 +18,7 @@ self.__PRECACHE = {
     "./js/editor/emoji.js",
     "./js/editor/hunspell.js",
     "./js/editor/lang.js",
+    "./js/editor/markdown.js",
     "./js/editor/spellcheck.js",
     "./js/editor/textlang.js",
     "./js/main.js",
@@ -36,6 +37,7 @@ self.__PRECACHE = {
     "./js/ui/dialog.js",
     "./js/ui/history.js",
     "./js/ui/menu.js",
+    "./js/ui/newbutton.js",
     "./js/ui/resizer.js",
     "./js/ui/search.js",
     "./js/ui/settings.js",
@@ -45,6 +47,7 @@ self.__PRECACHE = {
     "./js/ui/statusbar.js",
     "./js/ui/textsize.js",
     "./js/ui/title.js",
+    "./js/ui/zoom.js",
     "./js/version.js",
     "./manifest.webmanifest",
     "./vendor/@codemirror/autocomplete/index.js",

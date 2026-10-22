@@ -205,7 +205,9 @@ const SECTIONS = [
         type: "stepper",
         key: "editor-size",
         label: "Editor text size",
-        hint: "The note text only. A setting of this device, so it never syncs.",
+        hint:
+          "The note text only. A setting of this device, so it never syncs. " +
+          "Ctrl+wheel over a note zooms that note alone, until you close it.",
         unit: " px",
         min: EDITOR.min,
         max: EDITOR.max,

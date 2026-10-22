@@ -168,10 +168,12 @@ all options.
 | Close window   | close the tab             | Ctrl+Shift+W |
 | Find in files  | Ctrl+Shift+F              | Ctrl+Shift+F |
 | Toggle sidebar | Alt+B                     | Alt+B       |
+| Zoom note      | Ctrl+wheel                | Ctrl+wheel  |
 
 The Alt keys also work in the desktop app. On a Mac, Cmd takes the place of
 Ctrl. In the desktop app, Ctrl+S writes a file note to disk at once, and asks
-where to save a scratch note.
+where to save a scratch note. Ctrl+wheel over a note zooms that note alone,
+on top of the editor text size in Settings, until you close it.
 
 ## How it is built
 

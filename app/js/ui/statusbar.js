@@ -7,6 +7,7 @@ import { hasDisk } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
 import { detectedLanguages, events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { BUILD } from "../version.js";
+import { ZOOM } from "./zoom.js";
 
 /**
  * The sync states as the user reads them. The Settings rail and status row
@@ -24,8 +25,9 @@ export const SYNC_LABEL = {
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
  * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
+ * @param {ReturnType<import("./zoom.js").mountZoom>} zoom
  */
-export function mountStatusbar(store, sync) {
+export function mountStatusbar(store, sync, zoom) {
   const statusTitle = /** @type {HTMLElement} */ (document.getElementById("status-title"));
   const statusSave = /** @type {HTMLElement} */ (document.getElementById("status-save"));
   const statusBuild = /** @type {HTMLElement} */ (document.getElementById("status-build"));
@@ -33,6 +35,7 @@ export function mountStatusbar(store, sync) {
   const statusSpell = /** @type {HTMLElement} */ (document.getElementById("status-spell"));
   const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
   const statusSync = /** @type {HTMLElement} */ (document.getElementById("status-sync"));
+  const statusZoom = /** @type {HTMLElement} */ (document.getElementById("status-zoom"));
 
   const builtAt = new Date(BUILD.builtAt);
   const stamp =
@@ -111,6 +114,21 @@ export function mountStatusbar(store, sync) {
     });
     renderSync(sync.status);
   }
+
+  // ---- Note zoom indicator (ui/zoom.js) ------------------------------------
+
+  function renderZoom() {
+    const value = zoom.percent();
+    // Hidden at 100: a label that reads "100%" on every note is noise. Shown,
+    // it answers "why is this note bigger?" and offers the way back.
+    statusZoom.hidden = value === ZOOM.default;
+    statusZoom.textContent = value + "%";
+    statusZoom.title = "Note zoom " + value + "% (click to reset)";
+  }
+
+  statusZoom.addEventListener("click", () => run("view.zoomReset"));
+  zoom.events.addEventListener("change", renderZoom);
+  renderZoom();
 
   function renderTitle() {
     const record = store.activeId ? store.get(store.activeId) : undefined;

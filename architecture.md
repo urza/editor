@@ -600,6 +600,21 @@ this: it scales the document and the chrome together.
 - No keyboard shortcut. Ctrl and Cmd belong to the browser, and Alt is spent
   on the chords that already exist.
 
+**Note zoom** (agreed and shipped 2026-10-22). Ctrl+wheel over the editor
+scales the open note alone, 50-300 % in steps of ten, on top of the editor
+text size. `ui/zoom.js` writes `--note-zoom` on `#editor-host`, and the
+theme's font size is `calc(var(--editor-font-size) * var(--note-zoom, 1))`,
+so a bigger base keeps a zoomed note's ratio and CodeMirror is still never
+reconfigured. The factor sits in a Map by note id, in memory only, the way
+the editor keeps scroll snapshots: it follows the note across switches, goes
+with the note on evict, and a reload starts every note at 100 %. It is not a
+setting, so it is in neither localStorage nor the store, and it never syncs.
+Commands `view.zoomIn`, `view.zoomOut` and `view.zoomReset`, without chords:
+Ctrl+= and Ctrl+- are browser zoom in the PWA, and Ctrl+0 is the sidebar.
+The status bar shows the percent while it is not 100, and a click resets it.
+The wheel listener is not passive, because preventDefault is what stops the
+page zoom, and it ignores a wheel over the settings overlay inside the host.
+
 ### New buffer on a phone (user report, 2026-10-09, shipped)
 
 On a phone the sidebar "+" sits behind the drawer, so a new buffer was two
