@@ -130,8 +130,10 @@ function errorLine(parent) {
 /**
  * Ask for a passphrase, twice when `confirm` is set.
  *
- * @param {{title?: string, label?: string, confirm?: boolean, message?: string}} [opts]
+ * @param {{title?: string, label?: string, confirm?: boolean, message?: string,
+ *          hint?: string}} [opts]
  *   `message` is an inline line above the field, for the unlock retry.
+ *   `hint` is the small line under the fields: what the passphrase means, at setup.
  * @returns {Promise<string | null>} null when the user cancels.
  */
 export function askPassphrase(opts = {}) {
@@ -146,6 +148,12 @@ export function askPassphrase(opts = {}) {
 
   const first = field(body, opts.label ?? "Passphrase", "password");
   const second = opts.confirm ? field(body, "Repeat passphrase", "password") : null;
+  if (opts.hint) {
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = opts.hint;
+    body.appendChild(hint);
+  }
   const error = errorLine(body);
   actions.append(cancelButton(dialog), button("OK", "ok", true));
 
@@ -175,7 +183,7 @@ export function askPassphrase(opts = {}) {
 /**
  * Ask for one line of text.
  * @param {{title?: string, label?: string, value?: string, hint?: string,
- *          allowEmpty?: boolean}} [opts]
+ *          placeholder?: string, allowEmpty?: boolean}} [opts]
  *   `allowEmpty` lets "" through as an answer (the encrypt label: no name is a
  *   valid, deliberate choice there). Everywhere else empty means "try again".
  * @returns {Promise<string | null>} null when the user cancels.
@@ -183,6 +191,7 @@ export function askPassphrase(opts = {}) {
 export function askText(opts = {}) {
   const { dialog, form, body, actions } = shell(opts.title ?? "Enter a value");
   const input = field(body, opts.label ?? "Value", "text", opts.value ?? "");
+  if (opts.placeholder) input.placeholder = opts.placeholder;
   if (opts.hint) {
     const hint = document.createElement("p");
     hint.className = "settings-hint";
@@ -300,6 +309,22 @@ export function choose(opts) {
   actions.append(cancelButton(dialog));
   const ids = new Set(opts.options.map((o) => o.id));
   return openModal(dialog, (value) => (ids.has(value) ? value : null));
+}
+
+/**
+ * One paragraph and an OK button: for a step that ends on another device,
+ * where nothing else on this screen would say that it is done.
+ * @param {{title: string, text: string}} opts
+ * @returns {Promise<void>}
+ */
+export function showNote(opts) {
+  const { dialog, body, actions } = shell(opts.title);
+  const text = document.createElement("p");
+  text.className = "settings-hint";
+  text.textContent = opts.text;
+  body.appendChild(text);
+  actions.append(button("OK", "ok", true));
+  return openModal(dialog, () => undefined);
 }
 
 /**

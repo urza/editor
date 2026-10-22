@@ -9,6 +9,19 @@ import { detectedLanguages, events as spellEvents, isEnabled } from "../editor/s
 import { BUILD } from "../version.js";
 
 /**
+ * The sync states as the user reads them. The Settings rail and status row
+ * read the same table, so the two places never disagree.
+ * @type {Record<string, string>}
+ */
+export const SYNC_LABEL = {
+  off: "off",
+  idle: "synced",
+  syncing: "syncing…",
+  error: "sync error",
+  offline: "offline",
+};
+
+/**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
  * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
  */
@@ -69,14 +82,6 @@ export function mountStatusbar(store, sync) {
   }
 
   // ---- Sync indicator (architecture.md §13.6) ------------------------------
-
-  /** @type {Record<string, string>} */
-  const SYNC_LABEL = {
-    idle: "synced",
-    syncing: "syncing…",
-    error: "sync error",
-    offline: "offline",
-  };
 
   /** @param {import("../sync/client.js").SyncStatus} status */
   function renderSync(status) {

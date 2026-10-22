@@ -300,8 +300,9 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste) 
   });
 }
 
-const LOCKED_TEXT = "🔒 Locked. Unlock to read this document.";
-const FOREIGN_TEXT = "🔒 Encrypted for another device. This device has no key for it.";
+const LOCKED_TEXT = "🔒 Locked. Click to unlock with your passphrase.";
+const FOREIGN_TEXT =
+  "🔒 This device has no key for this note. The device that made it can encrypt it for all devices.";
 /** @type {Record<string, string>} UnavailableError reasons (model/docs.js), as the placeholder says them. */
 const UNAVAILABLE_TEXT = {
   permission: "permission needed",

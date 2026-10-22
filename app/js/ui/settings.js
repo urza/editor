@@ -15,6 +15,7 @@ import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
 import { titleOf, KEYRING_SPACE } from "../model/docs.js";
+import { SYNC_LABEL } from "./statusbar.js";
 
 /**
  * The keyring the Security section reports on, handed in by mountSettings.
@@ -70,6 +71,8 @@ let spacesLoading = false;
  * @property {string} [unit]          stepper: shown after the number.
  * @property {boolean} [password]     text: hide what is typed.
  * @property {string} [placeholder]   text: empty-field hint.
+ * @property {string} [invalid]       text: shown under the hint when `set`
+ *                             answers false, so a refused value says why.
  * @property {() => string | Promise<string>} [value]    info (and action):
  *                             right-hand text.
  * @property {boolean} [block]        info: the value is a key or a code, so
@@ -119,16 +122,16 @@ function formatBytes(bytes) {
   return bytes + " B";
 }
 
-/** The sync state in one word. Same words as the statusbar, so the two never disagree. */
+/** The sync state as the status bar says it, from one table, so the two never disagree. */
 function syncStateWord() {
-  if (!sync) return "off";
+  if (!sync) return SYNC_LABEL.off;
   const { state } = sync.status;
-  return state === "idle" ? "synced" : state;
+  return SYNC_LABEL[state] ?? state;
 }
 
 /** One line for the sync status row: state, why, and when it last worked. */
 function syncStatusText() {
-  if (!sync) return "off";
+  if (!sync) return SYNC_LABEL.off;
   const { message, lastSyncAt } = sync.status;
   let text = syncStateWord();
   if (message) text += " (" + message + ")";
@@ -140,9 +143,9 @@ function syncStatusText() {
 
 /** The three modes of a space (§25), in the order the select offers them. */
 const SPACE_MODES = [
-  { value: "none", label: "Not here" },
-  { value: "list", label: "From server" },
-  { value: "tab", label: "Open as tab" },
+  { value: "none", label: "Nothing" },
+  { value: "list", label: "Titles only" },
+  { value: "tab", label: "Open as tabs" },
 ];
 
 /**
@@ -183,7 +186,7 @@ function spaceRows(repaint) {
       value: count === undefined ? "" : count === 1 ? "1 note" : count + " notes",
       select: {
         value: client.modeOf(name) ?? "none",
-        // The default space is always received (§25), so Not here is not
+        // The default space is always received (§25), so Nothing is not
         // offered for it; the client would refuse it anyway.
         options: isDefault ? SPACE_MODES.filter((mode) => mode.value !== "none") : SPACE_MODES,
         set: (value) =>
@@ -202,9 +205,7 @@ const SECTIONS = [
         type: "stepper",
         key: "editor-size",
         label: "Editor text size",
-        hint:
-          "The document only. It is a setting of this device, not of the " +
-          "documents, so it never syncs.",
+        hint: "The note text only. A setting of this device, so it never syncs.",
         unit: " px",
         min: EDITOR.min,
         max: EDITOR.max,
@@ -227,10 +228,10 @@ const SECTIONS = [
       {
         type: "toggle",
         key: "sidebar-new",
-        label: "New-buffer button in the sidebar",
+        label: "The + button in the sidebar",
         hint:
-          "The big + at the top of the sidebar. A phone has the round + over " +
-          "the editor as well, so this one can go. A setting of this device.",
+          "A phone also has the round + over the editor, so this one can go. " +
+          "A setting of this device.",
         get: () => sidebarNewButtonShown(),
         set: () => run("view.sidebarNewButton"),
       },
@@ -259,7 +260,7 @@ const SECTIONS = [
         type: "info",
         key: "persisted",
         label: "Persistent storage",
-        hint: "Without it the browser may evict buffers when disk runs low.",
+        hint: "Without it the browser may delete your notes when disk space runs low.",
         value: async () => ((await isPersisted()) ? "granted" : "not granted"),
       },
       {
@@ -292,7 +293,7 @@ const SECTIONS = [
         type: "text",
         key: "sync-url",
         label: "Server URL",
-        hint: "Empty means no sync at all. The app never calls a server it was not given.",
+        hint: "Your own vrtti server. Leave it empty and your notes stay on this device.",
         placeholder: "https://sync.example.com",
         get: () => sync?.config.url ?? "",
         // Both fields dispatch the whole config: the client stores one row, and
@@ -304,7 +305,7 @@ const SECTIONS = [
         type: "text",
         key: "sync-token",
         label: "Token",
-        hint: "The server's bearer token. It stays on this device.",
+        hint: "The VRTTI_TOKEN you set when you started the server. It is stored on this device only.",
         password: true,
         get: () => sync?.config.token ?? "",
         set: (value) =>
@@ -326,44 +327,59 @@ const SECTIONS = [
         act: async () => {
           testResult = "…";
           const result = await (sync?.testConnection() ?? { ok: false });
-          testResult = result.ok ? "ok" : result.message ?? "failed";
+          testResult = result.ok ? "connected" : result.message ?? "failed";
         },
-      },
-      {
-        type: "toggle",
-        key: "sync-default",
-        label: "New docs sync by default",
-        hint: "Unset follows the platform: on for a phone, off where there is a disk.",
-        get: () => Boolean(sync?.syncDefaultOn()),
-        set: () => run("sync.defaultToggle"),
       },
       {
         type: "list",
         key: "sync-spaces",
         label: "Spaces",
-        hint: "Not here: ignored. From server: titles in the From server list, fetched on click. Open as tab: arrives and opens, as before.",
+        hint:
+          "A space is a group of synced notes on the server. Pick what this " +
+          "device takes from each one: every note as a tab, titles only under " +
+          "From server in the sidebar, or nothing. Notes already here stay in " +
+          "every case, but with Nothing they stop syncing.",
         visible: () => Boolean(sync?.isConfigured),
         rows: spaceRows,
       },
       {
         type: "text",
         key: "sync-default-space",
-        label: "New notes go to",
-        hint: "The space a note joins when it starts to sync here. A new name makes a new space. Letters, digits, - and _ only.",
+        label: "Default space",
+        hint:
+          "The space a note joins when you turn sync on. A new name makes a " +
+          "new space. Letters, digits, - and _ only.",
         placeholder: "personal",
-        get: () => sync?.defaultSpace() ?? "",
         // The command answers false for a name the server would refuse, and
-        // stores nothing. The repaint after the commit then puts the old name
-        // back in the field, which is the whole error message.
+        // stores nothing. The repaint after the commit puts the old name back
+        // in the field, and this line says why.
+        invalid: "That name was not accepted. Letters, digits, - and _ only, up to 32 characters.",
+        get: () => sync?.defaultSpace() ?? "",
         set: (value) => run("sync.defaultSpace", String(value ?? "").trim()),
         visible: () => Boolean(sync?.isConfigured),
       },
       {
+        type: "toggle",
+        key: "sync-default",
+        label: "Sync new notes",
+        hint:
+          "Every new note syncs from the start, to the default space. Off " +
+          "means you turn sync on per note, from its menu. A phone starts " +
+          "with this on, because sync is its only backup there.",
+        // Hidden until a server exists: before that the switch could only
+        // store a choice for a sync that does not run.
+        visible: () => Boolean(sync?.isConfigured),
+        get: () => Boolean(sync?.syncDefaultOn()),
+        set: () => run("sync.defaultToggle"),
+      },
+      {
         type: "action",
         key: "sync-all",
-        label: "Sync all current docs",
-        hint: "Attaches every open document. It sets the same per-document flag.",
-        button: "attach",
+        label: "Sync every open note",
+        hint:
+          "Turns on sync for each note in this window's Open list, into the " +
+          "default space. Notes in Recent stay as they are.",
+        button: "sync all",
         visible: () => Boolean(sync?.isConfigured),
         act: () => run("sync.all"),
       },
@@ -371,6 +387,7 @@ const SECTIONS = [
         type: "action",
         key: "sync-run",
         label: "Sync now",
+        hint: "Sync runs by itself after each edit and once a minute. This runs it at once.",
         button: "sync",
         visible: () => Boolean(sync?.isConfigured),
         act: () => run("sync.now"),
@@ -388,21 +405,21 @@ const SECTIONS = [
         type: "info",
         key: "encryption",
         label: "Encryption",
-        hint: "Per document, real age format. Unlock once per session.",
+        hint:
+          "You encrypt one note at a time, from its menu. Your passphrase " +
+          "unlocks this device until you press Lock or close the last window.",
         value: () => {
           if (!keyring?.isSetUp) return "not set up";
-          if (!keyring.isUnlocked) return "locked";
-          // The two unlocked states are worth telling apart: with a CryptoKey
-          // the device secret never enters the JS heap at all (§5).
-          return keyring.identityKind === "cryptokey"
-            ? "unlocked (CryptoKey)"
-            : "unlocked (in memory)";
+          // Whether the device secret sits in a CryptoKey or in the JS heap
+          // (§5) is a debugging detail; keyring.identityKind still tells.
+          return keyring.isUnlocked ? "unlocked" : "locked";
         },
       },
       {
         type: "info",
         key: "device-name",
         label: "This device",
+        hint: "The name your other devices show for this one.",
         visible: () => Boolean(keyring?.isSetUp),
         value: () => keyring?.deviceName ?? "",
       },
@@ -410,7 +427,9 @@ const SECTIONS = [
         type: "info",
         key: "device-key",
         label: "Device key",
-        hint: "Public. Your other devices encrypt to it once they approve this device.",
+        hint:
+          "This device's public key, not a secret. Your other devices encrypt " +
+          "notes to it once they approve this device.",
         block: true,
         visible: () => Boolean(keyring?.isSetUp),
         value: () => keyring?.deviceRecipient ?? "",
@@ -419,7 +438,9 @@ const SECTIONS = [
         type: "info",
         key: "pairing-code",
         label: "Pairing code",
-        hint: "Type it on a device that already uses this keyring to approve this one. The fingerprint next to it is what the other device shows you to confirm.",
+        hint:
+          "A device you already use must approve this one, and it asks for " +
+          "this code. Its device list shows this device with the fingerprint.",
         block: true,
         visible: () => Boolean(keyring?.isSetUp && keyring.pairingCode),
         value: () => keyring?.pairingCode + "   ·   fingerprint " + keyring?.fingerprint(),
@@ -428,7 +449,9 @@ const SECTIONS = [
         type: "list",
         key: "devices",
         label: "Devices",
-        hint: "Every device in the keyring, and whether this device trusts it (architecture.md §21).",
+        hint:
+          "The devices that hold a key for your encrypted notes. A note for " +
+          "all devices goes only to the trusted ones.",
         visible: () => Boolean(keyring?.isSetUp),
         rows: () =>
           (keyring?.deviceRows() ?? []).map((row) => {
@@ -437,22 +460,25 @@ const SECTIONS = [
             const base = { key: "device-" + row.id, label: row.name + fp, value: "" };
             switch (row.state) {
               case "this device":
-                return { ...base, value: "this device · added " + when };
+                return { ...base, value: "this device · since " + when };
               case "trusted":
-                return { ...base, value: "trusted · added " + when };
+                return { ...base, value: "trusted · since " + when };
               case "approved you":
                 return {
                   ...base,
-                  value: "approved this device · confirm that it is yours",
+                  value: "approved this device · confirm it is yours",
                   button: "confirm",
                   act: () => run("crypto.confirm", row.id),
                 };
               case "needs update":
-                return { ...base, value: "needs its update · unlock it once, then approve it here" };
+                return {
+                  ...base,
+                  value: "older version · unlock it there once, then approve it here",
+                };
               case "not confirmed":
                 return {
                   ...base,
-                  value: "not confirmed · approve this device from it, then confirm it here",
+                  value: "not yet trusted · approve this device from it, then confirm it here",
                 };
               default:
                 return {
@@ -468,7 +494,10 @@ const SECTIONS = [
         type: "info",
         key: "recovery-key",
         label: "Recovery key",
-        hint: "Public half of the offline master key. Every document is encrypted to it.",
+        hint:
+          "The public part of the recovery key you wrote down at setup. Every " +
+          "note is encrypted to that key too, so it opens every note with the " +
+          "age tool.",
         block: true,
         visible: () => Boolean(keyring?.isSetUp),
         value: () => (keyring?.recoveryRecipients ?? []).join(" "),
@@ -477,7 +506,10 @@ const SECTIONS = [
         type: "action",
         key: "crypto-setup",
         label: "Set up encryption",
-        hint: "Generates a device key and a recovery key. The recovery key is shown once. On a second device, set the sync server first, so it joins the keyring your other devices use.",
+        hint:
+          "You choose a passphrase for this device, and the app shows a " +
+          "recovery key one time. If another device already uses encryption, " +
+          "enter the sync server first, so this device joins it.",
         button: "set up",
         visible: () => !keyring?.isSetUp,
         act: () => run("crypto.setup"),
@@ -486,7 +518,9 @@ const SECTIONS = [
         type: "action",
         key: "crypto-unlock",
         label: "Unlock",
-        hint: "Decrypts the device key into memory for this session.",
+        hint:
+          "Asks your passphrase. Encrypted notes then open until you press " +
+          "Lock or close the last window.",
         button: "unlock",
         visible: () => Boolean(keyring?.isSetUp) && !keyring?.isUnlocked,
         act: () => run("crypto.unlock"),
@@ -495,7 +529,7 @@ const SECTIONS = [
         type: "action",
         key: "crypto-lock",
         label: "Lock",
-        hint: "Drops the device key. Encrypted documents become unreadable until you unlock.",
+        hint: "Encrypted notes close until you unlock again. Their undo history is dropped.",
         button: "lock",
         visible: () => Boolean(keyring?.isUnlocked),
         act: () => run("crypto.lock"),
@@ -513,7 +547,7 @@ const SECTIONS = [
         type: "list",
         key: "trash",
         label: "Deleted notes",
-        hint: "A note a delete reached stays here for 30 days. Restore puts it back into Recent as a local note (architecture.md §22).",
+        hint: "A note deleted on another device waits here for 30 days. Restore puts it back into Recent, with sync off.",
         visible: () => (store?.trashed().length ?? 0) > 0,
         rows: () =>
           (store?.trashed() ?? []).map((record) => ({
@@ -602,6 +636,8 @@ function makeRow(item, refresh) {
 
   /** @type {() => void} */
   let paintOwn = () => {};
+  /** @type {HTMLElement | null} The label and hint column; a text row adds its error line to it. */
+  let labels = null;
 
   if (item.type === "note") {
     row.textContent = item.text ?? "";
@@ -617,7 +653,8 @@ function makeRow(item, refresh) {
       row.appendChild(anchor);
     }
   } else {
-    row.appendChild(labelBlock(item.label ?? "", item.hint));
+    labels = labelBlock(item.label ?? "", item.hint);
+    row.appendChild(labels);
   }
 
   if (item.type === "toggle") {
@@ -697,6 +734,12 @@ function makeRow(item, refresh) {
     input.type = item.password ? "password" : "text";
     input.spellcheck = false;
     if (item.placeholder) input.placeholder = item.placeholder;
+    // A refused value (`set` answered false): the repaint puts the old one
+    // back, and this line under the hint says why, until the next commit.
+    const error = document.createElement("p");
+    error.className = "dialog-error";
+    error.hidden = true;
+    labels?.appendChild(error);
 
     // What was last written through this row. It makes the commit idempotent,
     // so Enter (which blurs) does not send the same value twice.
@@ -712,7 +755,9 @@ function makeRow(item, refresh) {
     async function commit() {
       if (!item.set || input.value === committed) return;
       committed = input.value;
-      await item.set(committed);
+      const ok = await item.set(committed);
+      error.hidden = !(ok === false && item.invalid);
+      error.textContent = error.hidden ? "" : item.invalid ?? "";
       // The value changed what other rows report (the status, the visibility
       // of the sync actions), so the whole panel repaints.
       refresh();

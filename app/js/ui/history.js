@@ -8,6 +8,12 @@
 import { readKeyringContent } from "../crypto/keyring.js";
 import { titleOf } from "../model/docs.js";
 
+/**
+ * What a tombstone row says. A text revision needs no word, so it has none.
+ * @type {Record<string, string>}
+ */
+const KIND_LABEL = { deleted: "deleted", detached: "sync stopped" };
+
 /** @param {number} bytes */
 function formatSize(bytes) {
   if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
@@ -45,6 +51,11 @@ export async function showHistory({ record, client, store }) {
 
   const body = document.createElement("div");
   body.className = "dialog-body";
+  const intro = document.createElement("p");
+  intro.className = "settings-hint";
+  intro.textContent =
+    "Every sync makes a revision. Open one as a copy to read it or to restore text by hand.";
+  body.appendChild(intro);
   const status = document.createElement("p");
   status.className = "settings-hint";
   status.textContent = "Loading…";
@@ -128,15 +139,14 @@ export async function showHistory({ record, client, store }) {
 
       const meta = document.createElement("span");
       meta.className = "history-meta";
-      meta.textContent =
-        "rev " +
-        info.rev +
-        " · " +
-        nameOf(info.deviceId) +
-        " · " +
-        info.kind +
-        " · " +
-        formatSize(info.size);
+      meta.textContent = [
+        "rev " + info.rev,
+        nameOf(info.deviceId),
+        KIND_LABEL[info.kind],
+        formatSize(info.size),
+      ]
+        .filter(Boolean)
+        .join(" · ");
       li.appendChild(meta);
 
       const open = document.createElement("button");

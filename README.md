@@ -83,7 +83,7 @@ The text in the note keeps the normal emoji characters.
 ### Sync to your own server (optional)
 
 - The server is small: an ASP.NET Core API with one SQLite file. A Docker image is ready (see [server/README.md](server/README.md)).
-- You choose per note what syncs, from the note's menu. Settings can attach all open notes at once. On a phone, new notes sync by default.
+- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. On a phone, new notes sync by default.
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
 - When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Trash** restores it. A wrong or forged delete from the server cannot wipe a note.

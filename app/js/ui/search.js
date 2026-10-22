@@ -204,7 +204,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
         : "No hits";
     if (run.locked) {
       text += " · " + run.locked +
-        (run.locked === 1 ? " locked document skipped" : " locked documents skipped");
+        (run.locked === 1 ? " locked note skipped" : " locked notes skipped");
     }
     if (run.capped) text += " · stopped at " + MAX_HITS + " hits";
 

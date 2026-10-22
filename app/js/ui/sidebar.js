@@ -213,19 +213,23 @@ export function mountSidebar(store, folders, sync) {
     if (record.sync && sync?.isConfigured) {
       items.push({ label: "History…", act: () => run("doc.history", record.id) });
     }
+    // Two labels, not one checked item: "Decrypt" says what the click does,
+    // and a check mark did not.
     items.push(
       store.canEncryptFile(record)
-        ? {
-            label: "Encrypt",
-            checked: Boolean(record.enc),
-            // One item, both directions: the check mark says which way it goes.
-            act: () => run(record.enc ? "doc.decrypt" : "doc.encrypt", record.id),
-          }
+        ? record.enc
+          ? {
+              label: "Decrypt",
+              hint: record.sync
+                ? "Stores the text readable again, on the server too"
+                : "Stores the text readable again",
+              act: () => run("doc.decrypt", record.id),
+            }
+          : { label: "Encrypt", act: () => run("doc.encrypt", record.id) }
         : {
-            label: "Encrypt",
-            checked: Boolean(record.enc),
+            label: record.enc ? "Decrypt" : "Encrypt",
             disabled: true,
-            hint: "This browser cannot rename files",
+            hint: "Needs Chrome, Edge or the desktop app to rename the file",
           }
     );
     items.push({ separator: true });
@@ -240,29 +244,26 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
-   * The Sync item, and the "Sync to" items of an unsynced note (§25). The
-   * hint names the space: where a synced note lives, or where "Sync" will
-   * put this one. A synced note gets no "Sync to": a move between spaces is
-   * Stop sync, then attach again, because the old space would never hear of
-   * a direct move. Flat items, since the menu has no submenus and two or
-   * three spaces need none.
+   * "Sync to <space>" for an unsynced note, the default space first (§25), and
+   * "Stop syncing" for a synced one, with its space in the hint. A synced note
+   * gets no "Sync to": a move between spaces is Stop syncing, then Sync to the
+   * other one, because the old space would never hear of a direct move. Flat
+   * items, since the menu has no submenus and two or three spaces need none.
    *
    * @param {BufferRecord} record
    * @returns {import("./menu.js").MenuItem[]}
    */
   function syncItems(record) {
     if (!sync?.isConfigured) {
-      return [{ label: "Sync", checked: false, disabled: true, hint: "Set a server in settings" }];
+      return [{ label: "Sync", disabled: true, hint: "Enter a server in Settings › Sync first" }];
     }
     if (record.sync) {
       return [
         {
-          label: "Sync",
-          // One item, both directions, like Encrypt below. A record from
-          // before spaces may lack the field, and every reader takes that as
-          // DEFAULT_SPACE, as the migration does.
-          checked: true,
-          hint: record.sync.space ?? DEFAULT_SPACE,
+          label: "Stop syncing",
+          // A record from before spaces may lack the field, and every reader
+          // takes that as DEFAULT_SPACE, as the migration does.
+          hint: "in " + (record.sync.space ?? DEFAULT_SPACE) + " · the text stays on every device",
           act: () => run("doc.sync.off", record.id),
         },
       ];
@@ -273,7 +274,7 @@ export function mountSidebar(store, folders, sync) {
       .filter((name) => name !== KEYRING_SPACE && name !== target)
       .sort();
     return [
-      { label: "Sync", checked: false, hint: "to " + target, act: () => run("doc.sync.on", record.id) },
+      { label: "Sync to " + target, act: () => run("doc.sync.on", record.id) },
       ...others.map((name) => ({
         label: "Sync to " + name,
         act: () => run("doc.sync.on", { id: record.id, space: name }),
@@ -337,9 +338,9 @@ export function mountSidebar(store, folders, sync) {
       mark.className = "buffer-mark";
       mark.textContent = "☁";
       mark.title = record.sync.tombstone
-        ? "Detaching…"
+        ? "Stopping sync…"
         : record.sync.rev === 0
-          ? "Attaching…"
+          ? "Syncing for the first time…"
           : "Synced";
       li.appendChild(mark);
     }
@@ -428,7 +429,7 @@ export function mountSidebar(store, folders, sync) {
     const cloud = document.createElement("span");
     cloud.className = "buffer-mark";
     cloud.textContent = "☁";
-    cloud.title = "On the server";
+    cloud.title = "On the server. Click to open it here.";
     li.appendChild(cloud);
 
     if (stub.enc) {

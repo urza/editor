@@ -25,6 +25,7 @@ import {
   firstLineTitle,
   KEYRING_ID,
   KEYRING_SPACE,
+  titleOf,
 } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
@@ -41,7 +42,7 @@ import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
-import { askPassphrase, askText, choose, showBusy, showSecret } from "./ui/dialog.js";
+import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
 import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
@@ -397,17 +398,17 @@ async function start() {
         }
         if (!store.keyringRecord() && state !== "idle") {
           const answer = await choose({
-            title: "The server could not be reached",
+            title: "The server did not answer",
             options: [
               {
                 id: "later",
                 label: "Set up later",
-                hint: "If another device already uses encryption, set up after a sync so this device joins that keyring.",
+                hint: "If another device already uses encryption, try again when the server answers. This device then joins it.",
               },
               {
                 id: "anyway",
                 label: "Set up anyway",
-                hint: "Creates a new keyring and a second recovery key. The keyrings merge later, and both recovery keys stay valid.",
+                hint: "This device starts alone, with a recovery key of its own. The devices join up later, and both recovery keys stay valid.",
               },
             ],
           });
@@ -418,12 +419,16 @@ async function start() {
         title: "Set up encryption",
         label: "Device name",
         value: defaultDeviceName(),
-        hint: "Shown in the keyring so you can tell your devices apart.",
+        hint: "Your other devices show this name, and a note's history does too. It cannot change later.",
       });
       if (deviceName === null) return false;
       const passphrase = await askPassphrase({
         title: "Choose a passphrase",
         confirm: true,
+        hint:
+          "It protects the key on this device, and each device has its own. " +
+          "There is no reset. If you forget it, this device cannot read " +
+          "encrypted notes again.",
       });
       if (passphrase === null) return false;
 
@@ -470,9 +475,20 @@ async function start() {
           title: "Recovery key",
           text: recoveryIdentity,
           note:
-            "Write this down and keep it offline. It is shown once and never " +
-            "stored. It restores every document, on any device, with the age " +
-            "command line tool alone.",
+            "Shown once, never stored. Keep it on paper or in a password " +
+            "manager. If you lose every device, this key still opens your " +
+            "notes with the age command line tool. vrtti itself has no place " +
+            "to enter it.",
+        });
+      } else {
+        // Joined the devices that exist: nothing else on this screen would
+        // say so, and the next step happens on another device.
+        await showNote({
+          title: "This device joined your devices",
+          text:
+            "A device you already use must approve it. Unlock that device, " +
+            "and it asks for the pairing code shown under Settings › Security " +
+            "here.",
         });
       }
       return true;
@@ -503,6 +519,7 @@ async function start() {
           busy.close();
         }
       }
+      statusbar.notice("still locked");
       return false;
     },
   });
@@ -528,7 +545,7 @@ async function start() {
           label: "Pairing code",
           hint:
             (message ? message + " " : "") +
-            "Type the six digits shown under Settings › Security on that device. A code that does not match means the entry did not come from your device.",
+            "Type the six-digit pairing code from Settings › Security on that device. If it does not match, that device is not yours. Cancel.",
           placeholder: "000 000",
         });
         if (code === null) return false;
@@ -539,6 +556,7 @@ async function start() {
         }
         message = "The code does not match.";
       }
+      statusbar.notice("not approved");
       return false;
     },
   });
@@ -556,12 +574,12 @@ async function start() {
             label: "Yes, that is my device",
             hint:
               "Its fingerprint is " + keyring.fingerprint(device.signKey) +
-              ". The same fingerprint stands under Settings › Security on that device.",
+              ". Settings › Security on that device shows the same eight characters.",
           },
           {
             id: "no",
             label: "No",
-            hint: "This device keeps trusting only itself. Ask again from the device list in Settings.",
+            hint: "This device then encrypts for itself only, and your other devices cannot read its notes. You can confirm later in Settings › Security.",
           },
         ],
       });
@@ -575,7 +593,7 @@ async function start() {
   // prompts; the store owns the records and refuses to work while locked.
   register({
     id: "doc.encrypt",
-    title: "Encrypt document",
+    title: "Encrypt note",
     // No arg means the active buffer, like buffer.close.
     run: async (id) => {
       const target = id ?? store.activeId;
@@ -590,12 +608,12 @@ async function start() {
           {
             id: "all-devices",
             label: "All my devices",
-            hint: "Every device in the keyring, plus the recovery key.",
+            hint: "Every trusted device, plus the recovery key.",
           },
           {
             id: "this-device",
             label: "This device only",
-            hint: "Plus the recovery key.",
+            hint: "This device and the recovery key. Other devices see only the name.",
           },
         ],
       });
@@ -608,12 +626,12 @@ async function start() {
       // doc syncs as a scratch doc (§13.5).
       const record = store.get(target);
       const label = await askText({
-        title: "Name for the encrypted document",
-        label: "Plaintext name",
+        title: "Name the encrypted note",
+        label: "Name",
         value:
           record?.title ||
           (record?.file ? record.file.name : firstLineTitle(record?.content)),
-        hint: "Shown in the sidebar and stored unencrypted, also on the sync server. Leave it empty for no name.",
+        hint: "The name is not encrypted. It shows in the sidebar, in the file name and on the server. Leave it empty for no name.",
         allowEmpty: true,
       });
       if (label === null) return false;
@@ -623,6 +641,7 @@ async function start() {
         // A file that cannot be renamed to `.age` (a taken name, a lost
         // permission) stays as it was; the record was not touched.
         console.log("[vrtti] encrypt failed", err);
+        statusbar.notice("encrypt failed");
         return false;
       }
       await refreshFolders(record);
@@ -631,7 +650,7 @@ async function start() {
   });
   register({
     id: "doc.decrypt",
-    title: "Decrypt document",
+    title: "Decrypt note",
     run: async (id) => {
       const target = id ?? store.activeId;
       if (!target) return false;
@@ -639,10 +658,27 @@ async function start() {
       // out of the ciphertext, and nothing else holds it.
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
       const record = store.get(target);
+      // A synced note goes back to the server readable, and the server keeps
+      // what it gets: that deserves one question. A local note is a local
+      // change only, and Encrypt undoes it.
+      if (record?.sync) {
+        const answer = await choose({
+          title: "Decrypt “" + titleOf(record) + "”?",
+          options: [
+            {
+              id: "yes",
+              label: "Decrypt",
+              hint: "The readable text goes to the server as a new revision. The encrypted revisions stay there.",
+            },
+          ],
+        });
+        if (answer !== "yes") return false;
+      }
       try {
         await store.decrypt(target);
       } catch (err) {
         console.log("[vrtti] decrypt failed", err);
+        statusbar.notice("decrypt failed");
         return false;
       }
       await refreshFolders(record);
@@ -673,7 +709,7 @@ async function start() {
   });
   register({
     id: "doc.sync.on",
-    title: "Sync this document",
+    title: "Sync this note",
     // No arg means the active buffer, like buffer.close. `{ id, space }` is
     // the row menu's "Sync to" (§25); a bare id goes to the default space.
     run: async (arg) => {
@@ -693,7 +729,7 @@ async function start() {
   });
   register({
     id: "doc.sync.off",
-    title: "Stop syncing this document",
+    title: "Stop syncing this note",
     // The record keeps its text and pushes a `detached` tombstone, so the
     // other devices keep their copies too (architecture.md §3).
     run: async (id) => {
@@ -710,7 +746,7 @@ async function start() {
   });
   register({
     id: "sync.all",
-    title: "Sync all current documents",
+    title: "Sync every open note",
     // The bulk switch of architecture.md §3: it only sets the per-document
     // flag, one document at a time. There is no second kind of sync target.
     run: async () => {
@@ -735,7 +771,10 @@ async function start() {
       } catch (err) {
         // Gone from the server: the title is all that was left of it.
         if (/** @type {any} */ (err)?.status === 404) await store.dropRemote(id);
-        else console.log("[vrtti] fetching a server note failed", id, err);
+        else {
+          console.log("[vrtti] fetching a server note failed", id, err);
+          statusbar.notice("could not fetch the note");
+        }
         return false;
       }
       // Deleted or detached since the stub was written: same as gone.
@@ -766,14 +805,14 @@ async function start() {
   });
   register({
     id: "sync.defaultToggle",
-    title: "New documents sync by default",
+    title: "Sync new notes",
     // Stores an explicit boolean, which is what takes this device off the
     // platform default for good (architecture.md §13.6).
     run: () => sync.toggleSyncDefault(),
   });
   register({
     id: "doc.history",
-    title: "Document history…",
+    title: "Note history…",
     run: async (id) => {
       const target = id ?? store.activeId;
       const record = target ? store.get(target) : undefined;

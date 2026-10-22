@@ -73,7 +73,7 @@ export function mountNewButton() {
 
   register({
     id: "view.sidebarNewButton",
-    title: "Toggle the new-buffer button in the sidebar",
+    title: "Toggle the + button in the sidebar",
     run: () => {
       sidebarShown = !sidebarShown;
       sidebarButton.hidden = !sidebarShown;
