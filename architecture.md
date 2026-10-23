@@ -418,6 +418,23 @@ them. A row in the Open list drags to a new place, and the order is kept.
 - **The redraw stands down during a drag**, like during a rename: a sync
   arriving mid-drag must not replace the row under the pointer.
 
+### The active row stays in view (user report, 2026-10-23, shipped)
+
+A new note lands at the end of the Open list. Once the list is longer than
+the sidebar, the new row was below the fold, and so was any note a search
+hit or a chord opened further down.
+
+- **The "active" event reveals the row.** The redraw that follows a change
+  of the active note calls `scrollIntoView({ block: "nearest" })` on the
+  active row of the Open list. Nearest moves `#sidebar-scroll` only as far
+  as it must, so a row already on screen holds the list still.
+- **No other redraw scrolls.** Every keystroke emits "change", and a sync
+  can redraw at any time; neither may drag the list away from where the
+  user scrolled it. The flag is on the "active" listener alone.
+- **Hidden sidebars keep their layout** (collapsed by width, the drawer by
+  transform, §9 collapse), so the scroll lands while the sidebar is out of
+  sight and the row is there when it comes back.
+
 ### Where a file is (2026-09-22, shipped)
 
 The user wants the full path on hover, as Sublime shows on a tab. A page

@@ -751,7 +751,25 @@ export function mountSidebar(store, folders, sync) {
     if (li instanceof HTMLElement) li.focus();
   }
 
-  function render() {
+  /**
+   * The row of the note on screen, scrolled into view. A new note lands at
+   * the end of the Open list, below the fold once the list is longer than
+   * the sidebar; a search hit or a chord can open a note anywhere in it.
+   * "nearest" moves the list only as far as it must, so a row already on
+   * screen holds the list still. The drawer and a collapsed sidebar keep
+   * their layout (ui/shell.js), so the scroll lands even while hidden.
+   */
+  function revealActive() {
+    const row = openList.querySelector("li.active");
+    if (row instanceof HTMLElement) row.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
+   * @param {{reveal?: boolean}} [opts] reveal: the active note changed, so
+   *   its row must end up on screen. Off for every other redraw: a sync or a
+   *   keystroke must not drag the list away from where the user scrolled it.
+   */
+  function render({ reveal = false } = {}) {
     // A rename input lives inside one of these rows, and every keystroke in
     // the editor emits "change". Redrawing now would delete the box the user
     // is typing in; startRename() calls render() itself when it is done. A
@@ -782,6 +800,7 @@ export function mountSidebar(store, folders, sync) {
     fromserverList.hidden = fromserverCollapsed;
     fromserverList.replaceChildren(...(fromserverCollapsed ? [] : stubRows(stubs)));
     refocusRow(focused);
+    if (reveal) revealActive();
   }
 
   // Keyboard travel between rows. Tab already walks everything in the
@@ -822,8 +841,8 @@ export function mountSidebar(store, folders, sync) {
     },
   });
 
-  store.events.addEventListener("change", render);
-  store.events.addEventListener("active", render);
+  store.events.addEventListener("change", () => render());
+  store.events.addEventListener("active", () => render({ reveal: true }));
   folders.events.addEventListener("change", renderFolders);
   folders.events.addEventListener("listing", renderFolders);
   render();
