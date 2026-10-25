@@ -307,7 +307,7 @@ const SECTIONS = [
         type: "text",
         key: "sync-token",
         label: "Token",
-        hint: "The VRTTI_TOKEN you set when you started the server. It is stored on this device only.",
+        hint: "The VRTTI_TOKEN you set when you started the server.",
         password: true,
         get: () => sync?.config.token ?? "",
         set: (value) =>
