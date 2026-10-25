@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tauri::menu::{
-    CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+    CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, Submenu, SubmenuBuilder,
 };
 use tauri::webview::PageLoadEvent;
 use tauri::{
@@ -45,6 +45,39 @@ const CHORDS: [(&str, &str, &str); 5] = [
     ("buffer.close", "Close", "CmdOrCtrl+W"),
     ("search.inFiles", "Find in Files…", "CmdOrCtrl+Shift+F"),
 ];
+
+/// Edit menu, id and label: Edit > Line, Edit > Convert Case, and Sort Lines
+/// at the top. The ids are the page's command ids too (app/js/editor/
+/// transform.js) and go to the focused window like the chords. No
+/// accelerators, on purpose: the keys live in the page's CodeMirror keymap,
+/// where they act only while the editor has focus. A native accelerator
+/// fires with the focus anywhere, and Alt+Up typed in the search field would
+/// move a line of the note. muda also cannot show a two-stroke chord such as
+/// Ctrl+K, Ctrl+U.
+const EDIT_LINE: [(&str, &str); 5] = [
+    ("edit.moveLineUp", "Move Line Up"),
+    ("edit.moveLineDown", "Move Line Down"),
+    ("edit.duplicateLine", "Duplicate Line"),
+    ("edit.deleteLine", "Delete Line"),
+    ("edit.joinLines", "Join Lines"),
+];
+const EDIT_CASE: [(&str, &str); 4] = [
+    ("edit.upperCase", "Upper Case"),
+    ("edit.lowerCase", "Lower Case"),
+    ("edit.titleCase", "Title Case"),
+    ("edit.swapCase", "Swap Case"),
+];
+const EDIT_SORT: (&str, &str) = ("edit.sortLines", "Sort Lines");
+
+/// A menu id the page runs as a command, in the focused window.
+fn is_page_command(id: &str) -> bool {
+    CHORDS.iter().any(|(chord, _, _)| *chord == id)
+        || EDIT_LINE
+            .iter()
+            .chain(EDIT_CASE.iter())
+            .chain(std::iter::once(&EDIT_SORT))
+            .any(|(command, _)| *command == id)
+}
 
 /// Shell-side menu item: closes the focused window natively, which the page
 /// cannot do for a window it did not open. Goes through CloseRequested, so
@@ -140,7 +173,7 @@ pub fn run() {
         .menu(build_menu)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
-            if CHORDS.iter().any(|(chord, _, _)| *chord == id) {
+            if is_page_command(id) {
                 if let Some(window) = debug::target_window(app) {
                     deliver(app, window.label(), id, None);
                 }
@@ -283,11 +316,12 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
     // it synchronously at import time. The marker is the page's knowledge of
     // the shell; the two commands in the capability are its way back.
     // The version is package_info's, never CARGO_PKG_VERSION: CI sets it
-    // at build time (architecture.md §18) and Cargo.toml stays 0.1.0.
+    // at build time (architecture.md §18) and Cargo.toml stays 0.1.0. The
+    // page shows it, so it gets the short form Help > About shows.
     let marker = format!(
         "window.vrttiDesktop = {{ platform: '{}', version: '{}' }};\n{}",
         std::env::consts::OS,
-        app.package_info().version,
+        update::display_version(&app.package_info().version.to_string()),
         debug::RECORDER_JS
     );
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
@@ -643,23 +677,30 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         menu = menu.item(&app_menu);
     }
     menu = menu.item(&file);
+    // Edit: the text transforms a desktop wants on a menu (EDIT_* above).
+    let edit = SubmenuBuilder::new(app, "Edit");
+    // Without these items WKWebView has no Cmd+C/V/X/A at all: on macOS the
+    // edit chords are menu key equivalents, not browser defaults. Windows
+    // and Linux get them from the webview itself, and a menu copy there
+    // would fight CodeMirror for the keys.
     #[cfg(target_os = "macos")]
-    {
-        // Without these items WKWebView has no Cmd+C/V/X/A at all: on macOS
-        // the edit chords are menu key equivalents, not browser defaults.
-        // Windows and Linux get them from the webview itself, and a menu copy
-        // there would fight CodeMirror for the keys.
-        let edit = SubmenuBuilder::new(app, "Edit")
-            .undo()
-            .redo()
-            .separator()
-            .cut()
-            .copy()
-            .paste()
-            .select_all()
-            .build()?;
-        menu = menu.item(&edit);
-    }
+    let edit = edit
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .separator();
+    let line = page_submenu(app, "Line", &EDIT_LINE)?;
+    let case = page_submenu(app, "Convert Case", &EDIT_CASE)?;
+    let edit = edit
+        .item(&line)
+        .item(&case)
+        .text(EDIT_SORT.0, EDIT_SORT.1)
+        .build()?;
+    menu = menu.item(&edit);
     // View: the editor switches a desktop wants on a menu. `checked(true)` is
     // the page's default, so the mark is right before the page reports; a
     // device that turned wrap off sees it flip within the first second.
@@ -676,9 +717,32 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     menu.build()
 }
 
+/// A submenu of plain items whose ids are page commands.
+fn page_submenu<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    items: &[(&str, &str)],
+) -> tauri::Result<Submenu<R>> {
+    let mut menu = SubmenuBuilder::new(app, title);
+    for (id, label) in items {
+        menu = menu.text(*id, *label);
+    }
+    menu.build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_ids_route_to_the_page() {
+        assert!(is_page_command("buffer.new"));
+        assert!(is_page_command("edit.titleCase"));
+        assert!(is_page_command("edit.joinLines"));
+        assert!(is_page_command("edit.sortLines"));
+        assert!(!is_page_command(WORD_WRAP));
+        assert!(!is_page_command(CLOSE_WINDOW));
+    }
 
     #[test]
     fn paths_from_args_resolves_and_skips_flags() {

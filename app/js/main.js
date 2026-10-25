@@ -40,6 +40,7 @@ import {
 } from "./crypto/keyring.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
+import { mountTransforms } from "./editor/transform.js";
 import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
@@ -977,6 +978,9 @@ async function start() {
   // View > Word Wrap in the desktop shell. Applied from this device's stored
   // value now, before the first buffer goes up.
   mountWordWrap(editor);
+  // Edit > Line, Convert Case, Sort Lines in the desktop shell: the ids of
+  // editor/transform.js, run on this view.
+  mountTransforms(editor);
   // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
   // variable, and nothing from the editor controller.
   const zoom = mountZoom(host, store);

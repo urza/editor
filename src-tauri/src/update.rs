@@ -109,6 +109,19 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// A version as the user reads it (architecture.md §18). CI numbers a build
+/// `YY.M.N`: the month it was published and the count of builds published
+/// that month, from zero. The first build of a month shows without its
+/// ".0", the way Ubuntu writes 24.04 and then 24.04.1: 26.10.0 is "26.10",
+/// 26.10.2 stays 26.10.2. Text only. The updater compares the full semver,
+/// and the installers and package lists carry it.
+pub fn display_version(version: &str) -> &str {
+    match version.strip_suffix(".0") {
+        Some(short) if short.matches('.').count() == 1 => short,
+        _ => version,
+    }
+}
+
 pub fn submenu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<R>> {
     SubmenuBuilder::new(app, "Help")
         .text(CHECK, "Check for updates…")
@@ -203,7 +216,7 @@ fn run_check<R: Runtime>(app: &AppHandle<R>, state: &State, manual: bool) {
         Ok(None) => {
             eprintln!("[vrtti update] {current} is up to date");
             if manual {
-                say(app, "Check for updates", &format!("vrtti {current} is up to date."));
+                say(app, "Check for updates", &format!("vrtti {} is up to date.", display_version(&current)));
             }
             return;
         }
@@ -224,7 +237,11 @@ fn run_check<R: Runtime>(app: &AppHandle<R>, state: &State, manual: bool) {
             Err(err) => {
                 eprintln!("[vrtti update] download of {} failed: {err}", update.version);
                 if manual {
-                    say(app, "Check for updates", &format!("Could not download vrtti {}.\n{err}", update.version));
+                    say(
+                        app,
+                        "Check for updates",
+                        &format!("Could not download vrtti {}.\n{err}", display_version(&update.version)),
+                    );
                 }
                 return;
             }
@@ -260,7 +277,7 @@ fn offer<R: Runtime>(app: &AppHandle<R>, state: &State, update: Update, bytes: V
     let restart = ask(
         app,
         "Update ready",
-        &format!("vrtti {} is ready. Restart now?", update.version),
+        &format!("vrtti {} is ready. Restart now?", display_version(&update.version)),
         "Restart now",
         "Later",
     );
@@ -278,7 +295,7 @@ fn offer<R: Runtime>(app: &AppHandle<R>, state: &State, update: Update, bytes: V
     let _ = app.save_window_state(StateFlags::all());
     if let Err(err) = update.install(&bytes) {
         eprintln!("[vrtti update] install of {} failed: {err}", update.version);
-        say(app, "Update failed", &format!("Could not install vrtti {}.\n{err}", update.version));
+        say(app, "Update failed", &format!("Could not install vrtti {}.\n{err}", display_version(&update.version)));
         return;
     }
     // Linux and macOS: the file is replaced, the running process is the old
@@ -290,7 +307,7 @@ fn about<R: Runtime>(app: &AppHandle<R>) {
     let info = app.package_info();
     let mut text = format!(
         "vrtti {}\n{} {}",
-        info.version,
+        display_version(&info.version.to_string()),
         std::env::consts::OS,
         std::env::consts::ARCH
     );
@@ -336,6 +353,17 @@ fn ask_buttons<R: Runtime>(builder: MessageDialogBuilder<R>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_version_drops_a_zero_count_only() {
+        assert_eq!(display_version("26.10.0"), "26.10");
+        assert_eq!(display_version("26.10.1"), "26.10.1");
+        assert_eq!(display_version("26.10.10"), "26.10.10");
+        assert_eq!(display_version("27.1.0"), "27.1");
+        assert_eq!(display_version("0.1.15"), "0.1.15");
+        assert_eq!(display_version("26.10"), "26.10");
+        assert_eq!(display_version("not a version"), "not a version");
+    }
 
     fn hooks(vars: &[(&str, &str)]) -> Hooks {
         Hooks::from_vars(|name| {

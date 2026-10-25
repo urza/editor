@@ -22,14 +22,43 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Every CI build outranks every local build (0.1.0), and a later run
-  # outranks an earlier one. Set at build time; Cargo.toml stays 0.1.0.
-  VRTTI_VERSION: 0.1.${{ github.run_number }}
   # Where the release job puts the files. The manifests point back here.
   VRTTI_DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/desktop-latest
 
 jobs:
+  # The build's version: YY.M.N, the month of publication and the count of
+  # builds published in that month so far (architecture.md §18), so 26.10.0
+  # is October 2026's first build and 26.10.1 its second. Semver, because
+  # the updater compares versions as semver and Cargo wants three numbers
+  # with no leading zero: January is 27.1.N, never 27.01. The count comes
+  # from the manifests already on the release, so a cancelled or failed run
+  # takes no number and the three platform builds share one. Every CI build
+  # outranks every local build (0.1.0); Cargo.toml stays 0.1.0.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          month=$(date -u +%y.%-m)
+          mkdir manifests
+          # No release or no manifest yet (the first signed build): nothing
+          # to count, and the month starts at zero.
+          gh release download desktop-latest --pattern 'latest-*.json' --dir manifests || true
+          latest=$(find manifests -name 'latest-*.json' -exec jq -r .version {} + | sort -V | tail -n 1)
+          n=0
+          if [[ "$latest" == "$month".* ]]; then
+            n=$(( ${latest##*.} + 1 ))
+          fi
+          echo "last published: ${latest:-none}"
+          echo "version=$month.$n" | tee -a "$GITHUB_OUTPUT"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -49,6 +78,7 @@ jobs:
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     env:
+      VRTTI_VERSION: ${{ needs.version.outputs.version }}
       # The updater's minisign key (src-tauri/updater.key on the user's
       # machine, never in the repo). Without the secret the build skips the
       # updater artifacts, and the release keeps its previous manifests.
@@ -144,11 +174,13 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [version, build]
     # Publish whatever built, so one broken OS does not hide the other two.
     # A platform that failed keeps its previous file and manifest.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.version.result == 'success' }}
     runs-on: ubuntu-24.04
+    env:
+      VRTTI_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/download-artifact@v4
         with:

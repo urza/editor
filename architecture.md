@@ -648,6 +648,22 @@ click, and a disagreement heals on the next report. No chord: Alt+Z is the
 convention, but a menu accelerator does not fire on Windows while the
 webview has focus (§15), and the key is not worth a second delivery path.
 
+**Edit menu** (user request, shipped 2026-10-25). The text transforms a
+desktop wants on a menu, in the shell only: Edit > Line (Move Line Up,
+Move Line Down, Duplicate Line, Delete Line, Join Lines), Edit > Convert
+Case (Upper, Lower, Title, Swap) and Edit > Sort Lines. On macOS the
+predefined Undo to Select All items stay above them. Each item's id is a
+page command (`edit.*`, `editor/transform.js`) and goes to the focused
+window the way the File chords do; the page runs it on the live view and
+focuses the editor. The line moves are CodeMirror's own commands given an
+id; join and sort and the case conversions are ours. A bare cursor converts
+the word it is in, as in Sublime, and Sort Lines without a selection sorts
+the whole note. The keys are in the editor's keymap alone (Sublime's Ctrl+K,
+Ctrl+U and Ctrl+K, Ctrl+L, Ctrl+J, and CodeMirror's Alt+Up and the rest),
+and the menu items carry no accelerator: a native accelerator fires with
+the focus anywhere, so Alt+Up in the search field would move a line of the
+note, and muda cannot show a two-stroke chord anyway.
+
 ### New buffer on a phone (user report, 2026-10-09, shipped)
 
 On a phone the sidebar "+" sits behind the drawer, so a new buffer was two
@@ -1942,12 +1958,21 @@ switch, quiet failures).
   present and otherwise builds as before without updater artifacts, so a
   missing secret degrades to today's release instead of a red build.
   Authenticode and notarization stay out; the first-launch warning stays.
-- **Version = `0.1.<run number>`**, set at build time by
-  `cargo tauri build --config '{"version": …}'`. A local build stays
-  `0.1.0`, so it never outranks an installed CI build. Every place that
-  shows a version reads `app.package_info().version`, the page's
-  `vrttiDesktop.version` included, so nothing says `CARGO_PKG_VERSION`
-  any more.
+- **Version = `YY.M.N`** (since 2026-10-25; before that `0.1.<run
+  number>`, which reached 0.1.15): the month of publication and the count
+  of builds published that month, from zero, so 26.10.0 is October 2026's
+  first build and 26.10.1 its second. The `version` job in desktop.yml
+  reads the count from the manifests already on the release and passes
+  the result to `cargo tauri build --config '{"version": …}'`. Semver
+  throughout, because the updater compares versions as semver and Cargo
+  wants three numbers without a leading zero (January is `27.1.N`). The
+  user sees the first build of a month without its `.0`, Ubuntu style:
+  Help > About, the update prompts and `vrttiDesktop.version` go through
+  `update::display_version`, which turns 26.10.0 into "26.10" and leaves
+  26.10.2 alone; the installers and package lists carry the full semver.
+  A local build stays `0.1.0`, so it never outranks an installed CI
+  build. Every place that shows a version reads
+  `app.package_info().version`, so nothing says `CARGO_PKG_VERSION`.
 - **One manifest per platform key on the release**:
   `latest-windows-x86_64.json`, `latest-linux-x86_64.json`,
   `latest-darwin-aarch64.json` and `latest-darwin-x86_64.json` (the

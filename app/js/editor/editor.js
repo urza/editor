@@ -36,6 +36,7 @@ import { run } from "../commands/registry.js";
 import { twemoji } from "./emoji.js";
 import { marks } from "./markdown.js";
 import { spellcheck } from "./spellcheck.js";
+import { joinLines, lowerCase, upperCase } from "./transform.js";
 import {
   extensionForLang,
   langCompartment,
@@ -244,6 +245,12 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       // into "move focus" would look like the old Tab bug coming back.
       { key: "Ctrl-m", run: cursorMatchingBracket, shift: selectMatchingBracket },
       { key: "Mod-k Mod-d", run: formatDocument },
+      // Sublime's case chords and its Ctrl+J. The desktop shell's Edit menu
+      // reaches the same commands by id (editor/transform.js); the keys
+      // live here alone, where they act only while the editor has focus.
+      { key: "Mod-k Mod-u", run: upperCase },
+      { key: "Mod-k Mod-l", run: lowerCase },
+      { key: "Mod-j", run: joinLines },
       ...defaultKeymap.filter((binding) => binding.run !== toggleTabFocusMode),
       ...historyKeymap,
       ...searchKeymap,
