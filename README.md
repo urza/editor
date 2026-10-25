@@ -65,6 +65,16 @@ note turns into JSON. The color scheme follows Sublime's Mariana.
 
 ![A C# snippet with syntax colors](docs/screenshots/syntax.png)
 
+### Multiple cursors
+
+The Sublime keys work in the editor. Ctrl+D selects the next occurrence of
+the word, Alt+F3 selects all of them, Ctrl+Shift+L gives a selection one
+cursor per line, and Ctrl+Alt+Up or Down adds a cursor on the next line.
+Ctrl+click adds a cursor where you click. A drag with the middle button, or
+with Alt held, selects a column. Escape goes back to one cursor. On a Mac
+the keys are Sublime's Mac keys: Cmd+D, Ctrl+Cmd+G, Cmd+Shift+L,
+Ctrl+Shift+Up and Down, and Cmd+click.
+
 ### Spellcheck in English and Czech
 
 English runs on [Harper](https://github.com/Automattic/harper), Czech on

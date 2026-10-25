@@ -664,6 +664,37 @@ and the menu items carry no accelerator: a native accelerator fires with
 the focus anywhere, so Alt+Up in the search field would move a line of the
 note, and muda cannot show a two-stroke chord anyway.
 
+**Multiple cursors** (user request, shipped 2026-10-25). Sublime's set, in
+the editor alone. Ctrl+D adds the next occurrence of the selection (a bare
+cursor takes its word first), Alt+F3 selects every occurrence, Ctrl+Shift+L
+splits a selection into one per line, Ctrl+Alt+Up and Ctrl+Alt+Down add a
+caret on the line above or below, Escape goes back to one, Ctrl+U undoes a
+selection step. On a Mac the keys are Sublime's Mac keys (Ctrl+Cmd+G,
+Cmd+Shift+L, Ctrl+Shift+Up and Down). Ctrl+click (Cmd on a Mac) adds a
+caret and Ctrl+drag adds a range; a column is a drag with the middle button
+(Sublime on Windows and Linux) or with Alt held (Sublime on a Mac, and
+CodeMirror's own default), and Alt turns the pointer into a crosshair.
+`editor/cursors.js` turns the `allowMultipleSelections` facet on and holds
+the column filter and the two commands CodeMirror lacks: select all
+occurrences (whole words from a bare cursor, the main range's text when
+there are several) and split into lines (a selection that ends at the
+start of a line leaves that line out, as the line commands do). The keys
+sit in editor.js with the other chords. The rest was already there, held
+back by the one facet: the view's mouse handler adds a range on Ctrl+click
+once it is on, `drawSelection()` paints every caret, Escape's
+`simplifySelection` and Ctrl+U's `undoSelection` are in CodeMirror's
+keymaps, and the Edit menu's transforms run per range (`changeByRange`).
+CodeMirror's Ctrl+Shift+L (select all matches) is filtered out of the
+search keymap: Sublime gives the key to the split, and a one-line
+selection, which the split leaves alone, would otherwise fall through to
+it. Ctrl+K, Ctrl+D stays the reindent and does not become Sublime's "skip
+this occurrence". Shift+right drag, Sublime's third column gesture, is out:
+the right button opens the context menu on its way down. Two checks wait on
+a real device: on Linux the webview may paste the primary selection on a
+middle-button release, and on Windows a bare Alt moves focus to the shell's
+menu bar, which the click during the hold should cancel. If the middle
+button pastes, it leaves the filter and Alt+drag stays.
+
 ### New buffer on a phone (user report, 2026-10-09, shipped)
 
 On a phone the sidebar "+" sits behind the drawer, so a new buffer was two

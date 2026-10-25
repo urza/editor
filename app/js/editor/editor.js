@@ -11,6 +11,8 @@ import {
   lineNumbers,
 } from "@codemirror/view";
 import {
+  addCursorAbove,
+  addCursorBelow,
   cursorMatchingBracket,
   defaultKeymap,
   history,
@@ -21,7 +23,7 @@ import {
   selectMatchingBracket,
   toggleTabFocusMode,
 } from "@codemirror/commands";
-import { searchKeymap } from "@codemirror/search";
+import { searchKeymap, selectSelectionMatches } from "@codemirror/search";
 import {
   HighlightStyle,
   bracketMatching,
@@ -33,6 +35,7 @@ import {
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { run } from "../commands/registry.js";
+import { multipleCursors, selectAllOccurrences, splitSelectionIntoLines } from "./cursors.js";
 import { twemoji } from "./emoji.js";
 import { marks } from "./markdown.js";
 import { spellcheck } from "./spellcheck.js";
@@ -226,6 +229,10 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
     // default is false, so the current line body carries no background.
     history(),
     drawSelection(),
+    // Several carets at once, Sublime's way: Ctrl+click adds one, a middle
+    // or Alt drag selects a column (editor/cursors.js). drawSelection() above
+    // is what paints them; the native selection can show only one.
+    multipleCursors(),
     indentOnInput(),
     bracketMatching(),
     wrapCompartment.of(wrapExtension()),
@@ -251,9 +258,21 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       { key: "Mod-k Mod-u", run: upperCase },
       { key: "Mod-k Mod-l", run: lowerCase },
       { key: "Mod-j", run: joinLines },
+      // Sublime's cursor keys (editor/cursors.js). Ctrl+D (add the next
+      // occurrence) and Escape (back to one) come with the CodeMirror
+      // keymaps below. Ctrl+K, Ctrl+D is the reindent above, not Sublime's
+      // "skip this occurrence". The Mac keys are Sublime's Mac keys.
+      { key: "Alt-F3", mac: "Ctrl-Cmd-g", run: selectAllOccurrences },
+      { key: "Mod-Shift-l", run: splitSelectionIntoLines },
+      { key: "Ctrl-Alt-ArrowUp", mac: "Ctrl-Shift-ArrowUp", run: addCursorAbove },
+      { key: "Ctrl-Alt-ArrowDown", mac: "Ctrl-Shift-ArrowDown", run: addCursorBelow },
       ...defaultKeymap.filter((binding) => binding.run !== toggleTabFocusMode),
       ...historyKeymap,
-      ...searchKeymap,
+      // CodeMirror puts "select all matches" on Ctrl+Shift+L. Sublime gives
+      // that key to the split above and has Alt+F3 for the matches, so the
+      // CodeMirror binding goes, or a selection on one line (which the split
+      // leaves alone) would fall through to it and select every match.
+      ...searchKeymap.filter((binding) => binding.run !== selectSelectionMatches),
     ]),
     // A bare Escape arms CodeMirror's tab-focus mode: a Tab in the next two
     // seconds moves focus out of the editor. The user does not want that
