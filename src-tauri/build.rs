@@ -10,6 +10,7 @@ fn main() {
             "focus_workspace",
             "close_workspace",
             "page_ready",
+            "set_word_wrap",
             "disk_pick_folder",
             "disk_pick_file",
             "disk_pick_save",

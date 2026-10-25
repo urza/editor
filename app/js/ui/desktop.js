@@ -26,8 +26,9 @@ const SHIFT_CHORDS = {
 };
 
 /**
- * The shell's IPC. Only two commands exist for the page
- * (src-tauri/capabilities/default.json), both about windows (§14.4).
+ * The shell's IPC. src-tauri/capabilities/default.json lists what the page
+ * may call: the window commands (§14.4), the disk backend (§17) and the word
+ * wrap mark (reportWordWrap below).
  * @param {string} command @param {object} args
  */
 function invoke(command, args) {
@@ -75,6 +76,20 @@ export function setWindowTitle(text) {
   if (!current) return;
   Promise.resolve(current.setTitle(text)).catch((err) =>
     console.log("[vrtti desktop] title failed", err)
+  );
+}
+
+/**
+ * The shell's View menu shows word wrap as a check mark. The page owns the
+ * setting (ui/wordwrap.js) and reports it here at boot and after every
+ * change, so the mark follows the page and never guesses
+ * (capability: allow-set-word-wrap).
+ * @param {boolean} on
+ */
+export function reportWordWrap(on) {
+  if (!isDesktop) return;
+  invoke("set_word_wrap", { on }).catch((err) =>
+    console.log("[vrtti desktop] word wrap mark failed", err)
   );
 }
 

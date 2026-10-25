@@ -2,7 +2,7 @@
 // highlight style. We assemble the extensions by hand instead of using
 // `basicSetup` so the defaults can match Sublime Text 4 exactly.
 
-import { EditorState, Prec } from "@codemirror/state";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
 import {
   EditorView,
   drawSelection,
@@ -201,6 +201,17 @@ const formatDocument = (view) => {
 };
 
 /**
+ * Word wrap, one value for the window. ui/wordwrap.js owns the setting and
+ * applies it through the controller's setWordWrap below. A module flag and
+ * not a parameter, because a state built later (a parked buffer on its first
+ * activation) must take the current value without every caller threading it
+ * through. Like langCompartment, one Compartment for the whole app is right.
+ */
+let wordWrap = true;
+const wrapCompartment = new Compartment();
+const wrapExtension = () => (wordWrap ? EditorView.lineWrapping : []);
+
+/**
  * @param {string} lang Language id for the whole document (editor/lang.js).
  * @param {(content: string) => void} [onDocChanged]
  * @param {(content: string) => void} [onDominantPaste] Called after a paste
@@ -216,7 +227,7 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
     drawSelection(),
     indentOnInput(),
     bracketMatching(),
-    EditorView.lineWrapping,
+    wrapCompartment.of(wrapExtension()),
     // Sublime indents with a real tab (translate_tabs_to_spaces is false).
     // CodeMirror's default unit is two spaces, which would make Tab on a
     // selection indent by spaces while Tab at a caret inserts "\t".
@@ -349,7 +360,8 @@ export function createLockedState(text = LOCKED_TEXT) {
  * store is updateContent, the editor's legitimate output.
  *
  * @returns {{view: EditorView, states: Map<string, EditorState>,
- *            reveal: (id: string, at: {line: number, col: number, len: number}) => void}}
+ *            reveal: (id: string, at: {line: number, col: number, len: number}) => void,
+ *            setWordWrap: (on: boolean) => void}}
  */
 export function mountEditor(host, store) {
   const view = new EditorView({ parent: host });
@@ -693,5 +705,23 @@ export function mountEditor(host, store) {
     }
   });
 
-  return { view, states, reveal };
+  /**
+   * Word wrap on or off: the document on screen and every parked state, so a
+   * buffer switched to later does not come back with the old setting. The
+   * active id's parked copy is stale (the view holds the live state and parks
+   * it on the next switch), so it is skipped, as in the lang handler above.
+   * @param {boolean} on
+   */
+  function setWordWrap(on) {
+    wordWrap = on;
+    const effects = wrapCompartment.reconfigure(wrapExtension());
+    // Harmless on a locked placeholder: a state without the compartment
+    // ignores the effect.
+    view.dispatch({ effects });
+    for (const [id, state] of states) {
+      if (id !== store.activeId) states.set(id, state.update({ effects }).state);
+    }
+  }
+
+  return { view, states, reveal, setWordWrap };
 }

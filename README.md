@@ -173,7 +173,9 @@ all options.
 The Alt keys also work in the desktop app. On a Mac, Cmd takes the place of
 Ctrl. In the desktop app, Ctrl+S writes a file note to disk at once, and asks
 where to save a scratch note. Ctrl+wheel over a note zooms that note alone,
-on top of the editor text size in Settings, until you close it.
+on top of the editor text size in Settings, until you close it. **View › Word
+Wrap** in the desktop app's menu turns the folding of long lines off and on;
+off, the note scrolls sideways. The choice is kept per device.
 
 ## How it is built
 

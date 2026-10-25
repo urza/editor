@@ -632,6 +632,22 @@ The status bar shows the percent while it is not 100, and a click resets it.
 The wheel listener is not passive, because preventDefault is what stops the
 page zoom, and it ignores a wheel over the settings overlay inside the host.
 
+**Word wrap** (user request, shipped 2026-10-25). View > Word Wrap in the
+desktop shell, a check item, on by default. The page has no control for it:
+the switch is for a wide screen, and a phone keeps wrap. `ui/wordwrap.js`
+owns the device-local key (`vrtti.wordWrap`) and the command `view.wordWrap`,
+which takes the new state as its argument and toggles without one. The
+editor keeps `EditorView.lineWrapping` in a compartment; the controller's
+`setWordWrap` reconfigures the live state and every parked one, so a buffer
+switched to later comes up right and the undo history survives, as on a
+language change. The shell never owns the setting. A click flips the mark
+(muda does that before the event) and sends the mark's state to every window
+as the command; each page reports its value back through `set_word_wrap`,
+which sets the mark. So the mark follows the page at boot and after each
+click, and a disagreement heals on the next report. No chord: Alt+Z is the
+convention, but a menu accelerator does not fire on Windows while the
+webview has focus (§15), and the key is not worth a second delivery path.
+
 ### New buffer on a phone (user report, 2026-10-09, shipped)
 
 On a phone the sidebar "+" sits behind the drawer, so a new buffer was two

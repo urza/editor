@@ -54,6 +54,7 @@ import { mountResizer } from "./ui/resizer.js";
 import { mountShell } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
 import { mountZoom } from "./ui/zoom.js";
+import { mountWordWrap } from "./ui/wordwrap.js";
 import { mountNewButton } from "./ui/newbutton.js";
 import { showHistory } from "./ui/history.js";
 
@@ -973,6 +974,9 @@ async function start() {
   // Kept, unlike before: search in files reveals a hit through this controller
   // (architecture.md §16).
   const editor = mountEditor(host, store);
+  // View > Word Wrap in the desktop shell. Applied from this device's stored
+  // value now, before the first buffer goes up.
+  mountWordWrap(editor);
   // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
   // variable, and nothing from the editor controller.
   const zoom = mountZoom(host, store);

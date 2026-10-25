@@ -18,7 +18,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::Value;
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{
+    CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+};
 use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, DragDropEvent, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -48,6 +50,21 @@ const CHORDS: [(&str, &str, &str); 5] = [
 /// cannot do for a window it did not open. Goes through CloseRequested, so
 /// the workspace dissolves like on any other close.
 const CLOSE_WINDOW: &str = "shell.closeWindow";
+
+/// View > Word Wrap, a check item. The page owns the setting
+/// (app/js/ui/wordwrap.js, localStorage); the shell only shows it. A click
+/// sends the item's new state to every window as this command, and each page
+/// reports its value back through `set_word_wrap`, which sets the mark. So
+/// the mark follows the pages, at boot and after every click, and a
+/// disagreement heals on the next report instead of sticking.
+const WORD_WRAP: &str = "view.wordWrap";
+
+/// The check items the page reports into. Managed state, because the menu
+/// handler and `set_word_wrap` both need the handle, and `Menu::get` looks
+/// one level deep only.
+struct ViewMenu<R: Runtime> {
+    word_wrap: CheckMenuItem<R>,
+}
 
 /// The ready handshake (desktop-wrapper-goose-patterns.md §1). A command for
 /// a window whose page has no listener yet waits here; the page calls
@@ -108,6 +125,7 @@ pub fn run() {
             focus_workspace,
             close_workspace,
             page_ready,
+            set_word_wrap,
             disk::disk_pick_folder,
             disk::disk_pick_file,
             disk::disk_pick_save,
@@ -126,6 +144,8 @@ pub fn run() {
                 if let Some(window) = debug::target_window(app) {
                     deliver(app, window.label(), id, None);
                 }
+            } else if id == WORD_WRAP {
+                word_wrap_clicked(app);
             } else if id == CLOSE_WINDOW {
                 // Only a window that really has focus, never a guessed one
                 // (goose patterns §2): a guess could close main at launch.
@@ -561,6 +581,33 @@ async fn focus_workspace<R: Runtime>(app: AppHandle<R>, id: String) -> Result<()
     }
 }
 
+/// View > Word Wrap clicked. muda flips the mark before it sends the event,
+/// on every platform, so the item already holds the new state. Every window
+/// gets it, not only the focused one: the setting is per device, and a
+/// window whose page is not ready yet takes it from its queue.
+fn word_wrap_clicked<R: Runtime>(app: &AppHandle<R>) {
+    let on = match app.state::<ViewMenu<R>>().word_wrap.is_checked() {
+        Ok(on) => on,
+        Err(err) => {
+            eprintln!("[vrtti] word wrap state unreadable: {err}");
+            return;
+        }
+    };
+    for label in app.webview_windows().keys() {
+        deliver(app, label, WORD_WRAP, Some(Value::Bool(on)));
+    }
+}
+
+/// The page's word wrap setting, for the mark on View > Word Wrap. The page
+/// sends it at boot and after every change (app/js/ui/desktop.js).
+#[tauri::command]
+fn set_word_wrap<R: Runtime>(app: AppHandle<R>, on: bool) -> Result<(), String> {
+    app.state::<ViewMenu<R>>()
+        .word_wrap
+        .set_checked(on)
+        .map_err(|err| err.to_string())
+}
+
 fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let mut file = SubmenuBuilder::new(app, "File");
     for (id, label, accelerator) in CHORDS {
@@ -613,6 +660,15 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             .build()?;
         menu = menu.item(&edit);
     }
+    // View: the editor switches a desktop wants on a menu. `checked(true)` is
+    // the page's default, so the mark is right before the page reports; a
+    // device that turned wrap off sees it flip within the first second.
+    let word_wrap = CheckMenuItemBuilder::with_id(WORD_WRAP, "Word Wrap")
+        .checked(true)
+        .build(app)?;
+    let view = SubmenuBuilder::new(app, "View").item(&word_wrap).build()?;
+    app.manage(ViewMenu { word_wrap });
+    menu = menu.item(&view);
     // Spike tooling (src/debug.rs). Stays until the shell is past the spike.
     menu = menu.item(&debug::submenu(app)?);
     // Help: Check for updates…, About vrtti (src/update.rs).
