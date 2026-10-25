@@ -15,6 +15,7 @@ import {
   addCursorBelow,
   cursorMatchingBracket,
   defaultKeymap,
+  deleteLine,
   history,
   historyKeymap,
   indentLess,
@@ -258,6 +259,12 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       { key: "Mod-k Mod-u", run: upperCase },
       { key: "Mod-k Mod-l", run: lowerCase },
       { key: "Mod-j", run: joinLines },
+      // Ctrl+L deletes the line, next to CodeMirror's Ctrl+Shift+K: the
+      // user's hand knows it from Visual Studio (2026-10-25). Windows and
+      // Linux only; on a Mac CodeMirror has Ctrl+L for "select line", and
+      // the habit is a Windows one. A browser tab keeps the key for its
+      // address bar; the desktop app and the installed PWA let it through.
+      { win: "Ctrl-l", linux: "Ctrl-l", run: deleteLine },
       // Sublime's cursor keys (editor/cursors.js). Ctrl+D (add the next
       // occurrence) and Escape (back to one) come with the CodeMirror
       // keymaps below. Ctrl+K, Ctrl+D is the reindent above, not Sublime's

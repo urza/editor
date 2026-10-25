@@ -662,7 +662,9 @@ the whole note. The keys are in the editor's keymap alone (Sublime's Ctrl+K,
 Ctrl+U and Ctrl+K, Ctrl+L, Ctrl+J, and CodeMirror's Alt+Up and the rest),
 and the menu items carry no accelerator: a native accelerator fires with
 the focus anywhere, so Alt+Up in the search field would move a line of the
-note, and muda cannot show a two-stroke chord anyway.
+note, and muda cannot show a two-stroke chord anyway. Ctrl+L also
+deletes the line, on Windows and Linux (user habit from Visual Studio,
+2026-10-25); Ctrl+Shift+K, CodeMirror's and Sublime's key, stays.
 
 **Multiple cursors** (user request, shipped 2026-10-25). Sublime's set, in
 the editor alone. Ctrl+D adds the next occurrence of the selection (a bare
