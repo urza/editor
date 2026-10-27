@@ -4,7 +4,11 @@
 # dotnet's `-a` flag. An arm64 image therefore needs no QEMU emulation of the whole
 # SDK, which turns a ten-minute build into a one-minute one. The runtime stage below
 # stays unpinned, so buildx pulls the aspnet image for the target architecture.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+#
+# Both images pin the exact patch, not the floating 10.0 tag. A cached 10.0 layer can
+# be older than 10.0.14, the first release with the fix for CVE-2026-111497 (Brotli
+# decoder out-of-bounds write). Do not go below these versions.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403 AS build
 ARG TARGETARCH
 WORKDIR /src
 
@@ -22,7 +26,7 @@ RUN dotnet publish Vrtti.Server/Vrtti.Server.csproj -c Release -o /app --no-rest
 # An empty directory, carried into the runtime stage as /data. See the note there.
 RUN mkdir /data-empty
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.14
 WORKDIR /app
 COPY --from=build /app .
 
