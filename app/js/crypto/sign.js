@@ -43,22 +43,38 @@ export function verify(signature, message, publicKey) {
 }
 
 /**
- * Eight hex characters of SHA-256 of the public key: what the user compares
- * between two screens. Short on purpose; a person checks eight characters
- * and skips sixty-four.
- * @param {string} publicKey Hex.
+ * The hash both short strings below come from. It covers the signing key AND
+ * the age recipient (architecture.md §26): the user's comparison is the one
+ * thing that binds a device's two keys together for a device nobody has
+ * signed yet. A hash of the signing key alone let the server keep the key,
+ * swap the recipient, and still show the code the user expects.
+ * The strings are hashed as they stand in the record, never decoded: a
+ * malformed key from the server must give a wrong code, not a throw.
+ * @param {string} signKey Hex. @param {string} recipient `age1...`
  */
-export function fingerprint(publicKey) {
-  return bytesToHex(sha256(hexToBytes(publicKey))).slice(0, 8).toUpperCase();
+function identityHash(signKey, recipient) {
+  return sha256(encoder.encode(["vrtti-identity", signKey, recipient].join("\n")));
+}
+
+/**
+ * Sixteen hex characters in groups of four: what the user compares between
+ * two screens. Sixteen, because the server sees both keys and can try keys
+ * until a short value repeats; eight characters fell to that in days
+ * (architecture.md §26).
+ * @param {string} signKey Hex. @param {string} recipient `age1...`
+ */
+export function fingerprint(signKey, recipient) {
+  const hex = bytesToHex(identityHash(signKey, recipient)).slice(0, 16).toUpperCase();
+  return /** @type {string[]} */ (hex.match(/.{4}/g)).join(" ");
 }
 
 /**
  * Six digits typed on the approving device, from the same hash as the
  * fingerprint but from its other end, so the two never look alike.
- * @param {string} publicKey Hex.
+ * @param {string} signKey Hex. @param {string} recipient `age1...`
  */
-export function pairingCode(publicKey) {
-  const hash = sha256(hexToBytes(publicKey));
+export function pairingCode(signKey, recipient) {
+  const hash = identityHash(signKey, recipient);
   const n = ((hash[28] << 24) | (hash[29] << 16) | (hash[30] << 8) | hash[31]) >>> 0;
   const digits = String(n % 1000000).padStart(6, "0");
   return digits.slice(0, 3) + " " + digits.slice(3);

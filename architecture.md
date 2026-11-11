@@ -983,6 +983,15 @@ Open: none.
   and the round continues; the first error is rethrown at the end for the
   status. A wrong token or no network stops the round at once, since
   every record would fail alike.
+- The device list is claims, and trust needs a pin or a signature
+  (2026-11-11, §26): a review found that §21 trusted a root by its device
+  id alone, so the server, or anyone with the token, could put its own
+  recipient under this device's id or a confirmed device's id and every
+  "all devices" note was re-wrapped to it. Trust is now per entry; this
+  device's own entry comes from its stored keys; a confirmed device is
+  pinned with both keys; the merge is a union of whole entries; the
+  pairing code and the fingerprint cover the recipient too, and the
+  fingerprint is sixteen characters.
 
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)
@@ -2238,6 +2247,12 @@ same as a readable one; the difference shows only when the row is opened.
 
 ## 21. Signed keyring: who may be a reader (agreed 2026-09-24)
 
+§26 (2026-11-11) changes four things here: trust is per entry and not per
+device id, a confirmed device is stored with its keys, the merge is a
+plain union, and the code and the fingerprint cover the recipient (the
+fingerprint has sixteen characters). Read this section for the flow and
+§26 for those rules.
+
 Today the keyring record is plaintext JSON merged by union, and the only
 gate in front of it is the server's bearer token. Anyone with the token, or
 anyone who controls the server, can append a device entry, and every
@@ -2884,3 +2899,123 @@ default; the old `sync.cursor` migrates to both cursors; a change with
 no `space` from an old server reads as `personal`; a second window
 shows the same From server list and loses the entry after the first
 window's click.
+
+## 26. Claims and pins: the device list after the review (2026-11-11)
+
+A review of the whole codebase (2026-11-11) reproduced a break of §21.
+The trust computation started from device ids: this device's id and the
+ids the user confirmed by hand. An entry under such an id was trusted
+with no signature check, and the merge let the server's copy lead for
+every field but `signKey`. So one written keyring revision was enough:
+replace the `recipient` on this device's own entry, or add a second
+entry under its id, or change the recipient of a confirmed device, and
+`recipientsFor("all-devices")` returned the attacker's recipient. §20's
+re-wrap then pushed every such note to it, with no question asked. The
+token is enough for this, which broke the one boundary §25 relies on for
+the dev VM (a token holder gets ciphertext only). A second way in:
+`applyRemote` took any row with `meta.kind` "keyring" for the keyring
+and merged it against the record of that row's own id, so a row under a
+new id replaced the device list whole.
+
+### Decisions
+
+- **The record is a list of claims.** It travels through the server, so
+  each entry is something somebody says. Two entries can carry one device
+  id. An entry is identified by everything an approval signs (`entryKey`:
+  id, name, recipient, signKey, addedAt), never by its id alone, and the
+  approve and confirm commands take that key.
+- **Trust is per entry** (`KeyRing.trust()`). The roots are keys this
+  device holds itself. Its own entry is built from `stored` and never
+  read from the record; rows in the record under its id are skipped
+  whatever they carry. A device the user confirmed is a root through its
+  pin. An entry joins when it matches a pin exactly or carries an
+  approval that verifies against the signing key of an entry already in.
+  `recipientsFor` walks the trusted entries, not the ids.
+- **Pins.** `confirm()` stores `pins[id] = { signKey, recipient }` in the
+  stored keyring. `trusted` stays as the list of ids, for a page from
+  before this section that still runs in another window. Only an entry
+  whose approval of this device verifies can be confirmed. An entry of a
+  device that already has a trusted entry is never offered for
+  confirmation: a copy of a trusted device's signing key beside another
+  recipient would carry that device's name into the question. A second,
+  younger entry under a trusted device's id can still be approved by
+  code, which is how a device that set up encryption again comes back;
+  that question is titled "wants to join again" and says the device is
+  already trusted with other keys.
+- **The merge is a set union** of whole entries, the server's copy first
+  and the local additions after, approvals by `(by, sig)`. It never
+  builds an entry from two copies and never picks between two entries
+  under one id; that choice needs the pins and is made in `trust()`. A
+  union cannot ping-pong. One rule removes a row: an entry without a
+  `signKey` gives way to the same entry with one (a device from before
+  §21 that unlocked since). `selfUpdate()` is the same union with this
+  device's own content, so it only adds.
+- **Checked on the way in.** `readKeyringContent` returns what the merge
+  made of the parsed text: well-formed entries only, each claim once,
+  `recoveryApprovals` on an object with no prototype. A malformed row
+  drops out there and cannot throw in a pull.
+- **One way in.** A pulled row is the keyring only under the id
+  `keyring`. A row with `meta.kind` "keyring" under another id is
+  dropped.
+- **The short strings cover both keys.** The pairing code and the
+  fingerprint hash `vrtti-identity`, the signing key and the recipient.
+  Before, both hashed the signing key alone, so an entry with the right
+  signing key and a swapped recipient showed the code the user expected.
+  The fingerprint is sixteen hex characters in four groups; the server
+  sees both keys and could try keys until eight characters repeated. The
+  pairing code stays six digits, which a party that sees the entry can
+  still match by trying keys (about a million tries). Closing that needs
+  a secret that never reaches the server; later.
+- **Upgrade.** No server change, no IndexedDB version, the record format
+  is as it was, and old and new pages read each other's writes. At the
+  first start `migratePins()` pins each id in `trusted` from this
+  device's own copy of the record, before the first pull, and only when
+  that device's approval of this one verifies with the signing key being
+  pinned. The recipient beside it has no signature before this section
+  and is taken as found. A device that only ever approved others has
+  nothing to pin: its own signatures already cover the recipients.
+  Pairing between an old and a new page fails on the code until both run
+  the new one.
+- **The device says what it refuses.** `audit()` counts rows under this
+  device's id with other keys, devices that appear with more than one
+  pair of keys, and confirmed devices the migration could not pin. A
+  dialog ("Check your devices") shows the text once per finding, and
+  Settings › Security keeps a "Device check" row while it is true. The
+  dialog waits for any other dialog to close (the unlock prompt of a
+  start with an encrypted note on screen) and then opens by itself. A
+  device that set up encryption a second time leaves its old entry
+  behind and sees the first line; the text says so. Not built: a list of
+  notes that carry more recipients than the device trusts. Old notes
+  keep the stanzas of dead devices by design (§20 only adds), so that
+  list would raise false alarms.
+- **What this does not undo.** A recipient added before the fix is in
+  the ciphertext the server already holds. Nothing recalls it; a note
+  saved again is wrapped for the trusted set only.
+
+### 26.1 Keys, merge, commands (unit 1, built 2026-11-11)
+
+`crypto/sign.js` (`fingerprint`, `pairingCode` over both keys);
+`crypto/keyring.js` (`entryKey`, `trust`, `entry`, `pinsFromTrusted`,
+`migratePins`, `savePins`, `audit`, the union merge, `cleanDevice`);
+`model/docs.js` (`applyRemote`: the keyring by id only); `main.js`
+(migration at boot, commands by entry key, `reportAudit`);
+`ui/settings.js` (`describeAudit`, the Device check row, rows keyed by
+entry). `tests/keyring.test.mjs` holds the rules as plain Node tests
+(`node --test tests/*.test.mjs`), outside `app/` so they are not
+deployed: the three reproduced variants, the forged approval, the
+swapped joiner, the union and its dirty test, the migration, malformed
+records.
+
+### Gate
+
+Playwright with a per-context file route (old tree or new tree under one
+origin, so a device keeps its IndexedDB across the upgrade) and a
+stateful mock server that can write keyring rows itself: the join on the
+new page; the three hostile variants, the row under a foreign id and a
+malformed revision; a joiner whose recipient the server swapped; no
+growth of keyring revisions after it settles; the upgrade of a pair
+joined on the old page, with the same recipient sets, no re-wrap and no
+notice; one device on each version; the notice after an unlock prompt
+at start; the "join again" wording. 24 checks plus the 17 Node tests,
+all green on 2026-11-11. The harness lived in the session scratchpad
+under gate26/ and dies with the sandbox.

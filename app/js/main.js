@@ -33,6 +33,7 @@ import { register, run } from "./commands/registry.js";
 import { createSyncClient, isValidSpace } from "./sync/client.js";
 import * as age from "./crypto/age.js";
 import {
+  entryKey,
   KeyRing,
   keyringContentFor,
   mergeKeyringContent,
@@ -45,7 +46,7 @@ import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js
 import { detectLanguage, segments } from "./editor/textlang.js";
 import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
-import { mountSettings } from "./ui/settings.js";
+import { describeAudit, mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountTitle } from "./ui/title.js";
@@ -61,6 +62,9 @@ import { showHistory } from "./ui/history.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
 const UNLOCK_ATTEMPTS = 3;
+
+/** Settings row: the device list notice this device showed last (§26). */
+const AUDIT_SEEN_KEY = "keyring.auditSeen";
 
 /**
  * A first guess at the device name, so the user usually just presses Enter.
@@ -128,6 +132,13 @@ async function start() {
   // The record also changes when a pull merges another device into it, so the
   // peers follow the record itself and not the one command that writes it.
   store.events.addEventListener("system", refreshPeers);
+  // Once per device, here and not later: a device confirmed before §26 is
+  // stored as an id only, and its keys are pinned from this device's own
+  // copy of the record before the first pull of this session can change it
+  // (architecture.md §26). A no-op at every later start.
+  await keyring
+    .migratePins()
+    .catch((err) => console.log("[vrtti] pinning the confirmed devices failed", err));
 
   /**
    * Write a new keyring content into the hidden record (architecture.md
@@ -179,14 +190,20 @@ async function start() {
     if (document.querySelector("dialog[open]")) return;
     offering = true;
     try {
-      const approver = keyring.pendingApprovers().find((d) => !dismissedApprovers.has(d.id));
+      // By entry, not by device id: a second entry under the same id is a
+      // different question, and a "no" to one must not silence the other.
+      const approver = keyring
+        .pendingApprovers()
+        .find((d) => !dismissedApprovers.has(entryKey(d)));
       if (approver) {
-        if (!(await run("crypto.confirm", approver.id))) dismissedApprovers.add(approver.id);
+        const key = entryKey(approver);
+        if (!(await run("crypto.confirm", key))) dismissedApprovers.add(key);
         return;
       }
-      const join = keyring.pendingJoins().find((d) => !dismissedJoins.has(d.id));
+      const join = keyring.pendingJoins().find((d) => !dismissedJoins.has(entryKey(d)));
       if (join) {
-        if (!(await run("crypto.approve", join.id))) dismissedJoins.add(join.id);
+        const key = entryKey(join);
+        if (!(await run("crypto.approve", key))) dismissedJoins.add(key);
       }
     } finally {
       offering = false;
@@ -198,6 +215,44 @@ async function start() {
     void ensureOwnEntry().then(offerApprovals);
   });
   window.addEventListener("focus", () => void offerApprovals());
+
+  /** The notice text this window showed or found stored already. */
+  let auditShown = "";
+
+  /**
+   * Tell the user, once, when the device list holds something this device
+   * refuses to believe (architecture.md §26): other keys under its own
+   * name, two sets of keys for one device, a confirmed device that could
+   * not be pinned. Once per finding, not per start: the text shown last is
+   * stored, and the same text is not shown again. Settings › Security keeps
+   * the line for as long as it is true. Same conditions as the questions
+   * above: the window has focus and no other dialog is open.
+   */
+  async function reportAudit() {
+    const text = describeAudit(keyring.audit());
+    if (!text || text === auditShown) return;
+    if ((await getSetting(AUDIT_SEEN_KEY)) === text) {
+      auditShown = text;
+      return;
+    }
+    // Tested after the read, in the same tick as the dialog below: an
+    // approval question may have opened while the read was out.
+    if (!document.hasFocus()) return;
+    const open = document.querySelector("dialog[open]");
+    if (open) {
+      // A start with an encrypted note on screen opens the unlock prompt
+      // first, and nothing else would call this again once it is answered.
+      open.addEventListener("close", () => void reportAudit(), { once: true });
+      return;
+    }
+    auditShown = text;
+    // Not awaited, so nothing can open between the test and the dialog. A
+    // second window that gets focus while this one shows it reads the row.
+    void putSetting(AUDIT_SEEN_KEY, text);
+    await showNote({ title: "Check your devices", text });
+  }
+  store.events.addEventListener("system", () => void reportAudit());
+  window.addEventListener("focus", () => void reportAudit());
 
   // Built on every platform: without a disk backend no directory handle can be
   // stored, so the store loads nothing and the sidebar draws no section. Only
@@ -459,8 +514,10 @@ async function start() {
           // Union, never replace: the pulled list already names the other
           // devices, and dropping them would leave them out of every future
           // "all my devices" recipient set (architecture.md §13.3).
+          // The pulled list leads and this device's entry goes last, the
+          // order every later merge keeps.
           content: JSON.stringify(
-            mergeKeyringContent(existing, keyringContentFor(keyring))
+            mergeKeyringContent(keyringContentFor(keyring), existing)
           ),
           updatedAt: now,
         };
@@ -537,22 +594,32 @@ async function start() {
   register({
     id: "crypto.approve",
     title: "Approve a device",
-    run: async (id) => {
+    // The argument is an entryKey (crypto/keyring.js), not a device id: two
+    // entries can carry one id, and the user approves exactly one of them.
+    run: async (key) => {
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
-      const device = keyring.content?.devices.find((d) => d.id === id);
+      const device = keyring.entry(key);
       if (!device) return false;
+      // A second entry under the id of a device this one already trusts
+      // (architecture.md §26). The honest case is a device that set up
+      // encryption again; the other case is the server using a trusted
+      // name, so the question must not read like a first join.
+      const again = keyring.trustedIds().has(device.id);
       let message = "";
       for (let attempt = 0; attempt < 3; attempt++) {
         const code = await askText({
-          title: "“" + device.name + "” wants to join",
+          title: "“" + device.name + "” wants to join" + (again ? " again" : ""),
           label: "Pairing code",
           hint:
             (message ? message + " " : "") +
+            (again
+              ? "This device is already trusted, and this entry has other keys. Go on only if you set up encryption on that device a second time. "
+              : "") +
             "Type the six-digit pairing code from Settings › Security on that device. If it does not match, that device is not yours. Cancel.",
           placeholder: "000 000",
         });
         if (code === null) return false;
-        const next = keyring.approve(id, code);
+        const next = keyring.approve(key, code);
         if (next) {
           await writeKeyring(next);
           return true;
@@ -566,8 +633,8 @@ async function start() {
   register({
     id: "crypto.confirm",
     title: "Confirm an approving device",
-    run: async (id) => {
-      const device = keyring.content?.devices.find((d) => d.id === id);
+    run: async (key) => {
+      const device = keyring.entry(key);
       if (!device || !device.signKey) return false;
       const answer = await choose({
         title: "Approved by “" + device.name + "”",
@@ -576,8 +643,8 @@ async function start() {
             id: "yes",
             label: "Yes, that is my device",
             hint:
-              "Its fingerprint is " + keyring.fingerprint(device.signKey) +
-              ". Settings › Security on that device shows the same eight characters.",
+              "Its fingerprint is " + keyring.fingerprint(device) +
+              ". Settings › Security on that device shows the same sixteen characters.",
           },
           {
             id: "no",
@@ -587,8 +654,7 @@ async function start() {
         ],
       });
       if (answer !== "yes") return false;
-      await keyring.confirm(id);
-      return true;
+      return keyring.confirm(key);
     },
   });
 
@@ -1050,6 +1116,7 @@ async function start() {
   // After the store is up and listening to the keyring: an answer flips the
   // locked placeholders to text.
   keyring.askUnlock();
+  void reportAudit();
   // Last: its first run pulls, and a pull emits "replace" and "active" into UI
   // that has to be mounted already. One client per origin (architecture.md
   // §14.3, the lock ships with §14.2): the window that holds the lock runs

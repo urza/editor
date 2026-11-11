@@ -44,6 +44,53 @@ let store = null;
 let testResult = "";
 
 /**
+ * Names from the device list, for a sentence. They come from the server, so
+ * each is cut to a row's width before it reaches a dialog.
+ * @param {string[]} names
+ */
+function quoted(names) {
+  return names.map((name) => "“" + name.slice(0, 40) + "”").join(", ");
+}
+
+/**
+ * What this device found in the list of your devices and refuses to believe
+ * (architecture.md §26), as one text; "" when there is nothing. One function
+ * for the two places that say it: the notice main.js shows once, and the
+ * Security row that stays for as long as it is true.
+ * @param {{own: number, conflicts: string[], unpinned: string[]}} audit
+ *   KeyRing.audit().
+ */
+export function describeAudit(audit) {
+  /** @type {string[]} */
+  const parts = [];
+  if (audit.own > 0) {
+    parts.push(
+      "The list of your devices on the server holds other keys under this " +
+        "device's name. This device ignores them. If you set up encryption " +
+        "on this device a second time, that is the old entry."
+    );
+  }
+  if (audit.conflicts.length > 0) {
+    parts.push(
+      quoted(audit.conflicts) +
+        (audit.conflicts.length === 1 ? " is" : " are") +
+        " in the list with more than one set of keys. Only the keys you " +
+        "approved or confirmed count."
+    );
+  }
+  if (audit.unpinned.length > 0) {
+    parts.push(
+      "This device could not check " +
+        quoted(audit.unpinned) +
+        " again, and it encrypts no notes for " +
+        (audit.unpinned.length === 1 ? "that device" : "those devices") +
+        " now. Approve this device from there, then confirm here."
+    );
+  }
+  return parts.join(" ");
+}
+
+/**
  * The server's spaces as the last `/api/spaces` answer gave them (§25). The
  * Spaces list paints from this at once and asks again in the background,
  * because a list row's `rows()` is synchronous.
@@ -448,6 +495,15 @@ const SECTIONS = [
         value: () => keyring?.pairingCode + "   ·   fingerprint " + keyring?.fingerprint(),
       },
       {
+        type: "info",
+        key: "device-check",
+        label: "Device check",
+        hint: "What this device found in the list of your devices and does not trust.",
+        block: true,
+        visible: () => Boolean(keyring && describeAudit(keyring.audit())),
+        value: () => (keyring ? describeAudit(keyring.audit()) : ""),
+      },
+      {
         type: "list",
         key: "devices",
         label: "Devices",
@@ -456,10 +512,22 @@ const SECTIONS = [
           "all devices goes only to the trusted ones.",
         visible: () => Boolean(keyring?.isSetUp),
         rows: () =>
-          (keyring?.deviceRows() ?? []).map((row) => {
+          (keyring?.deviceRows() ?? []).map((row, index, rows) => {
             const when = new Date(row.addedAt).toLocaleDateString();
             const fp = row.fingerprint ? " · " + row.fingerprint : "";
-            const base = { key: "device-" + row.id, label: row.name + fp, value: "" };
+            // One device id can stand on two rows (architecture.md §26: the
+            // list holds claims, and a second one under a known id is shown,
+            // never merged away), so a later row adds its position.
+            const nth = rows.slice(0, index).filter((r) => r.id === row.id).length;
+            const base = {
+              key: "device-" + row.id + (nth ? "-" + nth : ""),
+              label: row.name + fp,
+              value: "",
+            };
+            // An untrusted row under the id of a device this one trusts.
+            const other = row.conflict ? "other keys under a trusted name · " : "";
+            // The commands take the row's own key, not the device id: with
+            // two rows for one id, the button must act on the row it sits on.
             switch (row.state) {
               case "this device":
                 return { ...base, value: "this device · since " + when };
@@ -468,9 +536,9 @@ const SECTIONS = [
               case "approved you":
                 return {
                   ...base,
-                  value: "approved this device · confirm it is yours",
+                  value: other + "approved this device · confirm it is yours",
                   button: "confirm",
-                  act: () => run("crypto.confirm", row.id),
+                  act: () => run("crypto.confirm", row.key),
                 };
               case "needs update":
                 return {
@@ -480,14 +548,15 @@ const SECTIONS = [
               case "not confirmed":
                 return {
                   ...base,
-                  value: "not yet trusted · approve this device from it, then confirm it here",
+                  value:
+                    other + "not yet trusted · approve this device from it, then confirm it here",
                 };
               default:
                 return {
                   ...base,
-                  value: "waiting for approval · type its pairing code",
+                  value: other + "waiting for approval · type its pairing code",
                   button: "approve",
-                  act: () => run("crypto.approve", row.id),
+                  act: () => run("crypto.approve", row.key),
                 };
             }
           }),

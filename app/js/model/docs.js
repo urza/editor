@@ -1844,7 +1844,13 @@ export function createDocStore({
    * The keyring record is the one record that merges instead of forking
    * (architecture.md §13.3): a fork would split the device list in two, and
    * each device would then encrypt to half of the devices.
-   * @param {BufferRecord | undefined} record @param {Change} change
+   *
+   * The merge only adds (§26): the server's copy is a list of claims, and
+   * which of them this device believes is the keyring's question, asked on
+   * the merged list. Nothing here may pick a winner between two entries.
+   * @param {BufferRecord | undefined} record  The local keyring record;
+   *   applyRemote only calls this for KEYRING_ID, so it is never another one.
+   * @param {Change} change
    */
   async function applyRemoteKeyring(record, change) {
     const remote = readKeyringContent({ content: change.content ?? "" });
@@ -1904,7 +1910,7 @@ export function createDocStore({
    * @param {string} id @param {BufferRecord | undefined} record @param {RecordMeta} meta
    */
   async function routeTarget(id, record, meta) {
-    if (id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring") return null;
+    if (id === KEYRING_ID) return null;
     const owner = workspaces.ownerOf(id);
     const target = owner ?? (record ? null : MAIN_WORKSPACE);
     if (!target || target === workspaces.id) return null;
@@ -1953,8 +1959,13 @@ export function createDocStore({
     // one door for pulls, 409s and routed changes alike.
     change.space ??= DEFAULT_SPACE;
     const space = change.space;
-    const isKeyring =
-      id === KEYRING_ID || meta.kind === "keyring" || record?.kind === "keyring";
+    // The keyring is the one record under the one fixed id, and no row is
+    // the keyring because it says so (architecture.md §26). A row with
+    // `meta.kind` "keyring" under another id used to reach applyRemoteKeyring
+    // with no local record beside it, so one such row replaced the whole
+    // device list. No device writes one; it is dropped, not opened as a note.
+    const isKeyring = id === KEYRING_ID;
+    if (!isKeyring && meta.kind === "keyring") return;
 
     // An unknown document outside an Open as tab space never becomes a
     // record (§25). Decided here, before routing: the stubs belong to the
