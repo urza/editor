@@ -11,11 +11,18 @@
 //    keyboard does not shrink, so the button would sit under the keys or, when
 //    the browser scrolls the page to the caret, float over the text.
 //
+// In phone mode (ui/shell.js) #new-fab is the thumb button: a tap shows the
+// round buttons (ui/thumb.js) instead of making a note. There it must not
+// hide: it is the only way to the note list and to settings, and a person in
+// the middle of typing would have no control left. So it stays, and this
+// file tells app.css how far to lift it to clear the keyboard.
+//
 // The sidebar setting is device-local in localStorage, like the text sizes
 // (ui/textsize.js): a phone and a PC want different answers, so it must not
 // sync.
 
 import { register, run } from "../commands/registry.js";
+import { onPhoneModeChange, phoneMode } from "./shell.js";
 
 const SIDEBAR_KEY = "vrtti.sidebarNewButton";
 
@@ -82,20 +89,44 @@ export function mountNewButton() {
     },
   });
 
-  // No sidebar.autoclose here, unlike the sidebar "+": the drawer's scrim
-  // covers this button whenever the drawer is open, so a tap on it means the
-  // drawer is already closed.
-  fab.addEventListener("click", () => run("buffer.new"));
+  // The one click handler of this button, on purpose: a second one elsewhere
+  // would make a note and show the round buttons on the same tap. The mode is
+  // read at the tap, so a phone turned on its side gets the right action.
+  // No sidebar.autoclose in the drawer case, unlike the sidebar "+": the
+  // drawer's scrim covers this button whenever the drawer is open, so a tap
+  // on it means the drawer is already closed.
+  fab.addEventListener("click", () => run(phoneMode() ? "thumb.toggle" : "buffer.new"));
 
   // The keyboard state is not an event anywhere, so the viewport resize is the
   // signal. visualViewport is absent in old engines: then the button never
   // hides, which only costs a button under the keyboard.
   const vv = window.visualViewport;
   if (vv) {
+    const host = /** @type {HTMLElement} */ (document.getElementById("editor-host"));
     const paint = () => {
-      fab.hidden = keyboardOpen();
+      const phone = phoneMode();
+      const keyboard = keyboardOpen();
+      fab.hidden = keyboard && !phone;
+
+      // How much of the editor pane the keyboard covers, for app.css to lift
+      // the thumb button by (--keyboard-inset). The pane's rectangle is in
+      // layout viewport coordinates, and offsetTop + height is the bottom
+      // edge of what is visible in those same coordinates. offsetTop counts:
+      // with the keyboard up, iOS pans the visual viewport inside the layout
+      // viewport to follow the caret, which is why "scroll" repaints too.
+      // Measured from the pane, not from the window: the button is placed
+      // against the pane, and the status bar under it is already cleared.
+      const covered = host.getBoundingClientRect().bottom - (vv.offsetTop + vv.height);
+      const inset = phone && keyboard ? Math.max(0, covered) : 0;
+      document.documentElement.style.setProperty("--keyboard-inset", inset + "px");
     };
     vv.addEventListener("resize", paint);
+    vv.addEventListener("scroll", paint);
+    // A turn of the phone resizes the viewport before the mode changes, so
+    // the paint above runs with the old mode. Without this one, a turn into
+    // phone mode with the keyboard up would leave the button hidden, and it
+    // is the only control that mode has.
+    onPhoneModeChange(paint);
     paint();
   }
 }

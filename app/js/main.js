@@ -58,6 +58,7 @@ import { mountTextSize } from "./ui/textsize.js";
 import { mountZoom } from "./ui/zoom.js";
 import { mountWordWrap } from "./ui/wordwrap.js";
 import { mountNewButton } from "./ui/newbutton.js";
+import { mountThumb } from "./ui/thumb.js";
 import { showHistory } from "./ui/history.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
@@ -1096,6 +1097,7 @@ async function start() {
   // mountShortcuts, which snapshots the chord table once.
   mountShell();
   mountNewButton();
+  mountThumb();
   mountSidebar(store, folders, sync);
   const statusbar = mountStatusbar(store, sync, zoom);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });

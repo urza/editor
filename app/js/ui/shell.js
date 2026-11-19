@@ -5,6 +5,12 @@
 //    sidebar is a drawer over the editor, with a scrim behind it. A 220px
 //    column on a 360px screen would leave no editor, so it must not push.
 //
+// Phone mode (the class `phone` on <html>, set by the inline script in
+// index.html) is the narrow layout drawn another way: the drawer fills the
+// screen as the note list, and the thumb button replaces both hamburgers
+// (ui/thumb.js). The state and every command below are the same, which is
+// why nothing in this file asks which of the two is on screen.
+//
 // The CSS defaults match the breakpoint default (open when wide, closed when
 // narrow) with no class present, so the first paint is already right and the
 // mount below never causes a flash.
@@ -13,6 +19,39 @@ import { register } from "../commands/registry.js";
 
 const NARROW = "(max-width: 700px)";
 const OPEN_KEY = "vrtti.sidebarOpen";
+
+/**
+ * Is the phone layout on? Read from the class each time, never kept: the
+ * class follows a media query (a phone turned on its side leaves the mode),
+ * and a copy would go stale with no event to correct it. app.css does the
+ * drawing from the same class, so ask this only where behaviour differs.
+ */
+export function phoneMode() {
+  return document.documentElement.classList.contains("phone");
+}
+
+/**
+ * Call `fn` when the phone layout comes or goes. For the few things CSS
+ * cannot redraw by itself; see the callers.
+ *
+ * An observer on the class, not a second copy of the media query and not the
+ * viewport's resize event: the inline script in index.html is the only thing
+ * that knows the rule, and a resize listener runs before that script has
+ * changed the class, so it would read the mode that is just ending (seen in
+ * the browser check, 2026-11-19). The class carries other words too
+ * (`rows-long`), hence the comparison.
+ *
+ * @param {(phone: boolean) => void} fn
+ */
+export function onPhoneModeChange(fn) {
+  let last = phoneMode();
+  new MutationObserver(() => {
+    const phone = phoneMode();
+    if (phone === last) return;
+    last = phone;
+    fn(phone);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+}
 
 export function mountShell() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));

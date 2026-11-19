@@ -1479,3 +1479,403 @@ img.twemoji {
 
 #status-save { color: var(--st-gutter-fg); }
 #status-build { color: var(--st-gutter-fg); }
+
+/* ==== Phone mode (architecture.md §9, "Phone mode") ========================
+
+   One block, and every rule that changes the app starts with `html.phone`.
+   The inline script in index.html sets that class on a narrow touch screen
+   outside the desktop shell, so a PC, a narrow window on a PC and the shell
+   never match anything below except the four "hidden by default" rules that
+   come first. Keep it that way: a rule here without the prefix changes the
+   desktop.
+
+   What the mode does: the drawer becomes a full-screen note list with rows a
+   thumb can hit, and the floating "+" becomes the thumb button, which opens
+   three round buttons (ui/thumb.js). Stacking, low to high: the settings
+   panel (10), the note list (20), the scrim of the round buttons (29), the
+   thumb button and the round buttons (30), a row menu (40). */
+
+/* Hidden by default: the parts only phone mode shows. Rows carry a preview
+   and a time everywhere (ui/sidebar.js makeRow), and the settings panel has a
+   phone-only row; outside phone mode none of it may take space. */
+.thumb-icon,
+#thumb-scrim,
+#thumb-menu,
+.buffer-preview,
+.buffer-time,
+.settings-row[data-key="list-rows"] {
+  display: none;
+}
+
+.thumb-icon {
+  /* A block with auto margins sits in the middle of its button, which
+     centres its content box by itself. */
+  margin: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The bullets of the list icon are zero-length strokes with round caps, so
+   the stroke width is their diameter: a little fatter than the lines. */
+.thumb-icon-dots { stroke-width: 2.25; }
+/* The teeth of the gear: short, thick and square-ended. */
+.thumb-icon-teeth { stroke-width: 2.4; stroke-linecap: butt; }
+
+html.phone .thumb-icon {
+  width: calc(22px * var(--thumb-scale));
+  height: calc(22px * var(--thumb-scale));
+}
+
+html.phone {
+  /* The chrome follows --ui-scale, which goes down to 0.7. A touch target
+     must not: 44px is the floor (the user's rule), so everything a thumb
+     hits scales up with the text and never down. */
+  --thumb-scale: max(1, var(--ui-scale));
+  --tap: calc(44px * var(--thumb-scale));
+  --fab: calc(52px * var(--thumb-scale));
+  --fab-gap: 16px;
+  /* The strip at the bottom of the note list that holds the search button
+     and stays clear of rows, so no row ends up under the thumb button. */
+  --list-bar: calc(var(--fab) + 2 * var(--fab-gap));
+}
+
+/* ---- The note list: #sidebar, full screen ------------------------------ */
+
+/* The containing block of the list. The status bar is outside #app, so the
+   list covers the editor and leaves the status bar on screen. */
+html.phone #app { position: relative; }
+
+html.phone #sidebar {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  transform: none;
+  transition: none;
+  box-shadow: none;
+  padding-bottom: var(--list-bar);
+  /* Closed means gone, not moved off screen as the drawer is: the lists
+     redraw on every keystroke (ui/sidebar.js), and the browser would lay out
+     every row of a list nobody sees. The price is that a hidden list cannot
+     scroll its open note into view, so opening it does that (ui/thumb.js). */
+  display: none;
+}
+
+html.phone #app.sidebar-open #sidebar { display: flex; }
+
+/* The drawer's furniture. #app in the selector is there for its weight: the
+   drawer rule that shows the scrim counts two ids. */
+html.phone #app #sidebar-scrim,
+html.phone #sidebar-open,
+html.phone #sidebar-top,
+html.phone #sidebar-settings {
+  display: none;
+}
+
+/* The strip that held the floating hamburger. */
+html.phone #editor-host { padding-left: 0; }
+
+html.phone #sidebar-scroll { padding-top: 6px; }
+html.phone .sidebar-heading { margin: 12px 16px 6px; }
+html.phone .buffer-subheading { padding: 8px 16px 2px; }
+
+/* A row is two lines: marks, title and time on the first, the preview on
+   the second. Wrapping does it, so makeRow's flat markup stays as it is; the
+   preview is 100% wide and therefore always alone on its own line. A row
+   with no preview (From server, a locked note, an empty note) is one line,
+   centred in the same height. */
+html.phone .buffer-row {
+  /* For the ⋯, which leaves the flow below. */
+  position: relative;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 3px 8px;
+  min-height: calc(56px * var(--thumb-scale));
+  /* The right padding is the ⋯'s column. */
+  padding: 6px var(--tap) 6px 16px;
+  font-size: calc(15px * var(--ui-scale));
+  color: var(--st-sidebar-heading);
+}
+
+html.phone .buffer-preview {
+  display: block;
+  flex: 0 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+  /* Dimmer than the title, and no dimmer than this: 0.6 falls under the
+     4.5:1 contrast that small text needs on the list's background. */
+  opacity: 0.7;
+}
+
+/* Longer rows, a setting of the device (ui/sidebar.js): the time of the last
+   change beside the title, and two lines of preview. */
+/* No larger min-height: a row grows with its preview, and a note with no
+   preview keeps the short row instead of a tall empty one. */
+html.phone.rows-long .buffer-row {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+html.phone.rows-long .buffer-preview {
+  /* The one way to cut text after two lines that every phone browser has. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+html.phone.rows-long .buffer-time {
+  display: block;
+  flex: 0 0 auto;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+}
+
+/* The ⋯ is the only way to the row menu on a phone, so it is a full target:
+   44px wide and as high as the row. `li` and `>` are there for their weight:
+   the hover rule above, which hides the ⋯ of an idle row, must lose even on
+   a phone that claims to hover. height in %, not top and bottom: a button
+   does not stretch between two insets. */
+html.phone li.buffer-row > .buffer-more {
+  display: block;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--tap);
+  height: 100%;
+  font-size: calc(18px * var(--ui-scale));
+}
+
+/* The menu carries Close; see the (hover: none) rule above. */
+html.phone .buffer-close { display: none; }
+
+html.phone .tree-row { min-height: var(--tap); padding-left: 16px; }
+
+/* The two disclosures are buttons in all but name. */
+html.phone #recent-heading,
+html.phone #fromserver-heading {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  margin: 0;
+  padding: 0 16px;
+}
+
+/* 16px, or iOS zooms the whole page the moment the field takes focus and
+   leaves it zoomed. */
+html.phone .buffer-rename,
+html.phone #search-query {
+  height: var(--tap);
+  font-size: max(16px, var(--ui-base));
+}
+
+html.phone #search-case,
+html.phone #search-go {
+  height: var(--tap);
+  min-width: var(--tap);
+  font-size: var(--ui-sm);
+}
+
+html.phone .search-hit { min-height: var(--tap); align-items: center; }
+html.phone .search-form { margin: 0 16px 8px; }
+
+/* The disk buttons, where a phone browser has them at all. */
+html.phone #open-actions { margin: 0 16px 8px; }
+html.phone #open-actions button { height: var(--tap); font-size: var(--ui-sm); }
+
+/* ---- The bottom bar of the list ---------------------------------------- */
+
+/* No bar element: the search button leaves its row and sits at the bottom
+   left of the list, beside the thumb button, in the strip the list's padding
+   keeps free. Absolute against #sidebar, the nearest positioned ancestor; the
+   scroller between them neither clips nor scrolls it, because the scroller is
+   not its containing block. While the search view is open the row is hidden
+   (the `searching` rules above) and the view's own × takes the same place,
+   so "leave the search" is where "search" was.
+   --keyboard-inset keeps both above the on-screen keyboard, as it does the
+   thumb button (ui/newbutton.js): the search field is at the top, and its ×
+   must not end up under the keys.
+   #open-actions in the selector is there for its weight: the rule above for
+   every button of that row would win otherwise. */
+html.phone #open-actions #search-open,
+html.phone #search-close {
+  position: absolute;
+  left: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + (var(--fab) - var(--tap)) / 2 + var(--keyboard-inset, 0px));
+  /* A width, not a right inset: a button does not stretch between insets. */
+  width: calc(100% - var(--fab) - 3 * var(--fab-gap));
+  height: var(--tap);
+  margin: 0;
+  padding: 0 16px;
+  border-radius: calc(var(--tap) / 2);
+  background: var(--st-ui-bg);
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-base);
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+html.phone #open-actions #search-open {
+  flex: none;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+html.phone #open-actions #search-open .action-icon {
+  width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+}
+
+html.phone #search-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: var(--ui-icon-lg);
+}
+
+/* The × alone would be a 44px-high bar with one small sign in it. */
+html.phone #search-close::after {
+  content: "close search";
+  font-size: var(--ui-base);
+}
+
+/* ---- The thumb button and its round buttons ----------------------------- */
+
+/* Above the note list now (30 over 20), where the drawer used to cover it:
+   it is the way out of the list. --keyboard-inset is the height of the
+   on-screen keyboard over the editor pane (ui/newbutton.js); the button
+   rides on top of the keys, because in phone mode it is the only way to the
+   list and to settings, and an iPhone has no key that closes the keyboard. */
+html.phone #new-fab {
+  z-index: 30;
+  right: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + var(--keyboard-inset, 0px));
+  width: var(--fab);
+  height: var(--fab);
+  /* Hides the "+", a bare text node, and nothing else: the icons are sized
+     in px. */
+  font-size: 0;
+}
+
+/* The sign: three lines closed, a cross while the round buttons are out.
+   ui/thumb.js owns aria-expanded. */
+html.phone #new-fab .fab-menu { display: block; }
+html.phone #new-fab[aria-expanded="true"] .fab-menu { display: none; }
+html.phone #new-fab[aria-expanded="true"] .fab-close { display: block; }
+
+html.phone #thumb-scrim:not([hidden]) {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* A point on the centre of the thumb button; the buttons hang off it. */
+html.phone #thumb-menu:not([hidden]) {
+  display: block;
+  position: absolute;
+  z-index: 30;
+  right: calc(var(--fab-gap) + var(--fab) / 2);
+  bottom: calc(var(--fab-gap) + var(--fab) / 2 + var(--keyboard-inset, 0px));
+  width: 0;
+  height: 0;
+}
+
+/* 48px buttons, centres 80px from the centre of the thumb button and 45
+   degrees apart. That leaves 13px between two neighbours; 44px buttons at
+   70px would leave under 10. Both numbers scale together, or the buttons
+   would grow into each other. */
+html.phone #thumb-menu button {
+  --size: calc(48px * var(--thumb-scale));
+  --reach: calc(80px * var(--thumb-scale));
+  position: absolute;
+  left: calc(var(--size) / -2);
+  top: calc(var(--size) / -2);
+  width: var(--size);
+  height: var(--size);
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* The quarter circle: New straight up, Settings straight left, and between
+   them the button that changes the screen (0.7071 is the cosine of 45°). */
+html.phone #thumb-new { transform: translate(0, calc(var(--reach) * -1)); }
+html.phone #thumb-list {
+  transform: translate(calc(var(--reach) * -0.7071), calc(var(--reach) * -0.7071));
+}
+html.phone #thumb-settings { transform: translate(calc(var(--reach) * -1), 0); }
+
+/* Not a scale, as #new-fab:active has: transform holds the button's place. */
+html.phone #thumb-menu button:active { background: var(--st-selection-border); }
+
+html.phone #thumb-menu button:focus-visible,
+html.phone #new-fab:focus-visible {
+  outline: 2px solid var(--st-caret);
+  outline-offset: 2px;
+}
+
+html.phone #thumb-menu .thumb-icon { display: block; }
+
+/* The middle button: the list on a note, the arrow back on the list. It
+   reads the state where ui/shell.js keeps it, the class on #app, so it can
+   never disagree with what is on screen. */
+html.phone #thumb-menu .thumb-icon-back,
+html.phone #app.sidebar-open #thumb-menu .thumb-icon-list { display: none; }
+html.phone #app.sidebar-open #thumb-menu .thumb-icon-back { display: block; }
+
+/* The settings panel is full screen on a phone and has its own ×. It sits
+   under the thumb button now (10 under 30), so the button has to step aside
+   by itself. On the `hidden` attribute, which is how ui/settings.js shows
+   and hides the panel. */
+html.phone #editor-host:has(#settings-panel:not([hidden])) :is(#new-fab, #thumb-menu, #thumb-scrim) {
+  display: none;
+}
+
+/* The buttons grow out of the thumb button. An animation, not a transition:
+   it runs when `hidden` goes, which a transition cannot see. `from` only, so
+   each button ends on its own transform above. */
+@keyframes thumb-out {
+  from { opacity: 0; transform: scale(0.6); }
+}
+
+@keyframes thumb-dim {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html.phone #thumb-menu button { animation: thumb-out 0.12s ease-out; }
+  html.phone #thumb-scrim { animation: thumb-dim 0.12s ease-out; }
+}
+
+/* ---- Menus and settings ------------------------------------------------- */
+
+/* Every row of the list opens the row menu, and its entries are 27px high
+   for a mouse. */
+html.phone .menu { font-size: var(--ui-base); }
+
+html.phone .menu-item {
+  align-items: center;
+  min-height: var(--tap);
+  padding: 6px 12px;
+  font-size: var(--ui-base);
+}
+
+/* The row-length setting only means something here, and the sidebar "+" it
+   replaces in this list is not on screen in phone mode. */
+html.phone .settings-row[data-key="list-rows"] { display: flex; }
+html.phone .settings-row[data-key="sidebar-new"] { display: none; }

@@ -433,7 +433,9 @@ hit or a chord opened further down.
   user scrolled it. The flag is on the "active" listener alone.
 - **Hidden sidebars keep their layout** (collapsed by width, the drawer by
   transform, §9 collapse), so the scroll lands while the sidebar is out of
-  sight and the row is there when it comes back.
+  sight and the row is there when it comes back. The one exception is the
+  closed note list of phone mode (below), which is `display: none`; there
+  the open itself reveals the row.
 
 ### Where a file is (2026-09-22, shipped)
 
@@ -762,6 +764,62 @@ and both are view-only: the bytes of the note never change.
   buggy. If a wrapped row on a phone turns out to hurt, the fix is to
   scroll the table rows sideways, not to render them.
 
+### Phone mode (2026-11-19, stage 1 shipped)
+
+The user holds a phone in one hand, and the thumb reaches neither the
+hamburger at the top left nor a 13px row in a 280px drawer. Phone mode
+puts every control at the bottom right and makes the list full screen.
+
+- **The mode is the class `phone` on `<html>`.** An inline script in the
+  head of `index.html` sets it when `window.vrttiDesktop` is absent and
+  `(max-width: 700px) and (pointer: coarse)` matches, and follows the
+  query. Nothing else writes it. Every rule of the layout in `app.css`
+  starts with `html.phone`, so a PC, a narrow window on a PC and the
+  desktop shell are untouched. There is no module and no event for the
+  mode: CSS draws it, and code that must behave differently reads the class
+  at the moment of use (`phoneMode()` in `ui/shell.js`). Two things CSS
+  cannot redraw watch the class for a change (`onPhoneModeChange`, same
+  file): `ui/thumb.js` renames the thumb button and puts the round buttons
+  away, and `ui/newbutton.js` places the button against the keyboard again.
+- **The note list is `#sidebar`.** The same element, the same rows, the
+  same commands: rename, the row menu, folders, search, Recent and From
+  server are not implemented twice. `#app` is its containing block, so it
+  covers the editor and leaves the status bar. Closed, it is `display:
+  none`, because the lists redraw on every keystroke and nobody sees them.
+- **A row is two lines.** `makeRow` adds a preview and a time to every row
+  in every layout; `app.css` shows them in phone mode only, so a turn of
+  the phone redraws nothing. The preview comes from `store.loadedText`,
+  which never reads a file and never decrypts: a locked note, an unread
+  file and a From server stub show the title alone. The store event
+  `lock` removes the previews at once. `model/preview.js` holds the two
+  pure functions, with Node tests.
+- **The thumb button is `#new-fab`.** In phone mode a tap runs
+  `thumb.toggle` instead of `buffer.new` (one click handler, in
+  `ui/newbutton.js`). `ui/thumb.js` shows three round buttons on a quarter
+  circle: New above, Settings at the left, and between them the button
+  that changes between the note and the list. That one reads the class
+  `sidebar-open` on `#app`, as its icon in CSS does.
+- **The thumb button stays above the keyboard** (user decision,
+  2026-11-19). Outside phone mode the round "+" hides while the keyboard is
+  up. Here it is the only way to the list, so `ui/newbutton.js` measures
+  how much of the editor pane the visual viewport hides and hands it to
+  CSS as `--keyboard-inset`. A tap takes the focus off the text, which
+  closes the keyboard.
+- **The bottom bar has no element.** CSS moves `#search-open` to the
+  bottom left of the list, next to the thumb button, and `#search-close`
+  to the same place while the search view is open.
+- **Sizes.** Touch targets are 44px or more. They follow `--ui-scale` up
+  and never down (`--thumb-scale`).
+- **Stacking**, low to high: settings panel 10, note list 20, scrim of the
+  round buttons 29, thumb button and round buttons 30, row menu 40. The
+  thumb button hides while the settings panel is open.
+- **Setting**: "Longer rows in the note list" (`vrtti.listRows` in
+  `localStorage`, device-local) adds the time and a second preview line.
+- **Stage 2, not built yet**: a swipe to the left on a row of Open closes
+  the note, and the Back gesture closes the round buttons or the list.
+  Both wait for a test on a real phone: on Android a swipe to the left
+  from the right screen edge is Back.
+
 ## 10. Twemoji plan (agreed 2026-09-01)
 
 Goal: render color emoji (Twemoji SVGs) in the editor instead of platform
@@ -992,6 +1050,12 @@ Open: none.
   pinned with both keys; the merge is a union of whole entries; the
   pairing code and the fingerprint cover the recipient too, and the
   fingerprint is sixteen characters.
+- Phone mode (2026-11-19, §9): on a narrow touch screen the drawer is a
+  full-screen note list with a preview per row, and the round "+" is a
+  thumb button that opens New, List and Settings. The user's request: the
+  app must work with one thumb. This reverses "New buffer on a phone"
+  (2026-10-09) on purpose: a new note is two taps again, and the user
+  chose that for a list within reach.
 
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)

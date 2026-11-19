@@ -30,6 +30,39 @@
   }
 </script>
 
+<!-- Phone mode (architecture.md §9): the class `phone` on <html> switches the
+     drawer for the full-screen note list and the round "+" for the thumb
+     button. Every rule of that layout in app.css starts with `html.phone`, so
+     without the class nothing changes anywhere.
+     Inline and in the head for the reason above: the class must be there
+     before the first paint, or a phone would show the drawer layout for a
+     frame. This script is the only writer of the class. It also follows the
+     query, so a phone turned on its side moves between the two layouts with
+     no code involved; modules read the class at the moment they need it
+     (phoneMode in js/ui/shell.js) and never keep a copy.
+     A media query alone could not do this: CSS cannot see the desktop shell,
+     which must never get this layout, even on a small touch screen.
+     `pointer: coarse` keeps a narrow browser window on a PC on the drawer. -->
+<script>
+  {
+    const query = matchMedia("(max-width: 700px) and (pointer: coarse)");
+    const apply = () => {
+      document.documentElement.classList.toggle("phone", !window.vrttiDesktop && query.matches);
+    };
+    query.addEventListener("change", apply);
+    apply();
+  }
+  // The row length of the note list, replayed before the first paint like the
+  // text sizes. js/ui/sidebar.js owns the key and is the only writer.
+  try {
+    if (localStorage.getItem("vrtti.listRows") === "long") {
+      document.documentElement.classList.add("rows-long");
+    }
+  } catch (err) {
+    // Private mode can throw on localStorage. The short rows then stand.
+  }
+</script>
+
 <!-- Every bare specifier maps to one vendored file. One entry per package, no
      versions in the specifier: that is what keeps a single @codemirror/state
      instance alive and keeps `instanceof` checks working across packages. -->
@@ -168,8 +201,37 @@
               aria-controls="sidebar" aria-expanded="false">☰</button>
       <!-- New buffer in one tap on a phone, where the sidebar "+" sits behind
            the drawer. app.css shows it under the drawer breakpoint only;
-           ui/newbutton.js hides it while the on-screen keyboard is up. -->
-      <button id="new-fab" type="button" title="New buffer" aria-label="New buffer">+</button>
+           ui/newbutton.js hides it while the on-screen keyboard is up.
+           In phone mode (html.phone) it is the thumb button instead: a tap
+           shows the three round buttons below. The two icons are its signs
+           there, closed and open; app.css shows them in phone mode only and
+           hides the "+" by its font size. The "+" stays a bare text node and
+           the icons follow it with no space between, so the button outside
+           phone mode is laid out exactly as it was before the icons came. -->
+      <button id="new-fab" type="button" title="New buffer" aria-label="New buffer">+<svg class="thumb-icon fab-menu" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2.75 4.25h10.5M2.75 8h10.5M2.75 11.75h10.5"/></svg><svg class="thumb-icon fab-close" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      <!-- The round buttons of phone mode (ui/thumb.js, architecture.md §9).
+           Hidden here and outside phone mode by app.css. The scrim dims the
+           screen behind them and closes them on a tap. #thumb-menu is a point,
+           not a box: it sits on the centre of the thumb button, and app.css
+           places each button on a quarter circle around it.
+           Icons, not signs like "⚙": a phone can draw those as colour emoji.
+           Inline for the reason given at #open-actions. The gear is a ring
+           with eight short, thick strokes for teeth (.thumb-icon-teeth).
+           The middle button holds two icons, and app.css shows one: the list
+           on a note, the arrow back on the note list. -->
+      <div id="thumb-scrim" hidden></div>
+      <div id="thumb-menu" hidden>
+        <button id="thumb-new" type="button" title="New note" aria-label="New note">
+          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3v10M3 8h10"/></svg>
+        </button>
+        <button id="thumb-list" type="button" title="Note list" aria-label="Note list">
+          <svg class="thumb-icon thumb-icon-list" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5.75 4.25h7.5M5.75 8h7.5M5.75 11.75h7.5"/><path class="thumb-icon-dots" d="M2.75 4.25h.01M2.75 8h.01M2.75 11.75h.01"/></svg>
+          <svg class="thumb-icon thumb-icon-back" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13 8H3M7 4L3 8l4 4"/></svg>
+        </button>
+        <button id="thumb-settings" type="button" title="Settings" aria-label="Settings">
+          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.25"/><circle cx="8" cy="8" r="1.5"/><path class="thumb-icon-teeth" d="M12.6 8h2M3.4 8h-2M8 12.6v2M8 3.4v-2M11.25 11.25l1.42 1.42M4.75 11.25l-1.42 1.42M4.75 4.75L3.33 3.33M11.25 4.75l1.42-1.42"/></svg>
+        </button>
+      </div>
       <!-- Overlay over the editor, filled by ui/settings.js from its item list.
            It sits inside #editor-host so it covers exactly the editor area and
            leaves the sidebar usable; the narrow media query in app.css switches
