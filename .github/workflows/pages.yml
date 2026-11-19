@@ -15,11 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # Two jobs on purpose. The deploy step looks its upload up by name, and
+  # GitHub's list of uploads can lag the upload by a moment. In one job the
+  # lookup ran within a second of the upload, found nothing, and the deploy
+  # failed (2026-11-19, three runs; actions/deploy-pages issue 451). A second
+  # job starts some seconds later, which is the gap the lookup needs. Do not
+  # merge the jobs back into one.
+  #
+  # After a failed run, start a new run ("Run workflow") and do not re-run the
+  # failed one: a re-run uploads again into the same run, and the deploy step
+  # refuses two uploads with one name.
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,5 +53,12 @@ jobs:
         with:
           path: _site
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
