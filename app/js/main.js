@@ -1152,7 +1152,7 @@ async function start() {
   mountNewButton();
   mountThumb();
   mountSidebar(store, folders, sync);
-  const statusbar = mountStatusbar(store, sync, zoom);
+  const statusbar = mountStatusbar(store, sync, zoom, editor.view);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({

@@ -49,6 +49,12 @@ import {
   sniff,
 } from "./lang.js";
 
+// "update" on every change of the text or the selection in a note, for the
+// status bar's position and word count. An event and not a callback in each
+// state: every state gets the same listener from baseExtensions, and the bar
+// reads the view, which holds whichever state is on screen.
+export const editorEvents = new EventTarget();
+
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
 const FOREGROUND = "#D8DEE9";
@@ -315,6 +321,7 @@ function baseExtensions(lang, onDocChanged, onDominantPaste, spellOff) {
       if (update.docChanged && onDocChanged) {
         onDocChanged(update.state.doc.toString());
       }
+      if (update.docChanged || update.selectionSet) editorEvents.dispatchEvent(new Event("update"));
     }),
     // Language re-detection after a paste, and only after a paste: sniffing on
     // every keystroke would recolor a note the moment its first line happens
