@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace Vrtti.Server.Tests;
@@ -10,7 +12,8 @@ namespace Vrtti.Server.Tests;
 /// so a test cannot inject them through IConfiguration. Environment variables are
 /// process-wide, which is why AssemblyInfo.cs switches test parallelization off.
 /// </remarks>
-public sealed class TestApp : WebApplicationFactory<Program>
+/// <param name="model">A fake language model behind VRTTI_MODEL_URL; null for no model.</param>
+public sealed class TestApp(HttpMessageHandler? model = null) : WebApplicationFactory<Program>
 {
     public const string Token = "test-token-6c1f9a";
 
@@ -22,7 +25,19 @@ public sealed class TestApp : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("VRTTI_TOKEN", Token);
         Environment.SetEnvironmentVariable("VRTTI_DB", Path.Combine(_dir, "vrtti.db"));
         Environment.SetEnvironmentVariable("VRTTI_ORIGINS", "https://urza.github.io, http://localhost:8000");
+        // Set or cleared on every host: the variable is process-wide, and a test with a
+        // model must not leave one behind for the next test.
+        Environment.SetEnvironmentVariable("VRTTI_MODEL_URL", model is null ? null : "http://model.test/v1");
         return base.CreateHost(builder);
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        if (model is not null)
+        {
+            builder.ConfigureServices(services =>
+                services.AddHttpClient<Vrtti.Server.DiacriticsModel>().ConfigurePrimaryHttpMessageHandler(() => model));
+        }
     }
 
     /// <summary>A client with a bearer token. Pass null for an anonymous client.</summary>

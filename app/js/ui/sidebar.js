@@ -237,6 +237,23 @@ export function mountSidebar(store, folders, sync) {
     // for it: there is no keyboard for Ctrl+A, Ctrl+C.
     items.push({ label: "Copy text", act: () => run("doc.copy", record.id) });
 
+    // Czech without diacritics (.work/mixed-spellcheck/plan.md). On a phone
+    // this menu is the one place for the commands; from here they work on
+    // the whole note. "(vllm)" only when the sync server has a model: the
+    // labels say where the text goes, as the user asked.
+    items.push({ separator: true });
+    items.push({
+      label: "Add diacritics (local)",
+      act: () => run("diacritics.local", record.id),
+    });
+    if (sync?.hasModel) {
+      items.push({
+        label: "Add diacritics (vllm)",
+        hint: "Sends the paragraphs to the model of your sync server",
+        act: () => run("diacritics.model", record.id),
+      });
+    }
+
     items.push({ separator: true });
     items.push(...syncItems(record));
     // History is the server's, so it only exists for a document the server

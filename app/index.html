@@ -251,9 +251,11 @@
          note is zoomed (ui/zoom.js): at 100% there is nothing to say. -->
     <button id="status-zoom" class="icon-button" type="button" hidden></button>
     <span id="status-build"></span>
-    <!-- No title and no state class here: ui/statusbar.js owns both, because
-         the spellcheck state comes from localStorage, not from the markup. -->
-    <button id="status-spell" class="icon-button" type="button">abc</button>
+    <!-- The spellcheck languages of the open note. No title and no state
+         class here: ui/statusbar.js owns both, because the state comes from
+         the note and from localStorage, not from the markup. -->
+    <button id="status-cs" class="icon-button status-lang" type="button">cs</button>
+    <button id="status-en" class="icon-button status-lang" type="button">en</button>
     <!-- Sync state. Hidden here and shown by ui/statusbar.js only once a server
          is configured: with no sync there is nothing to report. -->
     <button id="status-sync" class="icon-button" type="button" hidden></button>

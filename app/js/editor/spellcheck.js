@@ -4,21 +4,35 @@
 // CodeMirror diagnostics: a dotted underline, a hover tooltip, and one-click
 // fixes.
 //
-// Which engine sees which text is decided per paragraph by textlang.js. The
-// English paragraphs go to Harper with the Czech ones blanked out, so Harper
-// keeps document context and offsets stay untouched; the Czech paragraphs are
-// tokenized here and each word is asked of Hunspell. A document without a
-// Czech paragraph never loads the Czech dictionary at all.
+// One rule decides a mark (mixed.js): a word gets one only when each active
+// language rejects it, so a note can mix Czech and English freely. Which
+// languages are active is a setting of each note (`spellOff` in the record,
+// read through the `noteSpellOff` facet).
+//
+// Who sees which text is still decided per paragraph by textlang.js, for
+// speed and not for the verdict:
+//  - Paragraphs the detection calls English go to Harper as text, as before.
+//    Harper's spelling findings then go through the rule (Hunspell may know
+//    the word), and its grammar hints stay as they are.
+//  - All other paragraphs are tokenized here. Each word is asked of Hunspell,
+//    and of Harper one word at a time (isLikelyEnglish). Harper never gets a
+//    Czech paragraph as text: on Czech it marks nearly every word and builds
+//    suggestions for each, which took 1.7 s for 2,000 words in one block
+//    (.work/mixed-spellcheck/experiment/results.md).
+// A word that both reject and that has twins (diacritics.js) is Czech
+// without diacritics: a blue mark whose fixes are the twins.
 //
 // Nothing here touches the document by itself. The only writes are the
 // dispatches a user makes by clicking a suggestion button.
 
-import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap, showTooltip, tooltips } from "@codemirror/view";
+import { Facet, StateEffect, StateField } from "@codemirror/state";
 import { language } from "@codemirror/language";
 import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
 import { openMenu } from "../ui/menu.js";
 import * as hunspell from "./hunspell.js";
-import { languagesOf, segments } from "./textlang.js";
+import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
+import { segments } from "./textlang.js";
 
 // Resolved against the document, which is index.html, not against this
 // module: Harper fetches the binary with a plain fetch(), which resolves
@@ -57,6 +71,10 @@ const MAX_ACTIONS = 5;
 // else is an opinion about grammar or style and gets the quieter "info" one.
 const WARNING_KINDS = new Set(["Spelling", "Typo"]);
 
+// The source of a blue mark for Czech without diacritics. The diacritics
+// commands and the tests find these marks by it.
+export const PLAIN_SOURCE = "Czech without diacritics";
+
 // Harper parses its input as Markdown and has no mode for anything else, so a
 // JSON or JavaScript buffer would get every identifier underlined as a
 // misspelling. Those buffers get no diagnostics at all (architecture.md §9).
@@ -76,6 +94,16 @@ function isProse(view) {
   return !mode || mode.name === MARKDOWN;
 }
 
+/**
+ * The languages a note switched off, read when a pass runs. A function and
+ * not a value: the editor builds a state once per note, and the field
+ * changes later (a click, a sync). The function reads the record by the id
+ * captured for the state, never by store.activeId, which names the next note
+ * during a switch (editor.js, detectAfterPaste).
+ * @type {Facet<() => readonly string[] | undefined, (() => readonly string[] | undefined) | null>}
+ */
+export const noteSpellOff = Facet.define({ combine: (values) => values[0] ?? null });
+
 // SuggestionKind from harper.js, compared numerically so the enum is not
 // needed before the module loads. The third value, Replace = 0, is the common
 // case and needs no constant: it is what toAction falls through to.
@@ -93,19 +121,13 @@ let engineBroken = false;
 
 let enabled = readEnabled();
 
-// The languages found in the document of the last lint pass, most frequent
-// first. Empty while off, for code buffers, and before the first pass.
-/** @type {import("./textlang.js").Lang[]} */
-let detected = [];
-
 // Whether this module already asked hunspell.js to load. One request is
 // enough: the load promise is shared, and its completion repaints once.
 let czechRequested = false;
 
-// Fires "change" on every flip of `enabled` and on every change of the
-// detected languages. The state lives in this module, so the notification
-// does too: the statusbar indicator and the settings panel both render from
-// it, and neither has to know which one flipped it.
+// Fires "change" on every flip of `enabled`. The state lives in this module,
+// so the notification does too: the statusbar and the settings panel both
+// render from it, and neither has to know which one flipped it.
 export const events = new EventTarget();
 
 // The lint plugin only re-runs when the document changes. Neither the toggle
@@ -122,8 +144,10 @@ let lintedGeneration = 0;
  * Bumping the counter makes needsRefresh report the last pass as stale, the
  * empty transaction is what makes the plugin ask needsRefresh at all, and the
  * force then runs the scheduled pass immediately instead of after the delay.
+ *
+ * Exported for a change of a note's languages: that changes no text either.
  */
-function relintAll() {
+export function relintAll() {
   generation++;
   for (const view of views) {
     view.dispatch({});
@@ -143,21 +167,6 @@ function readEnabled() {
 /** @returns {boolean} */
 export function isEnabled() {
   return enabled;
-}
-
-/**
- * The languages the last pass found in the active document.
- * @returns {import("./textlang.js").Lang[]}
- */
-export function detectedLanguages() {
-  return detected;
-}
-
-/** @param {import("./textlang.js").Lang[]} langs */
-function setDetected(langs) {
-  if (langs.join() === detected.join()) return;
-  detected = langs;
-  events.dispatchEvent(new Event("change"));
 }
 
 /**
@@ -183,6 +192,12 @@ export function setEnabled(on) {
  */
 function harperOrLoad() {
   if (engine || engineBroken) return engine;
+  loadHarper();
+  return null;
+}
+
+/** @returns {Promise<any>} The engine, or null when it failed to load. */
+function loadHarper() {
   if (!loading) {
     // Bare specifier, resolved by the import map like every other dependency.
     loading = import("harper.js")
@@ -194,15 +209,17 @@ function harperOrLoad() {
         // The pass that started this load returned []. Nothing else will ask
         // for a new one until the user types, so ask on its behalf.
         relintAll();
+        return engine;
       })
       .catch((err) => {
         // One report, then stay quiet: retrying would re-fetch 15 MB on every
         // keystroke. The editor keeps working without spellcheck.
         engineBroken = true;
         console.error("[vrtti] Harper failed to load", err);
+        return null;
       });
   }
-  return null;
+  return loading;
 }
 
 /**
@@ -306,14 +323,14 @@ function overlaps(d, ranges) {
   return ranges.some((r) => d.from < r.to && d.to > r.from);
 }
 
-// A word for the Czech pass: letters, with inner hyphens and apostrophes kept
+// A word for the word pass: letters, with inner hyphens and apostrophes kept
 // so "česko-anglický" and "don't" are one token each. Hunspell splits at
 // hyphens itself (the default BREAK rule).
 const WORD = /[\p{L}\p{M}]+(?:[-'’][\p{L}\p{M}]+)*/gu;
 
 // Inside a paragraph, the parts that are not prose: inline code, URLs, email
 // addresses, link destinations and HTML tags. Harper's Markdown parser skips
-// these on its own; the Czech pass blanks them before tokenizing. Each match
+// these on its own; the word pass blanks them before tokenizing. Each match
 // is replaced one space per character so offsets stay put.
 const NOT_PROSE = [
   /`[^`\n]*`/g,
@@ -330,7 +347,7 @@ function proseOnly(text) {
 }
 
 /**
- * Words the Czech pass leaves alone: acronyms (all caps, "USB"), tokens glued
+ * Words the word pass leaves alone: acronyms (all caps, "USB"), tokens glued
  * to digits ("5km" yields "km"), and anything outside the Latin script.
  * @param {string} word
  * @param {string} before  The character before the word, "" at a boundary.
@@ -343,8 +360,41 @@ function skipWord(word, before, after) {
 }
 
 /**
- * A replacement action for the Czech pass: the whole misspelled range becomes
- * the suggestion. Same positional contract as toAction.
+ * The prose words of the given paragraphs, with document offsets.
+ * @param {string} text
+ * @param {readonly { from: number, to: number }[]} ranges
+ * @returns {{ word: string, from: number, to: number }[]}
+ */
+function proseWords(text, ranges) {
+  const out = [];
+  for (const r of ranges) {
+    const para = proseOnly(text.slice(r.from, r.to));
+    for (const m of para.matchAll(WORD)) {
+      const word = m[0];
+      const start = /** @type {number} */ (m.index);
+      if (skipWord(word, para[start - 1] ?? "", para[start + word.length] ?? "")) continue;
+      out.push({ word, from: r.from + start, to: r.from + start + word.length });
+    }
+  }
+  return out;
+}
+
+/**
+ * The prose words of a part of a text: the paragraphs that are not code,
+ * cut to [from, to). For the diacritics commands, which must see the same
+ * words as the marks.
+ * @param {string} text
+ * @param {number} from
+ * @param {number} to
+ */
+export function wordsIn(text, from, to) {
+  const ranges = segments(text).filter((s) => !s.code);
+  return proseWords(text, ranges).filter((w) => w.from >= from && w.to <= to);
+}
+
+/**
+ * A replacement action: the whole range becomes the suggestion. Same
+ * positional contract as toAction.
  * @param {string} text
  * @returns {import("@codemirror/lint").Action}
  */
@@ -360,48 +410,101 @@ function replaceWith(text) {
   };
 }
 
+// ---- English one word at a time --------------------------------------------
+//
+// Harper's isLikelyEnglish on a single word answers "is this an English word"
+// in about 0.04 ms, without the suggestions a lint builds (measured, results
+// file above). It agrees with the lint for 98 % of the words; it accepts
+// British spellings, which the lint marks.
+
+// Bounded like the Hunspell cache, for the same reason.
+const ENGLISH_LIMIT = 20000;
+/** @type {Map<string, boolean>} */
+const englishCache = new Map();
+/** @type {Map<string, string[]>} */
+const englishSuggestions = new Map();
+
 /**
- * Diagnostics for the Czech paragraphs. Each distinct word is asked of
- * Hunspell once per pass; suggestions come from hunspell.js under its time
- * budget, and the words that miss it are filled in idle time, after which
- * the pass is re-run (see hunspell.fillIdle).
- * @param {string} text
- * @param {readonly { from: number, to: number }[]} ranges
- * @returns {import("@codemirror/lint").Diagnostic[]}
+ * Whether Harper takes the word as English: true or false from the cache,
+ * or null when the answer is not known yet and the budget is spent.
+ * @param {any} harper
+ * @param {string} word
+ * @param {{ deadline: number }} budget
+ * @returns {Promise<boolean | null>}
  */
-function czechDiagnostics(text, ranges) {
-  const budget = hunspell.newBudget();
-  /** @type {Map<string, string[] | null | true>} true = a known word */
-  const verdicts = new Map();
-  /** @type {import("@codemirror/lint").Diagnostic[]} */
-  const out = [];
+async function englishWord(harper, word, budget) {
+  const cached = englishCache.get(word);
+  if (cached !== undefined) return cached;
+  if (performance.now() > budget.deadline) return null;
+  return askEnglish(harper, word);
+}
 
-  for (const r of ranges) {
-    const para = proseOnly(text.slice(r.from, r.to));
-    for (const m of para.matchAll(WORD)) {
-      const word = m[0];
-      const start = /** @type {number} */ (m.index);
-      if (skipWord(word, para[start - 1] ?? "", para[start + word.length] ?? "")) continue;
+/** @param {any} harper @param {string} word */
+async function askEnglish(harper, word) {
+  if (englishCache.size >= ENGLISH_LIMIT) englishCache.clear();
+  const ok = Boolean(await harper.isLikelyEnglish(word));
+  englishCache.set(word, ok);
+  return ok;
+}
 
-      let verdict = verdicts.get(word);
-      if (verdict === undefined) {
-        verdict = hunspell.isWord(word) ? true : hunspell.suggest(word, budget);
-        verdicts.set(word, verdict);
+/**
+ * Harper's suggestions for one word, from a lint of the word alone. Only for
+ * words that end up red, so a pass makes few of these.
+ * @param {any} harper
+ * @param {string} word
+ * @param {{ deadline: number }} budget
+ * @returns {Promise<string[]>}
+ */
+async function englishFixes(harper, word, budget) {
+  const cached = englishSuggestions.get(word);
+  if (cached) return cached;
+  if (performance.now() > budget.deadline) return [];
+  if (englishSuggestions.size >= ENGLISH_LIMIT) englishSuggestions.clear();
+  const list = [];
+  for (const lint of await harper.lint(word)) {
+    if (WARNING_KINDS.has(lint.lint_kind())) {
+      for (const s of lint.suggestions()) {
+        if (s.kind() !== REMOVE && list.length < MAX_ACTIONS) list.push(s.get_replacement_text());
+        s.free();
       }
-      if (verdict === true) continue;
-
-      out.push({
-        from: r.from + start,
-        to: r.from + start + word.length,
-        severity: "warning",
-        message: "“" + word + "” is not in the Czech dictionary.",
-        source: "Spelling (Czech)",
-        actions: (verdict ?? []).map(replaceWith),
-      });
     }
+    lint.free();
   }
-  hunspell.fillIdle(relintAll);
-  return out;
+  englishSuggestions.set(word, list);
+  return list;
+}
+
+// ---- The marks ---------------------------------------------------------------
+
+/**
+ * The blue mark of a word without diacritics.
+ * @param {number} from @param {number} to @param {string[]} twins
+ * @returns {import("@codemirror/lint").Diagnostic}
+ */
+function plainMark(from, to, twins) {
+  return {
+    from,
+    to,
+    severity: "info",
+    message: twins.length === 1 ? "Czech without diacritics." : "Czech without diacritics: more than one word fits.",
+    source: PLAIN_SOURCE,
+    actions: twins.slice(0, MAX_ACTIONS).map(replaceWith),
+  };
+}
+
+/**
+ * @param {number} from @param {number} to @param {string} word @param {string[]} fixes
+ * @returns {import("@codemirror/lint").Diagnostic}
+ */
+function typoMark(from, to, word, fixes) {
+  return {
+    from,
+    to,
+    severity: "warning",
+    message: "“" + word + "” is not a known word.",
+    source: "Spelling",
+    actions: fixes.map(replaceWith),
+  };
 }
 
 /**
@@ -411,47 +514,138 @@ function czechDiagnostics(text, ranges) {
  */
 async function spellSource(view) {
   lintedGeneration = generation;
-  if (!enabled || !isProse(view) || view.state.doc.length > MAX_DOC_CHARS) {
-    setDetected([]);
-    return [];
+  if (!enabled || !isProse(view) || view.state.doc.length > MAX_DOC_CHARS) return [];
+
+  const langs = activeLangs(view.state.facet(noteSpellOff)?.());
+  // A checker that failed to load counts as off: the other one then checks
+  // every word (plan, "A checker that is not ready").
+  if (hunspell.isBroken()) langs.cs = false;
+  if (engineBroken) langs.en = false;
+  if (!langs.cs && !langs.en) return [];
+
+  // Marks only when each active checker is loaded. With one of them still
+  // loading, every word the other rejects would flash red for a moment. The
+  // end of each load re-runs the pass.
+  let waiting = false;
+  if (langs.cs && !hunspell.isReady()) {
+    waiting = true;
+    if (!czechRequested) {
+      czechRequested = true;
+      hunspell.load().then(relintAll, () => relintAll());
+    }
   }
+  /** @type {any} */
+  const harper = langs.en ? harperOrLoad() : null;
+  if (langs.en && !harper) waiting = true;
+  if (waiting) return [];
 
   const text = view.state.doc.toString();
-  const segs = segments(text);
-  setDetected(languagesOf(segs));
+  const prose = segments(text).filter((s) => !s.code);
+  // With English off there is no Harper at all, so every paragraph takes the
+  // word pass.
+  const englishParas = langs.en ? prose.filter((s) => s.lang === "en") : [];
+  const wordParas = langs.en ? prose.filter((s) => s.lang !== "en") : prose;
+  const budget = hunspell.newBudget();
+  let pending = false;
 
-  const czech = segs.filter((s) => !s.code && s.lang === "cs");
-  const hasEnglish = segs.some((s) => !s.code && s.lang === "en");
+  const ask = {
+    czech: (/** @type {string} */ w) => hunspell.isWord(w),
+    twins: (/** @type {string} */ w) => hunspell.twinsOf(w, budget),
+  };
 
   /** @type {import("@codemirror/lint").Diagnostic[]} */
   const out = [];
 
-  if (hasEnglish) {
-    const harper = harperOrLoad();
-    if (harper) {
-      // No `language` option: Harper defaults to Markdown, which is what the
-      // editor's own language mode assumes, and it keeps code fences out.
-      const lints = await harper.lint(blank(text, czech));
-      for (const lint of lints) {
-        // toDiagnostic frees the wasm objects either way. A lint that leaks
-        // into a blanked range is whitespace noise, never a finding.
-        const d = toDiagnostic(lint);
-        if (!overlaps(d, czech)) out.push(d);
+  if (englishParas.length > 0) {
+    // No `language` option: Harper defaults to Markdown, which is what the
+    // editor's own language mode assumes, and it keeps code fences out.
+    const lints = await harper.lint(blank(text, wordParas));
+    for (const lint of lints) {
+      // toDiagnostic frees the wasm objects either way. A lint that leaks
+      // into a blanked range is whitespace noise, never a finding.
+      const d = toDiagnostic(lint);
+      if (overlaps(d, wordParas)) continue;
+      const word = text.slice(d.from, d.to);
+      // A grammar hint stays as it is. So does a spelling finding on
+      // something our word rule does not cover ("USB", "5km"): in an English
+      // paragraph Harper is the judge of those.
+      if (d.severity !== "warning" || !/^[\p{L}\p{M}'’-]+$/u.test(word)) {
+        out.push(d);
+        continue;
       }
+      const verdict = judge(word, langs, { ...ask, english: () => false });
+      if (verdict === "pending") pending = true;
+      else if (verdict === "typo") {
+        const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
+        const names = (d.actions ?? []).map((a) => a.name);
+        // Harper's own actions first: they also carry inserts and removals.
+        out.push({ ...d, actions: [...(d.actions ?? []), ...mergeSuggestions([], czech.filter((c) => !names.includes(c))).map(replaceWith)].slice(0, MAX_ACTIONS) });
+      } else if (verdict !== "ok") out.push(plainMark(d.from, d.to, verdict.plain));
     }
   }
 
-  if (czech.length > 0) {
-    if (hunspell.isReady()) {
-      out.push(...czechDiagnostics(text, czech));
-    } else if (!czechRequested) {
-      // Same shape as Harper: the pass that triggers the load returns
-      // without Czech findings, and the load's completion re-runs it.
-      czechRequested = true;
-      hunspell.load().then(relintAll, () => {});
+  if (wordParas.length > 0) {
+    /** @type {Map<string, boolean | null>} */
+    const english = new Map();
+    for (const { word, from, to } of proseWords(text, wordParas)) {
+      if (langs.en && !english.has(word) && !(langs.cs && hunspell.isWord(word))) {
+        english.set(word, await englishWord(harper, word, budget));
+      }
+      const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
+      if (verdict === "ok") continue;
+      if (verdict === "pending") {
+        pending = true;
+        continue;
+      }
+      if (verdict === "typo") {
+        const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
+        const eng = langs.en ? await englishFixes(harper, word, budget) : [];
+        out.push(typoMark(from, to, word, mergeSuggestions(czech, eng)));
+      } else out.push(plainMark(from, to, verdict.plain));
     }
   }
+
+  hunspell.fillIdle(relintAll);
+  // English answers that missed the budget: no idle chain of their own. One
+  // more pass after a short wait asks the next batch, and each answer is
+  // cached, so the passes end when every word is known.
+  if (pending) scheduleRetry();
   return out;
+}
+
+let retryScheduled = false;
+function scheduleRetry() {
+  if (retryScheduled) return;
+  retryScheduled = true;
+  setTimeout(() => {
+    retryScheduled = false;
+    relintAll();
+  }, 100);
+}
+
+/**
+ * The engines for a command the user started: both loaded, or null for one
+ * that failed. Unlike a lint pass, a command may wait for a load.
+ * @returns {Promise<{ harper: any, czech: boolean }>}
+ */
+export async function enginesForCommand() {
+  const [harper, czech] = await Promise.all([
+    loadHarper(),
+    hunspell.load().then(
+      () => true,
+      () => false
+    ),
+  ]);
+  return { harper, czech };
+}
+
+/**
+ * Whether Harper takes a word as English, for a command: no budget.
+ * @param {any} harper @param {string} word
+ */
+export function englishNow(harper, word) {
+  const cached = englishCache.get(word);
+  return cached !== undefined ? Promise.resolve(cached) : askEnglish(harper, word);
 }
 
 // The view set drives forceLinting from setEnabled and from the engine load,
@@ -510,6 +704,25 @@ const spellcheckTheme = EditorView.theme({
     borderRadius: "2px",
   },
   ".cm-diagnosticAction:hover": { backgroundColor: "#393F46" },
+
+  // The phone box: one row of fixes, each a 44 px touch target.
+  ".cm-tooltip.cm-spell-box": {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "6px",
+    padding: "6px",
+    borderLeft: "3px solid " + HINT,
+    boxShadow: "0 6px 18px rgba(0, 0, 0, 0.45)",
+  },
+  ".cm-spell-box button": {
+    minHeight: "44px",
+    padding: "0 14px",
+    font: "inherit",
+    backgroundColor: "#22262A",
+    color: PANEL_FG,
+    border: "1px solid " + BORDER,
+    borderRadius: "4px",
+  },
 });
 
 /**
@@ -545,6 +758,98 @@ function fixAtCursor(view) {
   return true;
 }
 
+// ---- The phone box -----------------------------------------------------------
+//
+// A phone has no hover and no Ctrl+. (fixAtCursor), so a tap on a marked word
+// shows its fixes in a box below the word. It is a CodeMirror tooltip and not
+// a ui/menu.js menu on purpose: the menu takes the focus, and on a phone the
+// keyboard then closes. The box opens on the tap only, not whenever the
+// cursor sits in a marked word: that rule would open it under every
+// unfinished word, 600 ms after each pause in typing (plan, "The phone").
+
+/** @typedef {{ from: number, to: number, actions: readonly import("@codemirror/lint").Action[] }} Box */
+
+/** @type {import("@codemirror/state").StateEffectType<Box | null>} */
+const setBox = StateEffect.define();
+
+const boxField = StateField.define({
+  create: () => /** @type {Box | null} */ (null),
+  update(box, tr) {
+    for (const effect of tr.effects) if (effect.is(setBox)) return effect.value;
+    if (!box) return null;
+    // The next key press closes it: a typed character, or a cursor that left
+    // the word. The fixes belong to the word as it was tapped.
+    if (tr.docChanged) return null;
+    const head = tr.state.selection.main.head;
+    return head < box.from || head > box.to ? null : box;
+  },
+  provide: (field) =>
+    showTooltip.from(field, (box) =>
+      box
+        ? {
+            pos: box.from,
+            above: false,
+            create: (view) => ({ dom: boxDom(view, box) }),
+          }
+        : null
+    ),
+});
+
+/** @param {EditorView} view @param {Box} box */
+function boxDom(view, box) {
+  const dom = document.createElement("div");
+  dom.className = "cm-spell-box";
+  for (const action of box.actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = action.name;
+    // No focus change: the editor keeps it, so the phone keyboard stays up.
+    button.addEventListener("pointerdown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      view.dispatch({ effects: setBox.of(null) });
+      action.apply(view, box.from, box.to);
+    });
+    dom.appendChild(button);
+  }
+  return dom;
+}
+
+const phoneBox = [
+  boxField,
+  EditorView.domEventHandlers({
+    click(event, view) {
+      // Phone mode only: a PC keeps hover and Ctrl+. (ui/shell.js sets the
+      // class; read here so a mode change needs no reconfiguration).
+      if (!document.documentElement.classList.contains("phone")) return false;
+      // The place of the tap, not the selection: on a touch screen the
+      // selection follows the tap later, through the DOM selection, so at
+      // this moment it can still be where it was before.
+      const head = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (head === null) return false;
+      /** @type {Box | null} */
+      let found = null;
+      forEachDiagnostic(view.state, (d, from, to) => {
+        if (!found && from <= head && head <= to && d.actions?.length) {
+          found = { from, to, actions: d.actions };
+        }
+      });
+      view.dispatch({ effects: setBox.of(found) });
+      return false;
+    },
+  }),
+  // The free space for every tooltip is the visible part of the page. The
+  // default is the window, and on iOS and current Android the keyboard
+  // shrinks only the visual viewport: a box under a word near the bottom
+  // would open behind the keyboard.
+  tooltips({
+    tooltipSpace: (view) => {
+      const vv = window.visualViewport;
+      if (!vv) return view.dom.ownerDocument.documentElement.getBoundingClientRect();
+      return { top: vv.offsetTop, left: vv.offsetLeft, bottom: vv.offsetTop + vv.height, right: vv.offsetLeft + vv.width };
+    },
+  }),
+];
+
 /**
  * The spellcheck extension. No lint gutter on purpose: underlines and hover
  * tooltips only, so the gutter keeps showing line numbers alone.
@@ -563,6 +868,7 @@ export function spellcheck() {
         update.startState.facet(language) !== update.state.facet(language),
     }),
     trackViews,
+    phoneBox,
     spellcheckTheme,
   ];
 }

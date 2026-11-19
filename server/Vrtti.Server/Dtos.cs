@@ -66,3 +66,9 @@ public record PurgeResponse(int Purged);
 public record SpaceInfo(string Space, long Count);
 
 public record ErrorResponse(string Error);
+
+/// <summary>Body of <c>POST /api/model/diacritics</c>: one paragraph.</summary>
+public record DiacriticsRequest(string? Text);
+
+/// <summary>The paragraph as the model returned it. The client checks it again.</summary>
+public record DiacriticsResponse(string Text);

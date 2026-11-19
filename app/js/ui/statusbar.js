@@ -5,7 +5,8 @@
 import { titleOf } from "../model/docs.js";
 import { hasDisk } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
-import { detectedLanguages, events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { activeLangs } from "../editor/mixed.js";
 import { BUILD } from "../version.js";
 import { ZOOM } from "./zoom.js";
 
@@ -32,7 +33,10 @@ export function mountStatusbar(store, sync, zoom) {
   const statusSave = /** @type {HTMLElement} */ (document.getElementById("status-save"));
   const statusBuild = /** @type {HTMLElement} */ (document.getElementById("status-build"));
   const statusUpdate = /** @type {HTMLElement} */ (document.getElementById("status-update"));
-  const statusSpell = /** @type {HTMLElement} */ (document.getElementById("status-spell"));
+  const statusLang = {
+    cs: /** @type {HTMLElement} */ (document.getElementById("status-cs")),
+    en: /** @type {HTMLElement} */ (document.getElementById("status-en")),
+  };
   const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
   const statusSync = /** @type {HTMLElement} */ (document.getElementById("status-sync"));
   const statusZoom = /** @type {HTMLElement} */ (document.getElementById("status-zoom"));
@@ -62,25 +66,30 @@ export function mountStatusbar(store, sync, zoom) {
 
   const LANG_NAME = { cs: "Czech", en: "English" };
 
+  // One button per language, for the open note. The "off" class dims the
+  // label and strikes it through (app.css). With the spellcheck off on this
+  // device both show off, and a click turns it back on (spell.lang).
   function renderSpell() {
-    const on = isEnabled();
-    const langs = detectedLanguages();
-    // The label is the language the checker found in this buffer ("cs",
-    // "en", "cs+en"), and the generic "abc" until a pass has run or while
-    // off. The "off" class dims the label and strikes it through (app.css).
-    statusSpell.classList.toggle("off", !on);
-    statusSpell.textContent = on && langs.length > 0 ? langs.join("+") : "abc";
-    const names = langs.map((l) => LANG_NAME[l]).join(" and ");
-    statusSpell.title = on
-      ? "Spellcheck on" + (names ? ": " + names : "") + " (click to turn off)"
-      : "Spellcheck off (click to turn on)";
+    const record = store.activeId ? store.get(store.activeId) : undefined;
+    const langs = activeLangs(record?.spellOff);
+    for (const lang of /** @type {const} */ (["cs", "en"])) {
+      const on = isEnabled() && langs[lang];
+      const button = statusLang[lang];
+      button.classList.toggle("off", !on);
+      button.setAttribute("aria-pressed", String(on));
+      button.title =
+        LANG_NAME[lang] + " spellcheck in this note: " + (on ? "on (click to turn off)" : "off (click to turn on)");
+    }
   }
 
-  // The click only dispatches; the indicator repaints from the spellcheck
-  // module's own event. That is what keeps this button honest when the
-  // settings panel flips the same setting.
-  statusSpell.addEventListener("click", () => run("spell.toggle"));
+  // The click only dispatches; the buttons repaint from the events. That is
+  // what keeps them honest when Settings, another window or a sync changes
+  // the same state.
+  statusLang.cs.addEventListener("click", () => run("spell.lang", "cs"));
+  statusLang.en.addEventListener("click", () => run("spell.lang", "en"));
   spellEvents.addEventListener("change", renderSpell);
+  store.events.addEventListener("spell", renderSpell);
+  store.events.addEventListener("active", renderSpell);
   renderSpell();
 
   if (hasDisk) {
@@ -158,17 +167,31 @@ export function mountStatusbar(store, sync, zoom) {
     saveStatus = /** @type {CustomEvent} */ (event).detail.status;
     if (noticeTimer === undefined) statusSave.textContent = saveStatus;
   });
-  /** @param {string} text */
-  function notice(text) {
+  /**
+   * A short message where the save status is. It goes away after 1.5 s, or,
+   * when sticky, stays until the next notice: a model can take many seconds,
+   * and a 1.5 s "asking the model…" followed by a quiet bar looks like a
+   * command that did nothing. A null text ends a sticky notice.
+   * @param {string | null} text @param {boolean} [sticky]
+   */
+  function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
-    statusSave.textContent = text;
-    phoneNotice.textContent = text;
-    phoneNotice.hidden = false;
-    noticeTimer = setTimeout(() => {
+    noticeTimer = undefined;
+    const end = () => {
       noticeTimer = undefined;
       statusSave.textContent = saveStatus;
       phoneNotice.hidden = true;
-    }, 1500);
+    };
+    if (text === null) {
+      end();
+      return;
+    }
+    statusSave.textContent = text;
+    phoneNotice.textContent = text;
+    phoneNotice.hidden = false;
+    // A sticky notice still holds the slot with a timer handle, so a save
+    // event does not overwrite it (see the "save" listener above).
+    noticeTimer = setTimeout(end, sticky ? 2 ** 31 - 1 : 1500);
   }
 
   renderTitle();

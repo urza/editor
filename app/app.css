@@ -442,12 +442,13 @@ body {
 
 #status-update { color: var(--st-gutter-fg); font-size: var(--ui-md); }
 
-/* Spellcheck indicator: the label is the state. Struck through and dimmed
-   means off. The id beats .icon-button:hover on specificity, so the hover
+/* Spellcheck languages of the note, one button each: the label is the state.
+   Struck through and dimmed means off. .status-lang.off ties with
+   .icon-button:hover on specificity and wins by coming later, so the hover
    rule has to be repeated here or the off state would brighten on hover. */
-#status-spell { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
-#status-spell.off { opacity: 0.35; text-decoration: line-through; }
-#status-spell.off:hover { opacity: 0.6; }
+.status-lang { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
+.status-lang.off { opacity: 0.35; text-decoration: line-through; }
+.status-lang.off:hover { opacity: 0.6; }
 
 /* Sync indicator, same rules as the spellcheck one next to it: the label is
    the state, and "off" (an error or offline) dims and strikes it. */
@@ -1504,7 +1505,9 @@ img.twemoji {
 #notice,
 .buffer-preview,
 .buffer-time,
-.settings-row[data-key="list-rows"] {
+.settings-row[data-key="list-rows"],
+.settings-row[data-key="spell-cs"],
+.settings-row[data-key="spell-en"] {
   display: none;
 }
 
@@ -1994,4 +1997,7 @@ html.phone .menu-item {
 /* The row-length setting only means something here, and the sidebar "+" it
    replaces in this list is not on screen in phone mode. */
 html.phone .settings-row[data-key="list-rows"] { display: flex; }
+/* The note's spellcheck languages: on a PC the status bar has them. */
+html.phone .settings-row[data-key="spell-cs"],
+html.phone .settings-row[data-key="spell-en"] { display: flex; }
 html.phone .settings-row[data-key="sidebar-new"] { display: none; }

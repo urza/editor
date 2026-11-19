@@ -10,6 +10,7 @@
 //   "save"    { status }                       -> statusbar save indicator
 //   "replace" { id, content }                  -> editor replaces a document wholesale
 //   "lang"    { id, lang }                     -> editor swaps the language mode
+//   "spell"   { id }                           -> the spellcheck languages of a note changed
 //   "lock"    { ids }                          -> editor drops those states, shows the placeholder
 //   "unlock"                                   -> editor re-activates a placeholder
 //   "system"  { id }                            -> the hidden keyring record was written
@@ -966,6 +967,27 @@ export function createDocStore({
   }
 
   /**
+   * Switch a spellcheck language of one note on or off. The only writer of
+   * `spellOff` besides a pull (applyMeta). Like a hand-picked syntax, the
+   * choice travels with the note.
+   *
+   * No "change" event, as in setLang: the sync client reads "change" as an
+   * edit of the text. The push goes with the next edit or the next poll.
+   *
+   * @param {string} id
+   * @param {readonly string[]} spellOff The languages that are off, sorted.
+   */
+  async function setSpellOff(id, spellOff) {
+    const record = buffers.get(id);
+    if (!record) return;
+    if ((record.spellOff ?? []).join() === spellOff.join()) return;
+    record.spellOff = [...spellOff];
+    markDirty(record);
+    await persist({ ...record });
+    emit("spell", { id });
+  }
+
+  /**
    * Set or clear the user label of a buffer (architecture.md §7, §9). An empty
    * name clears it, which puts a scratch buffer back on its first line.
    *
@@ -1629,6 +1651,7 @@ export function createDocStore({
    * @property {string} [lang]
    * @property {'auto' | 'user'} [langSource]
    * @property {import("../storage/idb.js").EncMeta} [enc]
+   * @property {string[]} [spellOff]
    * @property {'scratch' | 'keyring'} [kind]
    */
 
@@ -1706,6 +1729,11 @@ export function createDocStore({
     if (record.title !== undefined) meta.title = record.title;
     if (record.lang !== undefined) meta.lang = record.lang;
     if (record.langSource !== undefined) meta.langSource = record.langSource;
+    // Always sent, an empty list when both languages are on. applyMeta keeps
+    // its own value when a push carries no field, and that only works if
+    // every build that knows the field also sends it: a push from an older
+    // build (no field) then leaves the choice of the note alone.
+    meta.spellOff = record.spellOff ?? [];
     if (record.enc !== undefined) meta.enc = record.enc;
     // A file-backed doc travels as a scratch doc, always: the disk link is per
     // device (architecture.md §3), and the other device has no such file. Do
@@ -1809,6 +1837,16 @@ export function createDocStore({
     else delete record.langSource;
     if (meta.enc !== undefined) record.enc = meta.enc;
     else delete record.enc;
+    // The one field that is NOT "absent means absent". An older build does not
+    // know it and pushes without it; deleting here would let any stale tab
+    // switch a note's languages back on, and nobody would see why. A build
+    // that knows the field always sends it (pushPayload), so "absent" can
+    // only mean "an older build wrote this".
+    if (Array.isArray(meta.spellOff)) {
+      const before = (record.spellOff ?? []).join();
+      record.spellOff = meta.spellOff.filter((l) => l === "cs" || l === "en");
+      if (record.spellOff.join() !== before) emit("spell", { id: record.id });
+    }
     // `kind` is deliberately not copied: it is per device. A doc that is
     // file-backed here stays file-backed, and one that arrived as scratch
     // stays scratch even if the other device has it on disk.
@@ -2629,6 +2667,11 @@ export function createDocStore({
       typeof previous?.content === "string";
     if (loaded) record.content = previous?.content;
     buffers.set(id, record);
+    // A language switched in another window (or pulled by the sync leader)
+    // changes no text, so nothing below would repaint the marks.
+    if ((previous?.spellOff ?? []).join() !== (record.spellOff ?? []).join()) {
+      emit("spell", { id });
+    }
     if (record.kind === "keyring") {
       plain.delete(id);
       emit("system", { id });
@@ -2772,6 +2815,7 @@ export function createDocStore({
     body,
     decodeContent,
     updateContent,
+    setSpellOff,
     // For the editor's locked placeholder: a LockedError while the keyring is
     // unlocked means this device is not a recipient, and no prompt can help.
     get isUnlocked() {

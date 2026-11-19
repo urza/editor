@@ -10,6 +10,7 @@
 
 import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { activeLangs } from "../editor/mixed.js";
 import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
@@ -319,10 +320,29 @@ const SECTIONS = [
         key: "spellcheck",
         label: "Spellcheck (English and Czech)",
         hint:
-          "Offline, per paragraph: Harper for English, Hunspell for Czech. " +
-          "Spelling is underlined red, style hints blue.",
+          "Offline. A word is marked only when each language of the note rejects it: " +
+          "a typo red, Czech without diacritics and style hints blue. " +
+          "A setting of this device.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
+      },
+      // The languages of the open note. Phone mode only (app.css): a PC has
+      // the two buttons in the status bar, and the phone has no status bar.
+      {
+        type: "toggle",
+        key: "spell-cs",
+        label: "Czech in this note",
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("cs"),
+        set: () => run("spell.lang", "cs"),
+      },
+      {
+        type: "toggle",
+        key: "spell-en",
+        label: "English in this note",
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("en"),
+        set: () => run("spell.lang", "en"),
       },
     ],
   },
@@ -1022,6 +1042,16 @@ function makeRow(item, refresh) {
  * @param {{keyring?: import("../crypto/keyring.js").KeyRing,
  *          sync?: ReturnType<import("../sync/client.js").createSyncClient>}} [deps]
  */
+/**
+ * Whether a spellcheck language is on for the open note, as the status bar
+ * shows it: off when the spellcheck is off on this device.
+ * @param {"cs" | "en"} lang
+ */
+function noteLangOn(lang) {
+  const record = store?.activeId ? store.get(store.activeId) : undefined;
+  return isEnabled() && activeLangs(record?.spellOff)[lang];
+}
+
 export function mountSettings(deps = {}) {
   keyring = deps.keyring ?? null;
   sync = deps.sync ?? null;
@@ -1162,6 +1192,12 @@ export function mountSettings(deps = {}) {
   // The statusbar spellcheck button stays clickable next to an open panel on a
   // PC, so the panel repaints whenever that state flips, whoever flipped it.
   spellEvents.addEventListener("change", () => {
+    if (!panel.hidden) refresh();
+  });
+
+  // The language rows read the open note, which another window or a sync can
+  // change while the panel is open.
+  store?.events.addEventListener("spell", () => {
     if (!panel.hidden) refresh();
   });
 
