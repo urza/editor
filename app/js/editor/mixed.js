@@ -33,12 +33,15 @@ export function judge(word, langs, ask) {
     if (english) return "ok";
     unknown = english === null;
   }
+  // Without the English answer a word may still be English, so no blue mark
+  // either: it would flash and go away when the answer comes.
+  if (unknown) return "pending";
   if (langs.cs) {
     const twins = ask.twins(word);
     if (twins === null) return "pending";
     if (twins.length > 0) return { plain: twins };
   }
-  return unknown ? "pending" : "typo";
+  return "typo";
 }
 
 /**

@@ -32,6 +32,7 @@ import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
 import { openMenu } from "../ui/menu.js";
 import * as hunspell from "./hunspell.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
+import { WORD } from "./diacritics.js";
 import { segments } from "./textlang.js";
 
 // Resolved against the document, which is index.html, not against this
@@ -71,9 +72,9 @@ const MAX_ACTIONS = 5;
 // else is an opinion about grammar or style and gets the quieter "info" one.
 const WARNING_KINDS = new Set(["Spelling", "Typo"]);
 
-// The source of a blue mark for Czech without diacritics. The diacritics
-// commands and the tests find these marks by it.
-export const PLAIN_SOURCE = "Czech without diacritics";
+// The source of a blue mark for Czech without diacritics, shown small under
+// the message in the hover tooltip.
+const PLAIN_SOURCE = "Czech without diacritics";
 
 // Harper parses its input as Markdown and has no mode for anything else, so a
 // JSON or JavaScript buffer would get every identifier underlined as a
@@ -323,10 +324,10 @@ function overlaps(d, ranges) {
   return ranges.some((r) => d.from < r.to && d.to > r.from);
 }
 
-// A word for the word pass: letters, with inner hyphens and apostrophes kept
-// so "česko-anglický" and "don't" are one token each. Hunspell splits at
-// hyphens itself (the default BREAK rule).
-const WORD = /[\p{L}\p{M}]+(?:[-'’][\p{L}\p{M}]+)*/gu;
+// A word for the word pass (WORD, from diacritics.js, so the marks and the
+// diacritics commands see the same words): letters, with inner hyphens and
+// apostrophes kept so "česko-anglický" and "don't" are one token each.
+// Hunspell splits at hyphens itself (the default BREAK rule).
 
 // Inside a paragraph, the parts that are not prose: inline code, URLs, email
 // addresses, link destinations and HTML tags. Harper's Markdown parser skips
@@ -424,9 +425,14 @@ const englishCache = new Map();
 /** @type {Map<string, string[]>} */
 const englishSuggestions = new Map();
 
+/** @type {Set<string>} words whose English answer missed the budget */
+const englishPending = new Set();
+let englishFilling = false;
+
 /**
  * Whether Harper takes the word as English: true or false from the cache,
- * or null when the answer is not known yet and the budget is spent.
+ * or null when the answer is not known yet and the budget is spent. A null
+ * word is queued for fillEnglish, the same pattern as hunspell.fillIdle.
  * @param {any} harper
  * @param {string} word
  * @param {{ deadline: number }} budget
@@ -435,8 +441,45 @@ const englishSuggestions = new Map();
 async function englishWord(harper, word, budget) {
   const cached = englishCache.get(word);
   if (cached !== undefined) return cached;
-  if (performance.now() > budget.deadline) return null;
+  if (performance.now() > budget.deadline) {
+    englishPending.add(word);
+    return null;
+  }
   return askEnglish(harper, word);
+}
+
+/**
+ * Answer the queued words in idle time, a budget's worth per slice, then
+ * re-run the pass once. Not a timed retry of the whole pass: a pass that
+ * spends its budget before a late word reaches that word after the deadline
+ * every time, so retries alone never answer it (code review, finding 1).
+ * @param {any} harper
+ */
+function fillEnglish(harper) {
+  if (englishFilling || englishPending.size === 0) return;
+  englishFilling = true;
+  const slice = async () => {
+    const stop = hunspell.newBudget().deadline;
+    for (const word of englishPending) {
+      if (performance.now() > stop) break;
+      englishPending.delete(word);
+      await askEnglish(harper, word);
+    }
+    if (englishPending.size > 0) later(slice);
+    else {
+      englishFilling = false;
+      relintAll();
+    }
+  };
+  later(slice);
+}
+
+/** @param {() => void} fn */
+function later(fn) {
+  // requestIdleCallback is missing in Safari; a short timeout is close enough
+  // because each slice is already capped.
+  if (typeof requestIdleCallback === "function") requestIdleCallback(() => fn());
+  else setTimeout(fn, 50);
 }
 
 /** @param {any} harper @param {string} word */
@@ -545,8 +588,11 @@ async function spellSource(view) {
   // word pass.
   const englishParas = langs.en ? prose.filter((s) => s.lang === "en") : [];
   const wordParas = langs.en ? prose.filter((s) => s.lang !== "en") : prose;
-  const budget = hunspell.newBudget();
-  let pending = false;
+  // The words that wait for an answer get no mark this pass. They are queued
+  // for the idle fills (hunspell.fillIdle, fillEnglish), which re-run the
+  // pass once when they are done.
+  /** @type {{ deadline: number }} */
+  let budget = hunspell.newBudget();
 
   const ask = {
     czech: (/** @type {string} */ w) => hunspell.isWord(w),
@@ -574,17 +620,20 @@ async function spellSource(view) {
         continue;
       }
       const verdict = judge(word, langs, { ...ask, english: () => false });
-      if (verdict === "pending") pending = true;
-      else if (verdict === "typo") {
+      if (verdict === "typo") {
         const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
         const names = (d.actions ?? []).map((a) => a.name);
         // Harper's own actions first: they also carry inserts and removals.
-        out.push({ ...d, actions: [...(d.actions ?? []), ...mergeSuggestions([], czech.filter((c) => !names.includes(c))).map(replaceWith)].slice(0, MAX_ACTIONS) });
-      } else if (verdict !== "ok") out.push(plainMark(d.from, d.to, verdict.plain));
+        const extra = czech.filter((c) => !names.includes(c)).map(replaceWith);
+        out.push({ ...d, actions: [...(d.actions ?? []), ...extra].slice(0, MAX_ACTIONS) });
+      } else if (verdict !== "ok" && verdict !== "pending") out.push(plainMark(d.from, d.to, verdict.plain));
     }
   }
 
   if (wordParas.length > 0) {
+    // A budget of its own: the Harper lint above can take longer than one
+    // budget, and the word pass would then start with none left.
+    budget = hunspell.newBudget();
     /** @type {Map<string, boolean | null>} */
     const english = new Map();
     for (const { word, from, to } of proseWords(text, wordParas)) {
@@ -592,11 +641,7 @@ async function spellSource(view) {
         english.set(word, await englishWord(harper, word, budget));
       }
       const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
-      if (verdict === "ok") continue;
-      if (verdict === "pending") {
-        pending = true;
-        continue;
-      }
+      if (verdict === "ok" || verdict === "pending") continue;
       if (verdict === "typo") {
         const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
         const eng = langs.en ? await englishFixes(harper, word, budget) : [];
@@ -606,21 +651,8 @@ async function spellSource(view) {
   }
 
   hunspell.fillIdle(relintAll);
-  // English answers that missed the budget: no idle chain of their own. One
-  // more pass after a short wait asks the next batch, and each answer is
-  // cached, so the passes end when every word is known.
-  if (pending) scheduleRetry();
+  if (harper) fillEnglish(harper);
   return out;
-}
-
-let retryScheduled = false;
-function scheduleRetry() {
-  if (retryScheduled) return;
-  retryScheduled = true;
-  setTimeout(() => {
-    retryScheduled = false;
-    relintAll();
-  }, 100);
 }
 
 /**
@@ -714,6 +746,7 @@ const spellcheckTheme = EditorView.theme({
     borderLeft: "3px solid " + HINT,
     boxShadow: "0 6px 18px rgba(0, 0, 0, 0.45)",
   },
+  ".cm-spell-box-message": { flexBasis: "100%", fontSize: "0.9em", opacity: "0.8" },
   ".cm-spell-box button": {
     minHeight: "44px",
     padding: "0 14px",
@@ -767,7 +800,7 @@ function fixAtCursor(view) {
 // cursor sits in a marked word: that rule would open it under every
 // unfinished word, 600 ms after each pause in typing (plan, "The phone").
 
-/** @typedef {{ from: number, to: number, actions: readonly import("@codemirror/lint").Action[] }} Box */
+/** @typedef {{ from: number, to: number, message: string, actions: readonly import("@codemirror/lint").Action[] }} Box */
 
 /** @type {import("@codemirror/state").StateEffectType<Box | null>} */
 const setBox = StateEffect.define();
@@ -799,6 +832,12 @@ const boxField = StateField.define({
 function boxDom(view, box) {
   const dom = document.createElement("div");
   dom.className = "cm-spell-box";
+  // The message tells a typo from Czech without diacritics; on a phone the
+  // color of a dotted line is the only other sign.
+  const message = document.createElement("div");
+  message.className = "cm-spell-box-message";
+  message.textContent = box.actions.length ? box.message : box.message + " No suggestions.";
+  dom.appendChild(message);
   for (const action of box.actions) {
     const button = document.createElement("button");
     button.type = "button";
@@ -829,8 +868,10 @@ const phoneBox = [
       /** @type {Box | null} */
       let found = null;
       forEachDiagnostic(view.state, (d, from, to) => {
-        if (!found && from <= head && head <= to && d.actions?.length) {
-          found = { from, to, actions: d.actions };
+        // Every mark, also one without fixes: the box then says so, as
+        // Ctrl+. does on a PC, and a tap never looks broken.
+        if (!found && from <= head && head <= to) {
+          found = { from, to, message: d.message, actions: d.actions ?? [] };
         }
       });
       view.dispatch({ effects: setBox.of(found) });

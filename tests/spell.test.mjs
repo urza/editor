@@ -82,6 +82,9 @@ test("an answer that is not known yet gives no mark", () => {
   const langs = { cs: true, en: true };
   assert.equal(judge("tlacitko", langs, { ...ask(langs), twins: () => null }), "pending");
   assert.equal(judge("xyzq", langs, { ...ask(langs), english: () => null }), "pending");
+  // A word with a twin waits for the English answer too: "palcove" must not
+  // flash blue and then go away (code review, finding on judge).
+  assert.equal(judge("palcove", langs, { ...ask(langs), english: () => null }), "pending");
 });
 
 test("activeLangs and switchLang", () => {

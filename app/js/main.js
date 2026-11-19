@@ -406,8 +406,10 @@ async function start() {
   // old text back). The key shortcut passes no id and works on the selection.
   /** @param {string | undefined} id @param {boolean} withModel */
   async function runDiacritics(id, withModel) {
-    if (withModel && !sync?.hasModel) {
-      statusbar.notice("the sync server has no model");
+    // Asked again here: the answer from startup is "no" when the device was
+    // offline then (code review, UX finding 4).
+    if (withModel && !sync?.hasModel && !(await sync?.probeModel())) {
+      statusbar.notice(sync?.isConfigured ? "the sync server has no model" : "no sync server is set");
       return;
     }
     const target = id ?? store.activeId;

@@ -106,8 +106,19 @@ export function isBroken() {
  * @returns {boolean}
  */
 export function isWord(word) {
-  return engine.testSpelling(word);
+  // Cached: every pass asks each word of the note again, and on a long note
+  // the uncached tests alone cost 0.2 to 1 s per pass (code review, finding 2).
+  let known = words.get(word);
+  if (known === undefined) {
+    if (words.size >= CACHE_LIMIT) words.clear();
+    known = Boolean(engine.testSpelling(word));
+    words.set(word, known);
+  }
+  return known;
 }
+
+/** @type {Map<string, boolean>} */
+const words = new Map();
 
 /**
  * Suggestions for a misspelled word, from the cache when present. Returns
@@ -161,7 +172,7 @@ function compute(key) {
   const list =
     key[0] === "s"
       ? engine.getSpellingSuggestions(word).slice(0, MAX_SUGGESTIONS)
-      : twins(word, isWord) ?? [];
+      : twins(word, (w) => engine.testSpelling(w)) ?? [];
   cache.set(key, list);
   pending.delete(key);
   return list;

@@ -39,12 +39,6 @@ export function strip(text) {
   return out;
 }
 
-/** @param {string} text */
-export function hasDiacritics(text) {
-  for (const ch of text) if (BASE.has(ch)) return true;
-  return false;
-}
-
 // A long word with many vowels has thousands of diacritic variants, and each
 // costs one Hunspell test (10 to 50 µs). Past this count the search gives up
 // and the word keeps a red mark, as before this feature. Measured on Czech

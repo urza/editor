@@ -594,7 +594,6 @@ export function createSyncClient({ store, keyring }) {
   let model = false;
 
   async function probeModel() {
-    const had = model;
     model = false;
     if (isConfigured()) {
       try {
@@ -603,10 +602,10 @@ export function createSyncClient({ store, keyring }) {
         if (res.ok) model = (await res.json()).diacritics === true;
       } catch {
         // Offline at startup: no entry until the next configuration or
-        // reload. The command is explicit, so a missing entry is safe.
+        // reload. The command asks again (runDiacritics in main.js).
       }
     }
-    if (model !== had) events.dispatchEvent(new Event("model"));
+    return model;
   }
 
   /**
@@ -785,6 +784,7 @@ export function createSyncClient({ store, keyring }) {
       return model;
     },
     addDiacritics,
+    probeModel,
     get config() {
       return config ?? { url: "", token: "" };
     },

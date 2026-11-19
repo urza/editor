@@ -8,7 +8,7 @@
 // then asks the user's model, through the sync server, for the paragraphs
 // that had a blue word, and keeps only the changes that pass checkAnswer.
 
-import { checkAnswer, WORD } from "./diacritics.js";
+import { checkAnswer } from "./diacritics.js";
 import { englishNow, enginesForCommand, wordsIn } from "./spellcheck.js";
 import * as hunspell from "./hunspell.js";
 import { segments } from "./textlang.js";
@@ -20,7 +20,7 @@ const PARALLEL = 16;
 
 /**
  * @typedef {{ ask: (text: string) => Promise<string> }} Model
- * @typedef {(text: string | null, sticky?: boolean) => void} Notice
+ * @typedef {(text: string, sticky?: boolean) => void} Notice
  */
 
 /**
@@ -53,8 +53,17 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   const plain = new Set();
   /** @type {Set<string>} words Harper takes as English and Czech does not */
   const englishOnly = new Set();
+  // The start of every prose word in the range. The model may change only
+  // these: a paragraph also holds links and inline code, and a model that
+  // writes "články" into a URL would break the link (code review, finding 1).
+  const prose = wordsIn(text, from, to);
+  const starts = new Set(prose.map((w) => w.from));
 
-  for (const { word, from: at } of wordsIn(text, from, to)) {
+  let n = 0;
+  for (const { word, from: at } of prose) {
+    // A long note: let the page paint the notice now and then, since the
+    // twin search for a word that the marks never saw has no budget here.
+    if (++n % 200 === 0) await new Promise((resolve) => setTimeout(resolve));
     if (hunspell.isWord(word)) continue;
     if (harper && (await englishNow(harper, word))) {
       englishOnly.add(word);
@@ -83,7 +92,10 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   let dropped = 0;
   /** @type {Map<number, string>} */
   const final = new Map(local);
-  notice(`asking the model… 0 of ${paras.length}`, true);
+  // The note must not change while the model works, or the answer is thrown
+  // away (see below), so the notice says so.
+  const progress = () => notice(`asking the model… ${done} of ${paras.length}, please wait`, true);
+  progress();
 
   await pool(paras, PARALLEL, async (p) => {
     const sent = after.slice(p.from, p.to);
@@ -91,22 +103,21 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
       const checked = checkAnswer(sent, await model.ask(sent), (w) => hunspell.isWord(w));
       if (!checked) dropped++;
       else {
-        for (const m of sent.matchAll(WORD)) {
-          const at = p.from + /** @type {number} */ (m.index);
-          const next = checked.text.slice(m.index, m.index + m[0].length);
-          // Only inside the selection, and never an English word: the
+        for (const w of prose) {
+          if (w.from < p.from || w.to > p.to) continue;
+          const next = checked.text.slice(w.from - p.from, w.to - p.from);
+          // Only prose words in the selection, never an English word: the
           // instruction says so, and this is where a model that ignores it
           // is stopped ("mate" must not become "máte").
-          if (next === m[0] || at < from || at + next.length > to) continue;
-          if (englishOnly.has(text.slice(at, at + next.length))) continue;
-          final.set(at, next);
+          if (next === w.word || englishOnly.has(w.word) || !starts.has(w.from)) continue;
+          final.set(w.from, next);
         }
       }
     } catch {
       failed++;
     }
     done++;
-    notice(`asking the model… ${done} of ${paras.length}`, true);
+    progress();
   });
 
   if (!stillHere() || view.state.doc !== start.doc) {
@@ -121,7 +132,8 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   apply(view, start, text, final);
   const changed = [...final].filter(([at, w]) => text.slice(at, at + w.length) !== w).length;
   let message = `${changed} ${changed === 1 ? "word" : "words"} changed`;
-  if (dropped + failed > 0) message += `, ${dropped + failed} ${dropped + failed === 1 ? "paragraph" : "paragraphs"} dropped`;
+  const kept = dropped + failed;
+  if (kept > 0) message += `, the model gave no usable answer for ${kept} ${kept === 1 ? "paragraph" : "paragraphs"}`;
   notice(message);
 }
 
@@ -154,7 +166,7 @@ function withChanges(text, changes) {
 function summary(changed, ambiguous) {
   let s = `${changed} ${changed === 1 ? "word" : "words"} changed`;
   if (ambiguous > 0) {
-    s += `, ${ambiguous} ${ambiguous === 1 ? "word has" : "words have"} more than one twin`;
+    s += `, ${ambiguous} ${ambiguous === 1 ? "word needs" : "words need"} your choice (blue mark)`;
   }
   return s;
 }

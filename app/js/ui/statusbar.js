@@ -168,6 +168,8 @@ export function mountStatusbar(store, sync, zoom, view) {
       lines.push("Click to sync now.");
     }
     statusState.title = lines.join("\n");
+    // The sign alone ("✓", "…") says nothing to a screen reader.
+    statusState.setAttribute("aria-label", lines.join(" "));
   }
 
   statusState.addEventListener("click", () => {
@@ -186,22 +188,17 @@ export function mountStatusbar(store, sync, zoom, view) {
    * A short message in the place of the state sign. It goes away after
    * 1.5 s, or, when sticky, stays until the next notice: a model can take
    * many seconds, and a 1.5 s "asking the model…" followed by a quiet bar
-   * looks like a command that did nothing. A null text ends a sticky notice.
-   * @param {string | null} text @param {boolean} [sticky]
+   * looks like a command that did nothing.
+   * @param {string} text @param {boolean} [sticky]
    */
   function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
-    noticeTimer = undefined;
     const end = () => {
       noticeTimer = undefined;
       statusState.classList.remove("notice");
       phoneNotice.hidden = true;
       renderState();
     };
-    if (text === null) {
-      end();
-      return;
-    }
     statusState.textContent = text;
     statusState.classList.remove("problem");
     statusState.classList.add("notice");
