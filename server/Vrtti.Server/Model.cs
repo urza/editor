@@ -31,7 +31,7 @@ public record ModelSettings(Uri? Url, string Name, string? Key)
 /// the text of a note; this is the one exception, and only on the user's command.
 /// </para>
 /// </remarks>
-public sealed partial class DiacriticsModel(HttpClient http, ModelSettings settings)
+public sealed partial class DiacriticsModel(HttpClient http, ModelSettings settings, ILogger<DiacriticsModel> log)
 {
     // A paragraph, not a note: the client sends one request per paragraph.
     public const int MaxChars = 20_000;
@@ -55,7 +55,9 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
         timeout.CancelAfter(Timeout);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(settings.Url!, "chat/completions"))
         {
-            Content = JsonContent.Create(new
+            // A body with a Content-Length: JsonContent streams it chunked, and not every
+            // OpenAI-compatible server reads a chunked request.
+            Content = new StringContent(JsonSerializer.Serialize(new
             {
                 model = settings.Name,
                 temperature = 0,
@@ -71,7 +73,7 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
                     new { role = "system", content = Instruction },
                     new { role = "user", content = text },
                 },
-            }),
+            }), System.Text.Encoding.UTF8, "application/json"),
         };
         if (settings.Key is not null)
         {
@@ -83,6 +85,7 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
             using var response = await http.SendAsync(request, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
+                log.LogWarning("The model answered {Status}.", (int)response.StatusCode);
                 return null;
             }
 
@@ -94,6 +97,9 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
                                       or JsonException or KeyNotFoundException
                                       or InvalidOperationException or IndexOutOfRangeException)
         {
+            // The kind and the message of the failure, never the text of the note: an
+            // exception message here can only name the connection or the JSON shape.
+            log.LogWarning("The model call failed: {Kind}: {Message} {Inner}", e.GetType().Name, e.Message, e.InnerException?.Message);
             return null;
         }
     }

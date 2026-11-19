@@ -12,10 +12,12 @@ public class ModelTests
     sealed class FakeModel(Func<string, HttpResponseMessage> answer) : HttpMessageHandler
     {
         public List<JsonElement> Requests { get; } = [];
+        public List<long?> Lengths { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Assert.Equal("http://model.test/v1/chat/completions", request.RequestUri!.ToString());
+            Lengths.Add(request.Content!.Headers.ContentLength);
             var body = await request.Content!.ReadFromJsonAsync<JsonElement>(token);
             Requests.Add(body);
             var text = body.GetProperty("messages")[1].GetProperty("content").GetString()!;
@@ -76,6 +78,9 @@ public class ModelTests
         Assert.Equal(0, sent.GetProperty("temperature").GetInt32());
         Assert.Equal("system", sent.GetProperty("messages")[0].GetProperty("role").GetString());
         Assert.Equal("tlacitko palcove otevre menu", sent.GetProperty("messages")[1].GetProperty("content").GetString());
+        // A fixed length and not a chunked body: some servers do not read chunked requests
+        // (found with a small Python fake model, which closed the connection).
+        Assert.NotNull(Assert.Single(model.Lengths));
     }
 
     [Fact]
