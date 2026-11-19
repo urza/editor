@@ -304,7 +304,7 @@ const SECTIONS = [
         key: "list-rows",
         label: "Longer rows in the note list",
         hint:
-          "Each note shows the time of its last change and two lines of its text. " +
+          "Each note shows two lines of its text in place of one. " +
           "A setting of this device.",
         get: () => listRowsLong(),
         set: () => run("view.listRows"),

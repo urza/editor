@@ -815,8 +815,13 @@ puts every control at the bottom right and makes the list full screen.
 - **Stacking**, low to high: settings panel 10, note list 20, scrim of the
   round buttons 29, thumb button and round buttons 30, row menu 40. The
   thumb button hides while the settings panel is open.
+- **The date.** Each row shows the time of the last change at the right
+  end of its first line (user decision, 2026-11-19): the clock for today,
+  the weekday for the six days before, the day and month for older notes
+  (`shortTime` in `model/preview.js`). For a row of Recent it is the time
+  of the close, because `close` in `model/docs.js` writes `updatedAt`.
 - **Setting**: "Longer rows in the note list" (`vrtti.listRows` in
-  `localStorage`, device-local) adds the time and a second preview line.
+  `localStorage`, device-local) adds a second preview line.
 - **Swipe to close.** A swipe to the left on a row of Open closes the note
   (`ui/sidebar.js`, next to the drag code; touch only). The rows have
   `touch-action: pan-y`, so the browser keeps the scroll and gives a

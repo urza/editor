@@ -1630,8 +1630,18 @@ html.phone .buffer-preview {
   opacity: 0.7;
 }
 
-/* Longer rows, a setting of the device (ui/sidebar.js): the time of the last
-   change beside the title, and two lines of preview. */
+/* The time of the last change, at the right end of the first line (user
+   decision, 2026-11-19; before that only the longer rows had it). It never
+   shrinks, so a long title gives up the space and ends in "…". */
+html.phone .buffer-time {
+  display: block;
+  flex: 0 0 auto;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+}
+
+/* Longer rows, a setting of the device (ui/sidebar.js): two lines of preview
+   in place of one. */
 /* No larger min-height: a row grows with its preview, and a note with no
    preview keeps the short row instead of a tall empty one. */
 html.phone.rows-long .buffer-row {
@@ -1647,13 +1657,6 @@ html.phone.rows-long .buffer-preview {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;
-}
-
-html.phone.rows-long .buffer-time {
-  display: block;
-  flex: 0 0 auto;
-  font-size: var(--ui-xs);
-  color: var(--st-gutter-fg);
 }
 
 /* The ⋯ is the only way to the row menu on a phone, so it is a full target:

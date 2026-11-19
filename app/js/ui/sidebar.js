@@ -19,9 +19,8 @@ import { phoneMode } from "./shell.js";
 /** @typedef {import("../model/folders.js").Entry} Entry */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
 
-// Longer rows in the phone note list (architecture.md §9, Phone mode): the
-// time of the last change and two lines of preview, where a row has one line
-// by default. Device-local in localStorage, like the "+" setting next to it
+// Longer rows in the phone note list (architecture.md §9, Phone mode): two
+// lines of preview, where a row has one line by default. Device-local in localStorage, like the "+" setting next to it
 // (ui/newbutton.js): a phone and a small tablet want different answers. The
 // state is a class on <html> and app.css does the rest, so a change redraws
 // nothing; the inline script in index.html replays the class before the
@@ -411,8 +410,8 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(warn);
     }
 
-    // The time of the last change, for the longer rows of the phone note
-    // list. Every row carries it and the preview below, in every layout, and
+    // The time of the last change, for the rows of the phone note list.
+    // Every row carries it and the preview below, in every layout, and
     // app.css shows them in phone mode only: the layout can change under a
     // drawn list (a phone turned on its side), and this way that needs no
     // redraw and no code that knows the mode.
