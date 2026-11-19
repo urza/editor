@@ -14,6 +14,7 @@ import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
+import { listRowsLong } from "./sidebar.js";
 import { titleOf, KEYRING_SPACE } from "../model/docs.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
@@ -283,6 +284,20 @@ const SECTIONS = [
           "A setting of this device.",
         get: () => sidebarNewButtonShown(),
         set: () => run("view.sidebarNewButton"),
+      },
+      // The phone note list (architecture.md §9, Phone mode). app.css shows
+      // this row in phone mode only, and hides the one above there: the
+      // sidebar "+" is not on screen in that layout. In CSS, not with a
+      // `hidden` here, because the mode can change while the panel is open.
+      {
+        type: "toggle",
+        key: "list-rows",
+        label: "Longer rows in the note list",
+        hint:
+          "Each note shows the time of its last change and two lines of its text. " +
+          "A setting of this device.",
+        get: () => listRowsLong(),
+        set: () => run("view.listRows"),
       },
     ],
   },

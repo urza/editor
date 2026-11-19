@@ -8,6 +8,7 @@
 // nothing to do with the text being typed.
 
 import { titleOf, DEFAULT_SPACE, KEYRING_SPACE } from "../model/docs.js";
+import { previewOf, shortTime } from "../model/preview.js";
 import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
@@ -16,6 +17,21 @@ import { openMenu } from "./menu.js";
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
+
+// Longer rows in the phone note list (architecture.md §9, Phone mode): the
+// time of the last change and two lines of preview, where a row has one line
+// by default. Device-local in localStorage, like the "+" setting next to it
+// (ui/newbutton.js): a phone and a small tablet want different answers. The
+// state is a class on <html> and app.css does the rest, so a change redraws
+// nothing; the inline script in index.html replays the class before the
+// first paint and only reads the key this file writes.
+const ROWS_KEY = "vrtti.listRows";
+const ROWS_CLASS = "rows-long";
+
+/** The "longer rows" setting. */
+export function listRowsLong() {
+  return document.documentElement.classList.contains(ROWS_CLASS);
+}
 
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
@@ -80,6 +96,20 @@ export function mountSidebar(store, folders, sync) {
   const newWindow = /** @type {HTMLElement} */ (document.getElementById("new-window"));
   newWindow.hidden = matchMedia("(max-width: 700px)").matches;
   newWindow.addEventListener("click", () => run("workspace.new"));
+
+  register({
+    id: "view.listRows",
+    title: "Toggle longer rows in the note list",
+    run: () => {
+      const long = document.documentElement.classList.toggle(ROWS_CLASS);
+      try {
+        localStorage.setItem(ROWS_KEY, long ? "long" : "short");
+      } catch {
+        // Private mode: the choice still applies for this session.
+      }
+      return long;
+    },
+  });
 
   const recentBlock = /** @type {HTMLElement} */ (document.getElementById("recent"));
   const recentHeading = /** @type {HTMLElement} */ (document.getElementById("recent-heading"));
@@ -379,6 +409,16 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(warn);
     }
 
+    // The time of the last change, for the longer rows of the phone note
+    // list. Every row carries it and the preview below, in every layout, and
+    // app.css shows them in phone mode only: the layout can change under a
+    // drawn list (a phone turned on its side), and this way that needs no
+    // redraw and no code that knows the mode.
+    const time = document.createElement("span");
+    time.className = "buffer-time";
+    time.textContent = shortTime(record.updatedAt);
+    li.appendChild(time);
+
     const more = document.createElement("button");
     more.className = "buffer-more";
     more.type = "button";
@@ -403,6 +443,21 @@ export function mountSidebar(store, folders, sync) {
         run("buffer.close", record.id);
       });
       li.appendChild(close);
+    }
+
+    // The start of the text, the second line of a phone row. loadedText, not
+    // textOf: this runs for every row on every keystroke, and textOf would
+    // read every file and decrypt every note to draw a list. So a locked
+    // note and an unread file have no preview, and neither has a note that
+    // is only its title; those rows stay one line. Last in the row: app.css
+    // wraps it onto a line of its own.
+    const text = store.loadedText(record.id);
+    const preview = text === undefined ? "" : previewOf(text, title.textContent ?? "");
+    if (preview) {
+      const span = document.createElement("span");
+      span.className = "buffer-preview";
+      span.textContent = preview;
+      li.appendChild(span);
     }
 
     li.addEventListener("click", () => {
@@ -843,6 +898,17 @@ export function mountSidebar(store, folders, sync) {
 
   store.events.addEventListener("change", () => render());
   store.events.addEventListener("active", () => render({ reveal: true }));
+  // A lock takes the plaintext out of memory (model/docs.js lockAll), and a
+  // preview drawn from it must leave the screen in the same moment. The store
+  // sends no "change" for a lock, so without this the decrypted lines would
+  // stay in the list until the next edit. The previews go by hand first,
+  // because render() stands down during a rename or a drag, and "the list was
+  // busy" is no reason to keep showing a locked note. All of them, not only
+  // the encrypted ones: the redraw puts the others back.
+  store.events.addEventListener("lock", () => {
+    for (const el of sidebar.querySelectorAll(".buffer-preview")) el.remove();
+    render();
+  });
   folders.events.addEventListener("change", renderFolders);
   folders.events.addEventListener("listing", renderFolders);
   render();

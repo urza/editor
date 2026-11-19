@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "e6753a57f56b",
+  "version": "5a1c93abf937",
   "files": [
     "./",
     "./app.css",
@@ -14,6 +14,7 @@ self.__PRECACHE = {
     "./js/crypto/sign.js",
     "./js/crypto/unlock.js",
     "./js/crypto/unlock.worker.js",
+    "./js/editor/cursors.js",
     "./js/editor/editor.js",
     "./js/editor/emoji.js",
     "./js/editor/hunspell.js",
@@ -21,6 +22,7 @@ self.__PRECACHE = {
     "./js/editor/markdown.js",
     "./js/editor/spellcheck.js",
     "./js/editor/textlang.js",
+    "./js/editor/transform.js",
     "./js/main.js",
     "./js/model/capabilities.js",
     "./js/model/channel.js",
@@ -28,6 +30,7 @@ self.__PRECACHE = {
     "./js/model/device.js",
     "./js/model/docs.js",
     "./js/model/folders.js",
+    "./js/model/preview.js",
     "./js/model/workspace.js",
     "./js/storage/fsa.js",
     "./js/storage/idb.js",
@@ -46,6 +49,7 @@ self.__PRECACHE = {
     "./js/ui/sidebar.js",
     "./js/ui/statusbar.js",
     "./js/ui/textsize.js",
+    "./js/ui/thumb.js",
     "./js/ui/title.js",
     "./js/ui/wordwrap.js",
     "./js/ui/zoom.js",

@@ -14,6 +14,7 @@
 import { run } from "../commands/registry.js";
 import { hasDisk } from "../model/capabilities.js";
 import { titleOf } from "../model/docs.js";
+import { phoneMode } from "./shell.js";
 
 /**
  * One run of the search. Everything a run accumulates lives here, so a
@@ -493,7 +494,10 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     view.hidden = true;
     sidebar.classList.remove("searching");
     // Back to the text: the view was opened from a chord inside the editor.
-    editor.view.focus();
+    // Not in phone mode: there the view was opened from the note list, which
+    // stays on screen over the editor, and a focus on text nobody can see
+    // would bring the keyboard up over the list.
+    if (!phoneMode()) editor.view.focus();
   }
 
   view.addEventListener("keydown", (event) => {

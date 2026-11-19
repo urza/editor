@@ -861,6 +861,26 @@ export function createDocStore({
   }
 
   /**
+   * The text of a buffer, but only if it is in memory right now. Never starts
+   * a file read or a decode: the note list calls this for every row on every
+   * redraw to draw a preview (ui/sidebar.js), and textOf() there would read
+   * every file and ask for the passphrase of every locked note.
+   *
+   * Undefined for a locked encrypted note and for a file body this window has
+   * not read. For an encrypted note the only source is the plaintext map, so
+   * a lock takes the text away here too, and the record's ciphertext can
+   * never come back as "text".
+   *
+   * @param {string} id @returns {string | undefined}
+   */
+  function loadedText(id) {
+    const record = buffers.get(id);
+    if (!record) return undefined;
+    if (record.enc) return plain.get(id);
+    return typeof record.content === "string" ? record.content : undefined;
+  }
+
+  /**
    * @param {string} id @param {string} content @param {import("../storage/idb.js").EncMeta} enc
    * @returns {Promise<string>}
    */
@@ -2746,6 +2766,7 @@ export function createDocStore({
     moveTab,
     activate,
     textOf,
+    loadedText,
     // The encoded body of any record, read from its file when this window
     // holds none (§23). The one door for a caller that needs the bytes.
     body,

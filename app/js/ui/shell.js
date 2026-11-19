@@ -5,6 +5,12 @@
 //    sidebar is a drawer over the editor, with a scrim behind it. A 220px
 //    column on a 360px screen would leave no editor, so it must not push.
 //
+// Phone mode (the class `phone` on <html>, set by the inline script in
+// index.html) is the narrow layout drawn another way: the drawer fills the
+// screen as the note list, and the thumb button replaces both hamburgers
+// (ui/thumb.js). The state and every command below are the same, which is
+// why nothing in this file asks which of the two is on screen.
+//
 // The CSS defaults match the breakpoint default (open when wide, closed when
 // narrow) with no class present, so the first paint is already right and the
 // mount below never causes a flash.
@@ -13,6 +19,16 @@ import { register } from "../commands/registry.js";
 
 const NARROW = "(max-width: 700px)";
 const OPEN_KEY = "vrtti.sidebarOpen";
+
+/**
+ * Is the phone layout on? Read from the class each time, never kept: the
+ * class follows a media query (a phone turned on its side leaves the mode),
+ * and a copy would go stale with no event to correct it. app.css does the
+ * drawing from the same class, so ask this only where behaviour differs.
+ */
+export function phoneMode() {
+  return document.documentElement.classList.contains("phone");
+}
 
 export function mountShell() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));
