@@ -663,6 +663,10 @@ export function mountSidebar(store, folders, sync) {
 
   /** @type {{ li: HTMLElement, id: string, pointerId: number, startX: number, startY: number, width: number, active: boolean, stale: boolean } | null} */
   let swipe = null;
+  // On the row while its word "close" is bright. The class is also the
+  // answer to "does a release close the note" (pointerup), so what the user
+  // was shown and what happens cannot come apart.
+  const ARMED = "swipe-armed";
   // The finger must go this far left before the row starts to follow it.
   const SWIPE_SLOP = 10;
   // The close point: this share of the row's width (user decision,
@@ -670,8 +674,6 @@ export function mountSidebar(store, folders, sync) {
   // Distance only, never speed: a quick flick must not close a note, because
   // a close has no undo other than opening the note again from Recent.
   const SWIPE_CLOSE = 1 / 3;
-  // app.css moves the content back in 0.12s; a redraw waits that out.
-  const SWIPE_BACK_MS = 150;
 
   openList.addEventListener("pointerdown", (event) => {
     if (swipe || event.pointerType !== "touch" || !event.isPrimary || !phoneMode()) return;
@@ -716,13 +718,14 @@ export function mountSidebar(store, folders, sync) {
     const moved = Math.min(0, dx);
     swipe.li.style.setProperty("--swipe", moved + "px");
     // The word "close" turns bright: lifting the finger now closes the note.
-    swipe.li.classList.toggle("swipe-armed", -moved >= swipe.width * SWIPE_CLOSE);
+    swipe.li.classList.toggle(ARMED, -moved >= swipe.width * SWIPE_CLOSE);
   });
 
   openList.addEventListener("pointerup", (event) => {
     if (!swipe || event.pointerId !== swipe.pointerId) return;
-    const { id, active, width, startX } = swipe;
-    const close = active && startX - event.clientX >= width * SWIPE_CLOSE;
+    const { id, li } = swipe;
+    // Read before endSwipe() takes the class off.
+    const close = li.classList.contains(ARMED);
     endSwipe();
     // At once, with no slide out first: waiting for an animation to end
     // means waiting for an event that never comes with reduced motion. The
@@ -743,11 +746,13 @@ export function mountSidebar(store, folders, sync) {
     swipe = null;
     if (!active) return;
     // Without the class, app.css moves the content back to its place.
-    li.classList.remove("swiping", "swipe-armed");
+    li.classList.remove("swiping", ARMED);
     li.style.removeProperty("--swipe");
-    // A redraw that stood down during the swipe runs now, but after the move
-    // back: a redraw replaces the row, and the content would jump home.
-    if (stale) setTimeout(render, SWIPE_BACK_MS);
+    // The redraw that stood down during the swipe runs now. It replaces the
+    // row, so in this one case the content jumps home instead of sliding;
+    // a timer to wait for the slide would be a second clock to keep in step
+    // with the CSS, for a sync that lands in the middle of a swipe.
+    if (stale) render();
   }
 
   // ---- Folder sections (architecture.md §2, §9) ----------------------------
