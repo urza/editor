@@ -842,7 +842,9 @@ puts every control at the bottom right and makes the list full screen.
   2026-11-19): its buttons are too small for a thumb. The Update section of
   the settings panel has the build stamp and the update check, and Sync and
   Editor have the sync and spellcheck states. The notices of the save slot
-  ("copied", "encrypt failed") do not show in phone mode.
+  ("copied", "encrypt failed") show in `#notice`, a small box above the
+  thumb button: `ui/statusbar.js` writes each notice to both places, and
+  `app.css` shows the box in phone mode only.
 - **Known limit.** On Android a swipe that starts at the screen edge is the
   system's Back, and the page cannot change that. Such a swipe on a row
   closes the note list, not the note.

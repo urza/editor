@@ -1493,7 +1493,7 @@ img.twemoji {
    thumb can hit, and the floating "+" becomes the thumb button, which opens
    three round buttons (ui/thumb.js). Stacking, low to high: the settings
    panel (10), the note list (20), the scrim of the round buttons (29), the
-   thumb button and the round buttons (30), a row menu (40). */
+   thumb button, the round buttons and the notice (30), a row menu (40). */
 
 /* Hidden by default: the parts only phone mode shows. Rows carry a preview
    and a time everywhere (ui/sidebar.js makeRow), and the settings panel has a
@@ -1501,6 +1501,7 @@ img.twemoji {
 .thumb-icon,
 #thumb-scrim,
 #thumb-menu,
+#notice,
 .buffer-preview,
 .buffer-time,
 .settings-row[data-key="list-rows"] {
@@ -1547,7 +1548,8 @@ html.phone {
 /* No status bar in phone mode (user decision, 2026-11-19): its buttons are
    too small for a thumb, and it takes a line from the editor. Settings has
    what a phone needs from it: the build and the update check (Update), sync
-   and spellcheck. Its notices ("copied", "encrypt failed") do not show. */
+   and spellcheck. Its notices ("copied", "encrypt failed") show in #notice,
+   above the thumb button. */
 html.phone #statusbar { display: none; }
 
 /* The containing block of the list, so the list covers the editor pane. */
@@ -1856,6 +1858,28 @@ html.phone #new-fab {
   /* Hides the "+", a bare text node, and nothing else: the icons are sized
      in px. */
   font-size: 0;
+}
+
+/* A notice of the status bar (ui/statusbar.js), which phone mode does not
+   show. Above the thumb button and on its layer, so it shows over the note
+   list too: most notices come from the row menu there. It rides on the
+   keyboard with the button. :not([hidden]), or this display would outrank
+   the attribute that takes the notice away. */
+html.phone #notice:not([hidden]) {
+  display: block;
+  position: absolute;
+  z-index: 30;
+  right: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + var(--fab) + 12px + var(--keyboard-inset, 0px));
+  max-width: calc(100% - 2 * var(--fab-gap));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  font-size: var(--ui-base);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  /* It lies over rows and text for a moment, and must not take their taps. */
+  pointer-events: none;
 }
 
 /* The sign: three lines closed, a cross while the round buttons are out.
