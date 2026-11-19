@@ -128,7 +128,9 @@ let spacesLoading = false;
  *                             it takes its own line in an inset block.
  * @property {() => boolean | Promise<boolean>} [visible] Hide the row when false.
  * @property {string} [button]                           action: button label.
- * @property {() => any} [act]                           action: dispatch the action.
+ * @property {(repaint: () => void) => any} [act]        action: dispatch the action.
+ *                             An action that reports progress calls `repaint`
+ *                             at each step.
  * @property {string} [text]                             note: one paragraph.
  * @property {(repaint: () => void) => ListRow[]} [rows] list: the rows, read
  *                             on every paint. A list whose source is fetched
@@ -170,6 +172,13 @@ function formatBytes(bytes) {
   }
   return bytes + " B";
 }
+
+/**
+ * What the update check says at the moment, or null while it is silent
+ * (the "Update" section below).
+ * @type {string | null}
+ */
+let updateStatus = null;
 
 /** The sync state as the status bar says it, from one table, so the two never disagree. */
 function syncStateWord() {
@@ -648,9 +657,11 @@ const SECTIONS = [
     ],
   },
   {
-    title: "About",
+    // The build and the update check sit together, and here rather than only
+    // in the status bar: phone mode has no status bar (app.css), so this is
+    // the one place a phone can ask for a new build.
+    title: "Update",
     items: [
-      { type: "note", text: "vrtti — scratchpad editor" },
       { type: "info", key: "build", label: "Build", value: () => BUILD.commit },
       {
         type: "info",
@@ -658,6 +669,27 @@ const SECTIONS = [
         label: "Built",
         value: () => new Date(BUILD.builtAt).toLocaleString(),
       },
+      {
+        type: "action",
+        key: "update",
+        label: "Update to the latest build",
+        hint: "Looks for a newer build. If there is one, the app loads it and starts again.",
+        value: () => updateStatus ?? "",
+        button: "check",
+        // The check reports in steps ("checking…", then the result, then
+        // null a few seconds later), so each step repaints the row.
+        act: (repaint) =>
+          run("app.update", (/** @type {string | null} */ msg) => {
+            updateStatus = msg;
+            repaint();
+          }),
+      },
+    ],
+  },
+  {
+    title: "About",
+    items: [
+      { type: "note", text: "vrtti — scratchpad editor" },
       {
         type: "note",
         text: "CodeMirror 6 — MIT.",
@@ -962,7 +994,7 @@ function makeRow(item, refresh) {
       try {
         // The click is the user gesture some of these APIs require, so the
         // command runs on this stack and not on a timer.
-        if (item.act) await item.act();
+        if (item.act) await item.act(refresh);
       } finally {
         button.disabled = false;
         // The action changed what other rows report (a granted permission, a

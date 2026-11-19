@@ -1544,8 +1544,13 @@ html.phone {
 
 /* ---- The note list: #sidebar, full screen ------------------------------ */
 
-/* The containing block of the list. The status bar is outside #app, so the
-   list covers the editor and leaves the status bar on screen. */
+/* No status bar in phone mode (user decision, 2026-11-19): its buttons are
+   too small for a thumb, and it takes a line from the editor. Settings has
+   what a phone needs from it: the build and the update check (Update), sync
+   and spellcheck. Its notices ("copied", "encrypt failed") do not show. */
+html.phone #statusbar { display: none; }
+
+/* The containing block of the list, so the list covers the editor pane. */
 html.phone #app { position: relative; }
 
 html.phone #sidebar {
@@ -1714,11 +1719,12 @@ html.phone .buffer-row.swipe-armed::after {
 
 /* The way back after a release short of the close point. On the rows at
    rest, not on .swiping: under the finger the content must not lag, and the
-   transition runs when that class goes. There is none for a close, on
-   purpose; see the pointerup handler. */
+   transition runs when that class goes. 0.2s, the same as each step of the
+   close (ui/sidebar.js swipeOut, which animates from script); 0.12s was too
+   fast to follow on a real phone (user report, 2026-11-19). */
 @media (prefers-reduced-motion: no-preference) {
   html.phone #open-list .buffer-row:not(.swiping) > * {
-    transition: transform 0.12s ease-out;
+    transition: transform 0.2s ease-out;
   }
 }
 
@@ -1812,6 +1818,27 @@ html.phone #search-close::after {
   content: "close search";
   font-size: var(--ui-base);
 }
+
+/* ---- The settings panel -------------------------------------------------- */
+
+/* The × as a full touch target with a cross the eye finds: at --ui-icon-lg
+   it was a 9px sign in the corner (user report, 2026-11-19). */
+html.phone #settings-close {
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  font-size: calc(32px * var(--thumb-scale));
+  /* The box is much wider than the cross in it. Pulled into the panel's 16px
+     padding, the cross stays near the right edge of the content, where the
+     rows end. */
+  margin-right: -10px;
+}
+
+/* The head must hold that target. --ui-top-h follows --ui-scale down to
+   34px, so it gets a floor here. Set on the panel and not on the row: the
+   sticky offsets and the scroll padding read the same property (see
+   .settings-head), and all of them must agree. */
+html.phone #settings-panel { --ui-top-h: max(calc(48px * var(--ui-scale)), var(--tap)); }
 
 /* ---- The thumb button and its round buttons ----------------------------- */
 

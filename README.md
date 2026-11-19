@@ -120,7 +120,8 @@ screen, and each row shows the start of the note. A swipe to the left on a row
 closes that note. The note goes to Recent, and a tap there opens it again. Start
 the swipe on the row and not at the screen edge, because Android takes a swipe
 from the edge as Back. On Android, Back closes the top open part (a menu, the
-round buttons, the settings, or the list).
+round buttons, the settings, or the list). A phone shows no status bar.
+**Settings › Update** shows the build and looks for a newer one.
 
 The notes are the same as on the desktop once sync is on. Phones cannot open
 folders, so sync is also the backup there.

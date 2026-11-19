@@ -115,7 +115,7 @@ export function mountNewButton() {
       // with the keyboard up, iOS pans the visual viewport inside the layout
       // viewport to follow the caret, which is why "scroll" repaints too.
       // Measured from the pane, not from the window: the button is placed
-      // against the pane, and the status bar under it is already cleared.
+      // against the pane.
       const covered = host.getBoundingClientRect().bottom - (vv.offsetTop + vv.height);
       const inset = phone && keyboard ? Math.max(0, covered) : 0;
       document.documentElement.style.setProperty("--keyboard-inset", inset + "px");

@@ -570,7 +570,9 @@ dismisses it. No modal library, no routing.
   mutations still go through commands, never directly from the panel.
 - Planned sections: Editor (spellcheck, emoji), Storage (persistence state),
   Sync (server URL and token, when sync ships), Security (keys, lock),
-  About (build stamp, vendored licenses, the Twemoji CC-BY attribution).
+  Update (build stamp and the update check, which the status bar has too;
+  phone mode has no status bar, so there this is the only one),
+  About (vendored licenses, the Twemoji CC-BY attribution).
 - Storage: localStorage per device for now. A `settings` IndexedDB store (and
   later sync for the sharable subset) arrives with the sync phase.
 - Buttons that need instant reach (new buffer, save indicator, update) stay
@@ -784,7 +786,7 @@ puts every control at the bottom right and makes the list full screen.
 - **The note list is `#sidebar`.** The same element, the same rows, the
   same commands: rename, the row menu, folders, search, Recent and From
   server are not implemented twice. `#app` is its containing block, so it
-  covers the editor and leaves the status bar. Closed, it is `display:
+  covers the editor pane. Closed, it is `display:
   none`, because the lists redraw on every keystroke and nobody sees them.
 - **A row is two lines.** `makeRow` adds a preview and a time to every row
   in every layout; `app.css` shows them in phone mode only, so a turn of
@@ -821,8 +823,13 @@ puts every control at the bottom right and makes the list full screen.
   sideways move to the page. The content of the row follows the finger by
   one custom property, and the word "close" shows behind it. The close
   point is a third of the row width (user decision, 2026-11-19); only the
-  distance counts. A close runs `buffer.close` when the finger lifts, with
-  no animation before it. Rows of Recent and From server do not swipe.
+  distance counts. When the finger lifts past it, the content slides off
+  and the row folds away (0.2 s each, user report from a real phone: the
+  close with no animation was too fast to follow), then `buffer.close`
+  runs. A timer of the same two durations starts the close, not the end
+  event of an animation, so a dropped animation cannot keep a note open.
+  With reduced motion the close runs at once. Rows of Recent and From
+  server do not swipe.
 - **Back closes a layer.** On Android, Back closes the newest of: a row
   menu, the round buttons, the settings panel, the note list. Each layer
   calls `watchBack` (`ui/shell.js`) when it opens, which makes a
@@ -831,6 +838,11 @@ puts every control at the bottom right and makes the list full screen.
   entry, and a forgotten one is a Back that does nothing. Phone mode only,
   because a watcher also takes Escape. A browser with no `CloseWatcher`
   (Safari) gets nothing; an iPhone has no Back.
+- **No status bar.** Phone mode hides `#statusbar` (user decision,
+  2026-11-19): its buttons are too small for a thumb. The Update section of
+  the settings panel has the build stamp and the update check, and Sync and
+  Editor have the sync and spellcheck states. The notices of the save slot
+  ("copied", "encrypt failed") do not show in phone mode.
 - **Known limit.** On Android a swipe that starts at the screen edge is the
   system's Back, and the page cannot change that. Such a swipe on a row
   closes the note list, not the note.
