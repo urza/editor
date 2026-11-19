@@ -661,8 +661,15 @@ export function mountSidebar(store, folders, sync) {
   // divides the gesture: an up or down move is the browser's scroll, and the
   // browser then cancels the pointer; a sideways move comes here.
 
-  /** @type {{ li: HTMLElement, id: string, pointerId: number, startX: number, startY: number, width: number, active: boolean, stale: boolean } | null} */
+  /** @type {{ li: HTMLElement, id: string, pointerId: number, startX: number, startY: number, width: number, active: boolean } | null} */
   let swipe = null;
+  // Rows on their way out (swipeOut). They are no longer `swipe`, so the next
+  // swipe can start while they leave, but render() must still not replace
+  // them in the middle of their animation.
+  let leaving = 0;
+  // render() stood down for a swipe or a leaving row and has a redraw to
+  // make up for.
+  let redrawOwed = false;
   // On the row while its word "close" is bright. The class is also the
   // answer to "does a release close the note" (pointerup), so what the user
   // was shown and what happens cannot come apart.
@@ -674,6 +681,12 @@ export function mountSidebar(store, folders, sync) {
   // Distance only, never speed: a quick flick must not close a note, because
   // a close has no undo other than opening the note again from Recent.
   const SWIPE_CLOSE = 1 / 3;
+  // The close, in two steps: the content slides off to the left, then the
+  // row folds away and the rows below move up. The first version removed the
+  // row the moment the finger lifted, and on a real phone that was too fast
+  // to follow (user report, 2026-11-19). Milliseconds.
+  const SWIPE_OUT = 200;
+  const SWIPE_FOLD = 200;
 
   openList.addEventListener("pointerdown", (event) => {
     if (swipe || event.pointerType !== "touch" || !event.isPrimary || !phoneMode()) return;
@@ -693,7 +706,6 @@ export function mountSidebar(store, folders, sync) {
       startY: event.clientY,
       width: 0,
       active: false,
-      stale: false,
     };
   });
 
@@ -726,13 +738,64 @@ export function mountSidebar(store, folders, sync) {
     const { id, li } = swipe;
     // Read before endSwipe() takes the class off.
     const close = li.classList.contains(ARMED);
+    if (close && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      swipeOut();
+      return;
+    }
     endSwipe();
-    // At once, with no slide out first: waiting for an animation to end
-    // means waiting for an event that never comes with reduced motion. The
-    // store's "change" redraws the list without the row. The list stays
-    // open, so the next note can go the same way.
+    // Reduced motion: at once, with no slide out. The store's "change"
+    // redraws the list without the row. The list stays open, so the next
+    // note can go the same way.
     if (close) run("buffer.close", id);
   });
+
+  // A release past the close point: the row leaves, then the note closes.
+  function swipeOut() {
+    if (!swipe) return;
+    const { li, id, width } = swipe;
+    // Free for the next swipe at once. The row keeps its classes: the bright
+    // word "close" stays behind the content while it goes.
+    swipe = null;
+    leaving++;
+    // A tap on a row that is on its way out must not open its note.
+    li.style.pointerEvents = "none";
+    // From where the finger left it. The animation outranks the transform
+    // that app.css derives from --swipe, and `forwards` holds the last frame
+    // until the redraw removes the row.
+    const from = li.style.getPropertyValue("--swipe");
+    for (const child of li.children) {
+      child.animate(
+        { transform: [`translateX(${from})`, `translateX(${-width}px)`] },
+        { duration: SWIPE_OUT, easing: "ease-in", fill: "forwards" }
+      );
+    }
+    // Height alone would stop at the padding and the min-height.
+    li.animate(
+      {
+        height: [li.offsetHeight + "px", "0px"],
+        minHeight: "0px",
+        paddingTop: "0px",
+        paddingBottom: "0px",
+      },
+      { delay: SWIPE_OUT, duration: SWIPE_FOLD, easing: "ease-in-out", fill: "forwards" }
+    );
+    // A timer, not the animations' `finished`: the close must come even if
+    // the browser drops an animation (the list can go out of sight in the
+    // middle, when the user opens another note). The two constants set both
+    // the animations and this wait, so they cannot drift apart.
+    setTimeout(async () => {
+      try {
+        await run("buffer.close", id);
+      } finally {
+        // Held until the store is done, not until the timer: the close
+        // writes to storage first, and a redraw in that gap would draw the
+        // row again at full height. The store's "change" came while the
+        // list was held, so the redraw is owed now.
+        leaving--;
+        if (redrawOwed) render();
+      }
+    }, SWIPE_OUT + SWIPE_FOLD);
+  }
 
   // The browser took the gesture for a scroll, or Android took it for Back
   // (a swipe that starts at the screen edge). Either way nothing closes.
@@ -742,7 +805,7 @@ export function mountSidebar(store, folders, sync) {
 
   function endSwipe() {
     if (!swipe) return;
-    const { li, active, stale } = swipe;
+    const { li, active } = swipe;
     swipe = null;
     if (!active) return;
     // Without the class, app.css moves the content back to its place.
@@ -752,7 +815,7 @@ export function mountSidebar(store, folders, sync) {
     // row, so in this one case the content jumps home instead of sliding;
     // a timer to wait for the slide would be a second clock to keep in step
     // with the CSS, for a sync that lands in the middle of a swipe.
-    if (stale) render();
+    if (redrawOwed) render();
   }
 
   // ---- Folder sections (architecture.md §2, §9) ----------------------------
@@ -947,11 +1010,13 @@ export function mountSidebar(store, folders, sync) {
     // A swipe holds its row for the same reason. Only once the row follows
     // the finger, not from the first touch: every tap and every scroll
     // begins as a press, and those must not hold a redraw back.
-    // endSwipe() redraws if this happened.
-    if (swipe?.active) {
-      swipe.stale = true;
+    // endSwipe() redraws if this happened. A row that leaves after a swipe
+    // (swipeOut) holds the list as well, until its note closes.
+    if (swipe?.active || leaving > 0) {
+      redrawOwed = true;
       return;
     }
+    redrawOwed = false;
     const focused = focusedRow();
 
     openList.replaceChildren(

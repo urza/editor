@@ -36,6 +36,9 @@ export function mountStatusbar(store, sync, zoom) {
   const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
   const statusSync = /** @type {HTMLElement} */ (document.getElementById("status-sync"));
   const statusZoom = /** @type {HTMLElement} */ (document.getElementById("status-zoom"));
+  // Phone mode hides the status bar, so a notice goes here too (app.css
+  // shows it in phone mode only).
+  const phoneNotice = /** @type {HTMLElement} */ (document.getElementById("notice"));
 
   const builtAt = new Date(BUILD.builtAt);
   const stamp =
@@ -159,9 +162,12 @@ export function mountStatusbar(store, sync, zoom) {
   function notice(text) {
     clearTimeout(noticeTimer);
     statusSave.textContent = text;
+    phoneNotice.textContent = text;
+    phoneNotice.hidden = false;
     noticeTimer = setTimeout(() => {
       noticeTimer = undefined;
       statusSave.textContent = saveStatus;
+      phoneNotice.hidden = true;
     }, 1500);
   }
 

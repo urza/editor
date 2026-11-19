@@ -1493,7 +1493,7 @@ img.twemoji {
    thumb can hit, and the floating "+" becomes the thumb button, which opens
    three round buttons (ui/thumb.js). Stacking, low to high: the settings
    panel (10), the note list (20), the scrim of the round buttons (29), the
-   thumb button and the round buttons (30), a row menu (40). */
+   thumb button, the round buttons and the notice (30), a row menu (40). */
 
 /* Hidden by default: the parts only phone mode shows. Rows carry a preview
    and a time everywhere (ui/sidebar.js makeRow), and the settings panel has a
@@ -1501,6 +1501,7 @@ img.twemoji {
 .thumb-icon,
 #thumb-scrim,
 #thumb-menu,
+#notice,
 .buffer-preview,
 .buffer-time,
 .settings-row[data-key="list-rows"] {
@@ -1544,8 +1545,14 @@ html.phone {
 
 /* ---- The note list: #sidebar, full screen ------------------------------ */
 
-/* The containing block of the list. The status bar is outside #app, so the
-   list covers the editor and leaves the status bar on screen. */
+/* No status bar in phone mode (user decision, 2026-11-19): its buttons are
+   too small for a thumb, and it takes a line from the editor. Settings has
+   what a phone needs from it: the build and the update check (Update), sync
+   and spellcheck. Its notices ("copied", "encrypt failed") show in #notice,
+   above the thumb button. */
+html.phone #statusbar { display: none; }
+
+/* The containing block of the list, so the list covers the editor pane. */
 html.phone #app { position: relative; }
 
 html.phone #sidebar {
@@ -1714,11 +1721,12 @@ html.phone .buffer-row.swipe-armed::after {
 
 /* The way back after a release short of the close point. On the rows at
    rest, not on .swiping: under the finger the content must not lag, and the
-   transition runs when that class goes. There is none for a close, on
-   purpose; see the pointerup handler. */
+   transition runs when that class goes. 0.2s, the same as each step of the
+   close (ui/sidebar.js swipeOut, which animates from script); 0.12s was too
+   fast to follow on a real phone (user report, 2026-11-19). */
 @media (prefers-reduced-motion: no-preference) {
   html.phone #open-list .buffer-row:not(.swiping) > * {
-    transition: transform 0.12s ease-out;
+    transition: transform 0.2s ease-out;
   }
 }
 
@@ -1813,6 +1821,27 @@ html.phone #search-close::after {
   font-size: var(--ui-base);
 }
 
+/* ---- The settings panel -------------------------------------------------- */
+
+/* The × as a full touch target with a cross the eye finds: at --ui-icon-lg
+   it was a 9px sign in the corner (user report, 2026-11-19). */
+html.phone #settings-close {
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  font-size: calc(32px * var(--thumb-scale));
+  /* The box is much wider than the cross in it. Pulled into the panel's 16px
+     padding, the cross stays near the right edge of the content, where the
+     rows end. */
+  margin-right: -10px;
+}
+
+/* The head must hold that target. --ui-top-h follows --ui-scale down to
+   34px, so it gets a floor here. Set on the panel and not on the row: the
+   sticky offsets and the scroll padding read the same property (see
+   .settings-head), and all of them must agree. */
+html.phone #settings-panel { --ui-top-h: max(calc(48px * var(--ui-scale)), var(--tap)); }
+
 /* ---- The thumb button and its round buttons ----------------------------- */
 
 /* Above the note list now (30 over 20), where the drawer used to cover it:
@@ -1829,6 +1858,28 @@ html.phone #new-fab {
   /* Hides the "+", a bare text node, and nothing else: the icons are sized
      in px. */
   font-size: 0;
+}
+
+/* A notice of the status bar (ui/statusbar.js), which phone mode does not
+   show. Above the thumb button and on its layer, so it shows over the note
+   list too: most notices come from the row menu there. It rides on the
+   keyboard with the button. :not([hidden]), or this display would outrank
+   the attribute that takes the notice away. */
+html.phone #notice:not([hidden]) {
+  display: block;
+  position: absolute;
+  z-index: 30;
+  right: var(--fab-gap);
+  bottom: calc(var(--fab-gap) + var(--fab) + 12px + var(--keyboard-inset, 0px));
+  max-width: calc(100% - 2 * var(--fab-gap));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  font-size: var(--ui-base);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  /* It lies over rows and text for a moment, and must not take their taps. */
+  pointer-events: none;
 }
 
 /* The sign: three lines closed, a cross while the round buttons are out.
