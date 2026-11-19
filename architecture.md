@@ -764,7 +764,7 @@ and both are view-only: the bytes of the note never change.
   buggy. If a wrapped row on a phone turns out to hurt, the fix is to
   scroll the table rows sideways, not to render them.
 
-### Phone mode (2026-11-19, stage 1 shipped)
+### Phone mode (2026-11-19, shipped)
 
 The user holds a phone in one hand, and the thumb reaches neither the
 hamburger at the top left nor a 13px row in a 280px drawer. Phone mode
@@ -815,10 +815,25 @@ puts every control at the bottom right and makes the list full screen.
   thumb button hides while the settings panel is open.
 - **Setting**: "Longer rows in the note list" (`vrtti.listRows` in
   `localStorage`, device-local) adds the time and a second preview line.
-- **Stage 2, not built yet**: a swipe to the left on a row of Open closes
-  the note, and the Back gesture closes the round buttons or the list.
-  Both wait for a test on a real phone: on Android a swipe to the left
-  from the right screen edge is Back.
+- **Swipe to close.** A swipe to the left on a row of Open closes the note
+  (`ui/sidebar.js`, next to the drag code; touch only). The rows have
+  `touch-action: pan-y`, so the browser keeps the scroll and gives a
+  sideways move to the page. The content of the row follows the finger by
+  one custom property, and the word "close" shows behind it. The close
+  point is a third of the row width (user decision, 2026-11-19); only the
+  distance counts. A close runs `buffer.close` when the finger lifts, with
+  no animation before it. Rows of Recent and From server do not swipe.
+- **Back closes a layer.** On Android, Back closes the newest of: a row
+  menu, the round buttons, the settings panel, the note list. Each layer
+  calls `watchBack` (`ui/shell.js`) when it opens, which makes a
+  `CloseWatcher`, and stops it when it closes in another way. No history
+  entry: with `pushState`, every path that closes a layer must remove its
+  entry, and a forgotten one is a Back that does nothing. Phone mode only,
+  because a watcher also takes Escape. A browser with no `CloseWatcher`
+  (Safari) gets nothing; an iPhone has no Back.
+- **Known limit.** On Android a swipe that starts at the screen edge is the
+  system's Back, and the page cannot change that. Such a swipe on a row
+  closes the note list, not the note.
 
 ## 10. Twemoji plan (agreed 2026-09-01)
 
@@ -1056,6 +1071,11 @@ Open: none.
   app must work with one thumb. This reverses "New buffer on a phone"
   (2026-10-09) on purpose: a new note is two taps again, and the user
   chose that for a list within reach.
+- Phone mode, stage 2 (2026-11-19, §9): a swipe to the left closes a note
+  from the list, and Back on Android closes the top layer through
+  `CloseWatcher`. The first plan used a history entry for Back; a review
+  showed that each close path must then clean it up, and the browser has
+  an interface for the job.
 
 
 ## 13. Step 3 build plan: crypto and sync (2026-09-02)

@@ -8,6 +8,8 @@
 //
 // One menu exists at a time. Opening a second one closes the first.
 
+import { watchBack } from "./shell.js";
+
 /**
  * One entry. A separator needs nothing else; every other item needs a label.
  *
@@ -22,14 +24,15 @@
 
 const GAP = 4;
 
-/** @type {{ el: HTMLElement, anchor: HTMLElement, onKey: (e: KeyboardEvent) => void, onDown: (e: Event) => void, onAway: () => void } | null} */
+/** @type {{ el: HTMLElement, anchor: HTMLElement, onKey: (e: KeyboardEvent) => void, onDown: (e: Event) => void, onAway: () => void, stopBack: () => void } | null} */
 let current = null;
 
 /** @param {{restoreFocus?: boolean}} [opts] */
 export function closeMenu({ restoreFocus = false } = {}) {
   if (!current) return;
-  const { el, anchor, onKey, onDown, onAway } = current;
+  const { el, anchor, onKey, onDown, onAway, stopBack } = current;
   current = null;
+  stopBack();
   window.removeEventListener("keydown", onKey, true);
   window.removeEventListener("pointerdown", onDown, true);
   window.removeEventListener("scroll", onAway, true);
@@ -169,7 +172,12 @@ export function openMenu(anchor, items, { at } = {}) {
   window.addEventListener("pointerdown", onDown, true);
   window.addEventListener("scroll", onAway, true);
   window.addEventListener("resize", onAway);
-  current = { el, anchor, onKey, onDown, onAway };
+  // On a phone, Back closes the menu and nothing under it. Without this the
+  // note list under a row menu would take the Back, and the menu would stay
+  // on screen over the editor: none of the listeners above sees a list that
+  // goes away.
+  const stopBack = watchBack(() => closeMenu());
+  current = { el, anchor, onKey, onDown, onAway, stopBack };
   // Screen readers announce it, and app.css keeps a sidebar row's buttons on
   // screen by it while the pointer is in the menu, off the row. The guard is
   // explained in closeMenu.

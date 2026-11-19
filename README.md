@@ -113,12 +113,18 @@ The text in the note keeps the normal emoji characters.
 
 ### Phone
 
-Open the site in Safari or Chrome and add it to the home screen. The sidebar
-becomes a drawer, and the notes are the same as on the desktop once sync is on.
-Phones cannot open folders, so sync is also the backup there.
+Open the site in Safari or Chrome and add it to the home screen. The app works
+with one thumb there. The round button at the bottom right shows three more
+buttons: a new note, the note list, and the settings. The note list fills the
+screen, and each row shows the start of the note. A swipe to the left on a row
+closes that note. Start the swipe on the row and not at the screen edge, because
+Android takes a swipe from the edge as Back. On Android, Back closes the list.
+
+The notes are the same as on the desktop once sync is on. Phones cannot open
+folders, so sync is also the backup there.
 
 <p align="center">
-  <img src="docs/screenshots/phone.png" width="700" alt="vrtti on a phone: a note in the editor, and the sidebar drawer open">
+  <img src="docs/screenshots/phone.png" width="700" alt="vrtti on a phone: a note with the round buttons open, and the note list">
 </p>
 
 ### Windows
