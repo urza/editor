@@ -53,6 +53,12 @@ test("a very long title line with no second line gives no preview", () => {
   assert.equal(previewOf("x".repeat(50000), "x".repeat(40)), "");
 });
 
+test("a first line longer than the head gives no preview, and costs nothing", () => {
+  // The second line is past what the function reads. A megabyte line must
+  // not be searched to its end on every keystroke.
+  assert.equal(previewOf("x".repeat(5_000_000) + "\nsecond line", "x".repeat(40)), "");
+});
+
 // The expected strings come from formatters built here, with the same
 // options: the test is about which form a time gets, and the form's letters
 // depend on the locale of the machine that runs it.

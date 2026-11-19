@@ -30,6 +30,29 @@ export function phoneMode() {
   return document.documentElement.classList.contains("phone");
 }
 
+/**
+ * Call `fn` when the phone layout comes or goes. For the few things CSS
+ * cannot redraw by itself; see the callers.
+ *
+ * An observer on the class, not a second copy of the media query and not the
+ * viewport's resize event: the inline script in index.html is the only thing
+ * that knows the rule, and a resize listener runs before that script has
+ * changed the class, so it would read the mode that is just ending (seen in
+ * the browser check, 2026-11-19). The class carries other words too
+ * (`rows-long`), hence the comparison.
+ *
+ * @param {(phone: boolean) => void} fn
+ */
+export function onPhoneModeChange(fn) {
+  let last = phoneMode();
+  new MutationObserver(() => {
+    const phone = phoneMode();
+    if (phone === last) return;
+    last = phone;
+    fn(phone);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+}
+
 export function mountShell() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));
   const sidebar = /** @type {HTMLElement} */ (document.getElementById("sidebar"));

@@ -22,7 +22,7 @@
 // sync.
 
 import { register, run } from "../commands/registry.js";
-import { phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode } from "./shell.js";
 
 const SIDEBAR_KEY = "vrtti.sidebarNewButton";
 
@@ -122,6 +122,11 @@ export function mountNewButton() {
     };
     vv.addEventListener("resize", paint);
     vv.addEventListener("scroll", paint);
+    // A turn of the phone resizes the viewport before the mode changes, so
+    // the paint above runs with the old mode. Without this one, a turn into
+    // phone mode with the keyboard up would leave the button hidden, and it
+    // is the only control that mode has.
+    onPhoneModeChange(paint);
     paint();
   }
 }

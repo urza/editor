@@ -777,9 +777,10 @@ puts every control at the bottom right and makes the list full screen.
   starts with `html.phone`, so a PC, a narrow window on a PC and the
   desktop shell are untouched. There is no module and no event for the
   mode: CSS draws it, and code that must behave differently reads the class
-  at the moment of use (`phoneMode()` in `ui/shell.js`). One place watches
-  the class for a change, `ui/thumb.js`: it renames the thumb button and
-  puts the round buttons away when the mode goes.
+  at the moment of use (`phoneMode()` in `ui/shell.js`). Two things CSS
+  cannot redraw watch the class for a change (`onPhoneModeChange`, same
+  file): `ui/thumb.js` renames the thumb button and puts the round buttons
+  away, and `ui/newbutton.js` places the button against the keyboard again.
 - **The note list is `#sidebar`.** The same element, the same rows, the
   same commands: rename, the row menu, folders, search, Recent and From
   server are not implemented twice. `#app` is its containing block, so it

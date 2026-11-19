@@ -385,9 +385,10 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(mark);
     }
 
+    const titleText = titleOf(record);
     const title = document.createElement("span");
     title.className = "buffer-title";
-    title.textContent = titleOf(record);
+    title.textContent = titleText;
     li.appendChild(title);
 
     if (store.needsReconnect(record)) {
@@ -452,7 +453,7 @@ export function mountSidebar(store, folders, sync) {
     // is only its title; those rows stay one line. Last in the row: app.css
     // wraps it onto a line of its own.
     const text = store.loadedText(record.id);
-    const preview = text === undefined ? "" : previewOf(text, title.textContent ?? "");
+    const preview = text === undefined ? "" : previewOf(text, titleText);
     if (preview) {
       const span = document.createElement("span");
       span.className = "buffer-preview";

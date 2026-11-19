@@ -10,9 +10,10 @@ const PREVIEW_MAX = 300;
 
 /**
  * How far into a text the search for its first line with words goes. A note
- * that starts with more blank space than this gets the blank space as its
- * preview, which trims to nothing. The bound is the point: the sidebar redraws
- * on every keystroke, and a note can be megabytes of newlines.
+ * that starts with more blank space than this, or whose first line is longer
+ * than this, gets no preview. The bound is the point: the sidebar redraws on
+ * every keystroke, and a note can be megabytes of newlines or one line of
+ * megabytes (a log, minified JSON).
  */
 const HEAD_MAX = 2000;
 
@@ -30,14 +31,17 @@ const HEAD_MAX = 2000;
  * preview. Equality would need the cut length from docs.js, and this file
  * imports nothing on purpose.
  *
- * Never splits the whole text: it walks line ends with indexOf and cuts one
- * small window, so the cost does not grow with the note.
+ * Never reads past the head of the text: it cuts the head off first, then
+ * walks line ends with indexOf, so the cost does not grow with the note.
  *
  * @param {string} text @param {string} [title] What the row shows as its title.
  * @returns {string}
  */
 export function previewOf(text, title) {
   if (!text) return "";
+  // First, or indexOf below would search a megabyte line to its end for a
+  // newline that is not there. Nothing after this reads further anyway.
+  text = text.slice(0, HEAD_MAX + PREVIEW_MAX);
   let start = 0;
   while (start < text.length && start < HEAD_MAX) {
     let end = text.indexOf("\n", start);

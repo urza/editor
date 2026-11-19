@@ -1508,8 +1508,6 @@ img.twemoji {
 }
 
 .thumb-icon {
-  width: calc(22px * var(--thumb-scale, 1));
-  height: calc(22px * var(--thumb-scale, 1));
   /* A block with auto margins sits in the middle of its button, which
      centres its content box by itself. */
   margin: auto;
@@ -1525,6 +1523,11 @@ img.twemoji {
 .thumb-icon-dots { stroke-width: 2.25; }
 /* The teeth of the gear: short, thick and square-ended. */
 .thumb-icon-teeth { stroke-width: 2.4; stroke-linecap: butt; }
+
+html.phone .thumb-icon {
+  width: calc(22px * var(--thumb-scale));
+  height: calc(22px * var(--thumb-scale));
+}
 
 html.phone {
   /* The chrome follows --ui-scale, which goes down to 0.7. A touch target
@@ -1605,7 +1608,9 @@ html.phone .buffer-preview {
   white-space: nowrap;
   font-size: var(--ui-md);
   color: var(--st-sidebar-label);
-  opacity: 0.6;
+  /* Dimmer than the title, and no dimmer than this: 0.6 falls under the
+     4.5:1 contrast that small text needs on the list's background. */
+  opacity: 0.7;
 }
 
 /* Longer rows, a setting of the device (ui/sidebar.js): the time of the last

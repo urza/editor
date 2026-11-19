@@ -16,7 +16,7 @@
 // and "buffer.new" outside it. Two handlers on one button would do both.
 
 import { register, run } from "../commands/registry.js";
-import { phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode } from "./shell.js";
 
 export function mountThumb() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));
@@ -74,8 +74,17 @@ export function mountThumb() {
     // the focus on the row of the open note, which scrolls that row into
     // view. A closed list is display: none in phone mode and cannot scroll
     // while it is closed (app.css), so this is the moment it must happen.
-    if (listOpen()) run("sidebar.autoclose");
-    else run("sidebar.focus");
+    if (listOpen()) {
+      run("sidebar.autoclose");
+      // The button that had the focus is gone with the round buttons, and
+      // the list with its rows. Left alone the focus falls to <body>, and a
+      // screen reader starts again from the top of the page. Not the editor:
+      // a focus there brings the keyboard up over a note the user came back
+      // to read.
+      fab.focus();
+    } else {
+      run("sidebar.focus");
+    }
   });
 
   settingsButton.addEventListener("click", () => {
@@ -88,30 +97,24 @@ export function mountThumb() {
 
   scrim.addEventListener("click", () => set(false));
 
-  // The one place that reacts when the mode itself changes (a phone turned on
-  // its side). Two things cannot be left to CSS: the name of #new-fab, which
-  // is two controls and must say which one it is now, and round buttons that
-  // were out when the mode went. CSS hides those, but they would be out again
-  // by themselves on the turn back, with a cross on the button.
-  // An observer on the class, not a second copy of the media query and not
-  // the viewport's resize event: the inline script in index.html is the only
-  // thing that knows the rule, and a resize listener runs before that script
-  // has changed the class, so it reads the mode that is just ending (seen in
-  // the browser check, 2026-11-19).
-  function modeChanged() {
-    const phone = phoneMode();
+  // When the mode itself changes (a phone turned on its side), two things
+  // cannot be left to CSS: the name of #new-fab, which is two controls and
+  // must say which one it is now, and round buttons that were out when the
+  // mode went. CSS hides those, but they would be out again by themselves on
+  // the turn back, with a cross on the button.
+  /** @param {boolean} phone */
+  function modeChanged(phone) {
     const label = phone ? "Menu" : "New buffer";
-    if (fab.title !== label) {
-      fab.title = label;
-      fab.setAttribute("aria-label", label);
-    }
-    if (!phone && open) set(false);
+    fab.title = label;
+    fab.setAttribute("aria-label", label);
+    if (phone) return;
+    if (open) set(false);
+    // Outside phone mode the button expands nothing, and a screen reader
+    // must not call a plain "New buffer" button "collapsed".
+    fab.removeAttribute("aria-expanded");
   }
-  new MutationObserver(modeChanged).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  modeChanged();
+  onPhoneModeChange(modeChanged);
+  modeChanged(phoneMode());
 
   register({
     id: "thumb.toggle",
