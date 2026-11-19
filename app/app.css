@@ -1657,6 +1657,71 @@ html.phone li.buffer-row > .buffer-more {
 /* The menu carries Close; see the (hover: none) rule above. */
 html.phone .buffer-close { display: none; }
 
+/* Swipe to close (ui/sidebar.js): a swipe to the left on a row of Open.
+   pan-y is what makes it possible at all: the browser keeps the up and down
+   scroll of the list and hands a sideways move to the page. On the row, and
+   it covers the ⋯ inside it too, because the browser takes the narrowest
+   answer among an element and its ancestors. Open rows only; nothing else in
+   the list swipes. */
+html.phone #open-list .buffer-row { touch-action: pan-y; }
+
+/* While the finger is down the row has the class, and its content follows
+   the finger by --swipe (a negative length). The children move, not the row:
+   the row stays as the backdrop that shows the word below. The absolute ⋯ is
+   a child too, so it goes along. */
+html.phone .buffer-row.swiping {
+  background: var(--st-ui-bg);
+  overflow: hidden;
+}
+
+html.phone .buffer-row.swiping > * {
+  transform: translateX(var(--swipe, 0px));
+}
+
+/* What lifting the finger will do. A pseudo-element, so no markup: `> *`
+   above does not match it, and it stays put while the content slides off it.
+   Only with the class, or every row would carry the word under its ⋯.
+   It spans the row and is clipped to the strip the content has left (the
+   last -(--swipe) px at the right), so the word comes out from under the
+   content like something behind it. The children have no background, and
+   without the clip the word would show through the ⋯ and the preview for
+   the first part of every swipe. */
+html.phone .buffer-row.swiping::after {
+  content: "close";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 16px;
+  clip-path: inset(0 0 0 calc(100% + var(--swipe, 0px)));
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+  /* Dim, and no dimmer: the same floor as the preview text above. This word
+     is the only warning before a close. */
+  opacity: 0.7;
+}
+
+/* Past the close point (ui/sidebar.js SWIPE_CLOSE): a release now closes.
+   The row lights up as well as the word, because bright against dim text
+   alone is a small difference in sunlight. */
+html.phone .buffer-row.swipe-armed { background: var(--st-sidebar-selected); }
+
+html.phone .buffer-row.swipe-armed::after {
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+/* The way back after a release short of the close point. On the rows at
+   rest, not on .swiping: under the finger the content must not lag, and the
+   transition runs when that class goes. There is none for a close, on
+   purpose; see the pointerup handler. */
+@media (prefers-reduced-motion: no-preference) {
+  html.phone #open-list .buffer-row:not(.swiping) > * {
+    transition: transform 0.12s ease-out;
+  }
+}
+
 html.phone .tree-row { min-height: var(--tap); padding-left: 16px; }
 
 /* The two disclosures are buttons in all but name. */

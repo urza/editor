@@ -15,6 +15,7 @@ import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
 import { listRowsLong } from "./sidebar.js";
+import { watchBack } from "./shell.js";
 import { titleOf, KEYRING_SPACE } from "../model/docs.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
@@ -1153,6 +1154,9 @@ export function mountSettings(deps = {}) {
 
   /** @type {Element | null} */
   let returnFocus = null;
+  // On a phone the panel is the whole screen, and Back must close it, not
+  // leave the app (watchBack in ui/shell.js).
+  let stopBack = () => {};
 
   /** @param {KeyboardEvent} event */
   function onKeydown(event) {
@@ -1175,11 +1179,13 @@ export function mountSettings(deps = {}) {
     // behind the panel, and Escape has somewhere to arrive.
     panel.focus();
     window.addEventListener("keydown", onKeydown, true);
+    stopBack = watchBack(close);
   }
 
   function close() {
     if (panel.hidden) return;
     panel.hidden = true;
+    stopBack();
     window.removeEventListener("keydown", onKeydown, true);
     if (returnFocus instanceof HTMLElement) returnFocus.focus();
     returnFocus = null;

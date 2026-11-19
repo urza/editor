@@ -53,6 +53,39 @@ export function onPhoneModeChange(fn) {
   }).observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 }
 
+/**
+ * Let Back (the gesture or the button of Android) close a layer of the phone
+ * layout instead of leaving the app. A layer is something that covers the
+ * note: the note list, the round buttons, a row menu, the settings panel.
+ * Each calls this when it opens, and calls the returned function when it
+ * closes in any other way.
+ *
+ * CloseWatcher is the browser's own interface for exactly this: Back goes to
+ * the newest watcher, so layers close in the reverse of the order they
+ * opened, one per Back. No history entry is involved, which is the point:
+ * with pushState, every path that closes a layer has to take its entry out
+ * again, and one that forgets leaves a Back that does nothing.
+ *
+ * Does nothing outside phone mode, on purpose: a watcher also takes the
+ * Escape key, and on a PC Escape already has an owner in every layer. Does
+ * nothing in a browser without CloseWatcher either (Safari): an iPhone has
+ * no Back, and elsewhere Back then leaves the app as it always did.
+ *
+ * The mode is read once, at the open. A layer that is open while the phone
+ * turns keeps what it got until it closes; following the turn would need a
+ * second mechanism for a case that costs one Back.
+ *
+ * @param {() => void} close Closes the layer. Runs on Back only.
+ * @returns {() => void} Stop watching. Safe to call twice, and after a Back.
+ */
+export function watchBack(close) {
+  const CloseWatcher = /** @type {any} */ (window).CloseWatcher;
+  if (!CloseWatcher || !phoneMode()) return () => {};
+  const watcher = new CloseWatcher();
+  watcher.onclose = () => close();
+  return () => watcher.destroy();
+}
+
 export function mountShell() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));
   const sidebar = /** @type {HTMLElement} */ (document.getElementById("sidebar"));
@@ -78,12 +111,18 @@ export function mountShell() {
     for (const button of toggles) button.setAttribute("aria-expanded", String(open));
   }
 
+  // Back closes the open note list on a phone (watchBack above). Every way
+  // the list opens or closes goes through set(), so this is the one place.
+  let stopBack = () => {};
+
   /** @param {boolean} next */
   function set(next) {
     if (open === next) return;
     open = next;
     if (!narrow()) localStorage.setItem(OPEN_KEY, open ? "1" : "0");
     paint();
+    stopBack();
+    stopBack = open ? watchBack(() => set(false)) : () => {};
   }
 
   function toggle() {

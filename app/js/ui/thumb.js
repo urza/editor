@@ -16,7 +16,7 @@
 // and "buffer.new" outside it. Two handlers on one button would do both.
 
 import { register, run } from "../commands/registry.js";
-import { onPhoneModeChange, phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode, watchBack } from "./shell.js";
 
 export function mountThumb() {
   const app = /** @type {HTMLElement} */ (document.getElementById("app"));
@@ -36,10 +36,14 @@ export function mountThumb() {
   const listOpen = () => app.classList.contains("sidebar-open");
 
   let open = false;
+  // Back puts the round buttons away (watchBack in ui/shell.js).
+  let stopBack = () => {};
 
   /** @param {boolean} next */
   function set(next) {
     open = next;
+    stopBack();
+    stopBack = open ? watchBack(() => set(false)) : () => {};
     menu.hidden = !open;
     scrim.hidden = !open;
     // app.css draws the thumb button's sign from this: three lines, or a cross.

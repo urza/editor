@@ -13,6 +13,7 @@ import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
 import { openMenu } from "./menu.js";
+import { phoneMode } from "./shell.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
@@ -643,6 +644,117 @@ export function mountSidebar(store, folders, sync) {
     if (moved) render();
   }
 
+  // ---- Swipe to close (architecture.md §9, Phone mode) ---------------------
+
+  // In the phone note list, a swipe to the left on a row of Open closes that
+  // note: one move of the thumb where the row menu takes two taps. Touch
+  // only, so it shares nothing with the drag above, which ignores touch. Its
+  // own state and its own listeners, on the same list.
+  //
+  // The row stays where it is and its content moves: this code writes the
+  // distance to one custom property, and app.css moves the row's children by
+  // it and shows the word "close" behind them (a pseudo-element, so makeRow
+  // has nothing to add). Moving the <li> itself would leave nothing to show
+  // behind it.
+  //
+  // The rows carry touch-action: pan-y in phone mode (app.css). That is what
+  // divides the gesture: an up or down move is the browser's scroll, and the
+  // browser then cancels the pointer; a sideways move comes here.
+
+  /** @type {{ li: HTMLElement, id: string, pointerId: number, startX: number, startY: number, width: number, active: boolean, stale: boolean } | null} */
+  let swipe = null;
+  // On the row while its word "close" is bright. The class is also the
+  // answer to "does a release close the note" (pointerup), so what the user
+  // was shown and what happens cannot come apart.
+  const ARMED = "swipe-armed";
+  // The finger must go this far left before the row starts to follow it.
+  const SWIPE_SLOP = 10;
+  // The close point: this share of the row's width (user decision,
+  // 2026-11-19). Half was the first plan, and is a long reach for one thumb.
+  // Distance only, never speed: a quick flick must not close a note, because
+  // a close has no undo other than opening the note again from Recent.
+  const SWIPE_CLOSE = 1 / 3;
+
+  openList.addEventListener("pointerdown", (event) => {
+    if (swipe || event.pointerType !== "touch" || !event.isPrimary || !phoneMode()) return;
+    const target = /** @type {HTMLElement} */ (event.target);
+    // The rename box wants its touches for the text, and the ⚠ is a small
+    // button with a job of its own. The ⋯ is not excluded: it fills the right
+    // end of the row, which is where a thumb starts a swipe to the left, and
+    // a finger that moved sends no click, so the menu stays shut.
+    if (target.closest("input, .buffer-warn")) return;
+    const li = target.closest(".buffer-row");
+    if (!(li instanceof HTMLElement) || !li.dataset.id) return;
+    swipe = {
+      li,
+      id: li.dataset.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      width: 0,
+      active: false,
+      stale: false,
+    };
+  });
+
+  openList.addEventListener("pointermove", (event) => {
+    if (!swipe || event.pointerId !== swipe.pointerId) return;
+    const dx = event.clientX - swipe.startX;
+    if (!swipe.active) {
+      // The list may redraw under a finger that has not moved yet (a sync):
+      // the row this press began on is then gone, and so is the swipe.
+      if (!swipe.li.isConnected) {
+        swipe = null;
+        return;
+      }
+      // To the left, and more to the left than up or down. Anything else is
+      // a tap, a scroll, or a move to the right, which does nothing.
+      if (dx > -SWIPE_SLOP || -dx < Math.abs(event.clientY - swipe.startY)) return;
+      swipe.active = true;
+      swipe.width = swipe.li.offsetWidth;
+      swipe.li.classList.add("swiping");
+    }
+    // Never to the right of where it started.
+    const moved = Math.min(0, dx);
+    swipe.li.style.setProperty("--swipe", moved + "px");
+    // The word "close" turns bright: lifting the finger now closes the note.
+    swipe.li.classList.toggle(ARMED, -moved >= swipe.width * SWIPE_CLOSE);
+  });
+
+  openList.addEventListener("pointerup", (event) => {
+    if (!swipe || event.pointerId !== swipe.pointerId) return;
+    const { id, li } = swipe;
+    // Read before endSwipe() takes the class off.
+    const close = li.classList.contains(ARMED);
+    endSwipe();
+    // At once, with no slide out first: waiting for an animation to end
+    // means waiting for an event that never comes with reduced motion. The
+    // store's "change" redraws the list without the row. The list stays
+    // open, so the next note can go the same way.
+    if (close) run("buffer.close", id);
+  });
+
+  // The browser took the gesture for a scroll, or Android took it for Back
+  // (a swipe that starts at the screen edge). Either way nothing closes.
+  openList.addEventListener("pointercancel", (event) => {
+    if (swipe && event.pointerId === swipe.pointerId) endSwipe();
+  });
+
+  function endSwipe() {
+    if (!swipe) return;
+    const { li, active, stale } = swipe;
+    swipe = null;
+    if (!active) return;
+    // Without the class, app.css moves the content back to its place.
+    li.classList.remove("swiping", ARMED);
+    li.style.removeProperty("--swipe");
+    // The redraw that stood down during the swipe runs now. It replaces the
+    // row, so in this one case the content jumps home instead of sliding;
+    // a timer to wait for the slide would be a second clock to keep in step
+    // with the CSS, for a sync that lands in the middle of a swipe.
+    if (stale) render();
+  }
+
   // ---- Folder sections (architecture.md §2, §9) ----------------------------
 
   // Which directory levels are open on screen, keyed folder id + path. UI
@@ -832,6 +944,14 @@ export function mountSidebar(store, folders, sync) {
     // drag holds its rows the same way: a sync arriving mid-drag must not
     // swap the row under the pointer; endDrag() redraws.
     if (renamingId || drag) return;
+    // A swipe holds its row for the same reason. Only once the row follows
+    // the finger, not from the first touch: every tap and every scroll
+    // begins as a press, and those must not hold a redraw back.
+    // endSwipe() redraws if this happened.
+    if (swipe?.active) {
+      swipe.stale = true;
+      return;
+    }
     const focused = focusedRow();
 
     openList.replaceChildren(
