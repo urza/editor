@@ -1541,6 +1541,11 @@ html.phone {
   /* The strip at the bottom of the note list that holds the search button
      and stays clear of rows, so no row ends up under the thumb button. */
   --list-bar: calc(var(--fab) + 2 * var(--fab-gap));
+  /* Free space above the first line of a note and of the note list. iOS
+     blurs the top edge of a page, under its own status bar, and text that
+     starts at the very top sits in that blur (user report from an iPhone,
+     2026-11-19). The space scrolls away with the text; it is not a bar. */
+  --top-clear: 20px;
 }
 
 /* ---- The note list: #sidebar, full screen ------------------------------ */
@@ -1584,7 +1589,12 @@ html.phone #sidebar-settings {
 /* The strip that held the floating hamburger. */
 html.phone #editor-host { padding-left: 0; }
 
-html.phone #sidebar-scroll { padding-top: 6px; }
+/* See --top-clear. On .cm-content and not on the host, so the space is part
+   of what scrolls. The editor theme sets a padding of 0 (editor.js); the id
+   here outranks it. */
+html.phone #editor-host .cm-content { padding-top: var(--top-clear); }
+
+html.phone #sidebar-scroll { padding-top: var(--top-clear); }
 html.phone .sidebar-heading { margin: 12px 16px 6px; }
 html.phone .buffer-subheading { padding: 8px 16px 2px; }
 
