@@ -13,7 +13,7 @@ import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
 import { openMenu } from "./menu.js";
-import { phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode } from "./shell.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
@@ -995,6 +995,25 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
+   * The order of the Open list. On a PC it is the tab order, which the user
+   * sets by drag. In phone mode it is the time of the last change, oldest at
+   * the top and newest at the bottom, as in a chat with yourself (user
+   * decision, 2026-11-19): the newest note sits next to the thumb button.
+   * The phone has no drag (it ignores touch), so it loses no order the user
+   * made there, and the tab order stays untouched for the PC.
+   *
+   * The time is updatedAt: an edit, a sync that brings a change, and a
+   * reopen from Recent move a note to the bottom; a switch between notes
+   * does not. sort is stable, so notes with the same time keep the tab order.
+   *
+   * @param {BufferRecord[]} open
+   */
+  function openOrder(open) {
+    if (!phoneMode()) return open;
+    return [...open].sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+  }
+
+  /**
    * @param {{reveal?: boolean}} [opts] reveal: the active note changed, so
    *   its row must end up on screen. Off for every other redraw: a sync or a
    *   keystroke must not drag the list away from where the user scrolled it.
@@ -1019,7 +1038,7 @@ export function mountSidebar(store, folders, sync) {
     const focused = focusedRow();
 
     openList.replaceChildren(
-      ...store.openBuffers().map((b) => makeRow(b, { closable: true }))
+      ...openOrder(store.openBuffers()).map((b) => makeRow(b, { closable: true }))
     );
 
     const closed = store.closedBuffers();
@@ -1083,6 +1102,9 @@ export function mountSidebar(store, folders, sync) {
 
   store.events.addEventListener("change", () => render());
   store.events.addEventListener("active", () => render({ reveal: true }));
+  // The order of Open depends on the mode (openOrder), and a phone turned on
+  // its side can leave it with no store event to redraw the list.
+  onPhoneModeChange(() => render());
   // A lock takes the plaintext out of memory (model/docs.js lockAll), and a
   // preview drawn from it must leave the screen in the same moment. The store
   // sends no "change" for a lock, so without this the decrypted lines would
