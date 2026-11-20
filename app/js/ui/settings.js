@@ -328,6 +328,26 @@ const SECTIONS = [
         set: () => run("spell.toggle"),
       },
       // Only where "Add diacritics (vllm)" exists: the sync server has a model.
+      // Asked again on each paint, so opening Settings is the way to see if
+      // vLLM came up; the server checks vLLM live, at most every 30 seconds.
+      // The menu entry stays when the model does not answer: vLLM can start
+      // after the app, and a hidden entry would need a reload to come back.
+      {
+        type: "info",
+        key: "model-state",
+        label: "Model",
+        hint: "The model of the sync server for “Add diacritics (vllm)”. The sync server checks it when you open Settings.",
+        visible: () => Boolean(sync?.hasModel),
+        value: async () => {
+          await sync?.probeModel();
+          const m = sync?.modelState;
+          // A server from before the check sends no state.
+          if (!m) return sync?.hasModel ? "set" : "not set";
+          if (m.state === "answers") return `${m.name}, answers`;
+          if (m.state === "name not served") return `vLLM answers, but does not serve “${m.name}”`;
+          return `not answering${m.why ? ` (${m.why})` : ""}`;
+        },
+      },
       {
         type: "toggle",
         key: "model-czech",

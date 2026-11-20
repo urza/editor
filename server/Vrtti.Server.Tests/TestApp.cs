@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Vrtti.Server.Tests;
 
@@ -31,8 +33,22 @@ public sealed class TestApp(HttpMessageHandler? model = null) : WebApplicationFa
         return base.CreateHost(builder);
     }
 
+    /// <summary>Every log message of the server, as text, for tests of the model log.</summary>
+    public ConcurrentQueue<string> Logs { get; } = new();
+
+    sealed class ListLogger(ConcurrentQueue<string> logs) : ILoggerProvider, ILogger
+    {
+        public ILogger CreateLogger(string category) => this;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => level >= LogLevel.Information;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? e, Func<TState, Exception?, string> format) =>
+            logs.Enqueue($"{level}: {format(state, e)}");
+        public void Dispose() { }
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.ConfigureLogging(logging => logging.AddProvider(new ListLogger(Logs)));
         if (model is not null)
         {
             builder.ConfigureServices(services =>
