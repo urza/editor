@@ -31,7 +31,7 @@ public record ModelSettings(Uri? Url, string Name, string? Key)
 /// the text of a note; this is the one exception, and only on the user's command.
 /// </para>
 /// </remarks>
-public sealed partial class DiacriticsModel(HttpClient http, ModelSettings settings, ILogger<DiacriticsModel> log)
+public sealed partial class DiacriticsModel(HttpClient http, ModelSettings settings, ModelCheckCache cache, ILogger<DiacriticsModel> log)
 {
     // A paragraph, not a note: the client sends one request per paragraph.
     public const int MaxChars = 20_000;
@@ -48,9 +48,98 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
 
     public bool Available => settings.Url is not null;
 
-    /// <summary>The answer of the model, or null when it failed or took too long.</summary>
-    public async Task<string?> AddDiacritics(string text, CancellationToken aborted)
+    public string Name => settings.Name;
+
+    // The check asks only for the model list: it answers in milliseconds, needs no
+    // model work, and finds the two usual mistakes (a wrong address, a wrong name).
+    static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(3);
+
+    // GET /api/model checks live, and every app window asks it at its start. The cache
+    // keeps a room of open tabs from becoming a stream of calls to vLLM.
+    static readonly TimeSpan CheckFresh = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Whether vLLM answers and serves the configured name. Logs the result when it
+    /// differs from the last one, or always with <paramref name="logAlways"/> (the
+    /// check at the server start, so <c>docker logs</c> shows a mistake at once).
+    /// </summary>
+    public async Task<ModelCheck> Check(bool logAlways = false)
     {
+        if (!logAlways && cache.Last is { } last && DateTime.UtcNow - last.At < CheckFresh)
+        {
+            return last;
+        }
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        ModelCheck result;
+        try
+        {
+            using var timeout = new CancellationTokenSource(CheckTimeout);
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(settings.Url!, "models"));
+            if (settings.Key is not null)
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.Key);
+            }
+
+            using var response = await http.SendAsync(request, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                result = new ModelCheck("not answering", [], $"vLLM answered {(int)response.StatusCode}", DateTime.UtcNow);
+            }
+            else
+            {
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+                var served = body.GetProperty("data").EnumerateArray()
+                    .Select(model => model.GetProperty("id").GetString() ?? "")
+                    .ToArray();
+                result = served.Contains(settings.Name)
+                    ? new ModelCheck("answers", served, null, DateTime.UtcNow)
+                    : new ModelCheck("name not served", served, null, DateTime.UtcNow);
+            }
+        }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException
+                                      or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            result = new ModelCheck("not answering", [], e is OperationCanceledException
+                ? $"no answer in {CheckTimeout.TotalSeconds:0} s"
+                : $"{e.GetType().Name}: {e.InnerException?.Message ?? e.Message}", DateTime.UtcNow);
+        }
+
+        var previous = cache.Last;
+        cache.Last = result;
+        if (logAlways || previous?.State != result.State)
+        {
+            LogCheck(result, watch.ElapsedMilliseconds);
+        }
+
+        return result;
+    }
+
+    void LogCheck(ModelCheck check, long ms)
+    {
+        switch (check.State)
+        {
+            case "answers":
+                log.LogInformation("model check: {Url} answers, \"{Name}\" is served ({Ms} ms)", settings.Url, settings.Name, ms);
+                break;
+            case "name not served":
+                log.LogWarning("model check: {Url} answers, but it does not serve \"{Name}\"; it serves {Served}",
+                    settings.Url, settings.Name, string.Join(", ", check.Served.Select(name => $"\"{name}\"")));
+                break;
+            default:
+                log.LogWarning("model check: {Url} is not answering ({Why})", settings.Url, check.Why);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The answer of the model (null when it failed or took too long), and one line on
+    /// what happened, for the log. The line never holds text of the note.
+    /// </summary>
+    public async Task<ModelAnswer> AddDiacritics(string text, CancellationToken aborted)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        string Seconds() => $"{watch.Elapsed.TotalSeconds:0.00} s";
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(aborted);
         timeout.CancelAfter(Timeout);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(settings.Url!, "chat/completions"))
@@ -85,26 +174,90 @@ public sealed partial class DiacriticsModel(HttpClient http, ModelSettings setti
             using var response = await http.SendAsync(request, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
-                log.LogWarning("The model answered {Status}.", (int)response.StatusCode);
-                return null;
+                return new ModelAnswer(null, $"model {(int)response.StatusCode} in {Seconds()}");
             }
 
             var body = await response.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
             var content = body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
-            return content is null ? null : ThinkBlock().Replace(content, "");
+            return content is null
+                ? new ModelAnswer(null, $"model 200 in {Seconds()} with no text")
+                : new ModelAnswer(ThinkBlock().Replace(content, ""), $"model 200 in {Seconds()}");
         }
-        catch (Exception e) when (e is HttpRequestException or OperationCanceledException
-                                      or JsonException or KeyNotFoundException
+        catch (OperationCanceledException) when (aborted.IsCancellationRequested)
+        {
+            return new ModelAnswer(null, $"the device left after {Seconds()}");
+        }
+        catch (OperationCanceledException)
+        {
+            return new ModelAnswer(null, $"no model answer in {Timeout.TotalSeconds:0} s");
+        }
+        catch (Exception e) when (e is HttpRequestException or JsonException or KeyNotFoundException
                                       or InvalidOperationException or IndexOutOfRangeException)
         {
             // The kind and the message of the failure, never the text of the note: an
             // exception message here can only name the connection or the JSON shape.
-            log.LogWarning("The model call failed: {Kind}: {Message} {Inner}", e.GetType().Name, e.Message, e.InnerException?.Message);
-            return null;
+            return new ModelAnswer(null, $"model call failed after {Seconds()}: {e.GetType().Name}: {e.InnerException?.Message ?? e.Message}");
         }
+    }
+
+    /// <summary>
+    /// How much the model changed, as counts only: "same length, 9 letters changed" or
+    /// "other length". The client rejects an answer of another length (checkAnswer), so
+    /// "other length" in the log means the model broke the format.
+    /// </summary>
+    public static string Difference(string sent, string answer)
+    {
+        sent = sent.Normalize(System.Text.NormalizationForm.FormC);
+        answer = answer.Normalize(System.Text.NormalizationForm.FormC);
+        if (sent.Length != answer.Length)
+        {
+            return "other length";
+        }
+
+        var changed = sent.Where((c, i) => c != answer[i]).Count();
+        return $"same length, {changed} {(changed == 1 ? "letter" : "letters")} changed";
+    }
+
+    /// <summary>
+    /// Who asked, from the headers the app sends (X-Vrtti-Device, -Run, -Part). The
+    /// values come from the device, so they are cleaned before they reach the log: no
+    /// control characters (a newline would forge a log line), and a short length.
+    /// A client without the headers (an old build) still works and shows as "?".
+    /// </summary>
+    public static (string Device, string Run, string Part) Caller(IHeaderDictionary headers)
+    {
+        static string Clean(string? value, int max)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "?";
+            // The app sends the device name URI-encoded: fetch() refuses a header with
+            // characters outside Latin-1, and a name can hold any letter.
+            try { value = Uri.UnescapeDataString(value); } catch (UriFormatException) { }
+            var clean = new string(value.Where(c => !char.IsControl(c)).ToArray()).Trim();
+            return clean.Length == 0 ? "?" : clean.Length > max ? clean[..max] : clean;
+        }
+
+        return (Clean(headers["X-Vrtti-Device"], 40), Clean(headers["X-Vrtti-Run"], 8), Clean(headers["X-Vrtti-Part"], 11));
     }
 
     // A model that thinks aloud anyway puts it first, in one block.
     [GeneratedRegex(@"^\s*<think>.*?</think>\s*", RegexOptions.Singleline)]
     private static partial Regex ThinkBlock();
+}
+
+/// <summary>
+/// The result of a model check. <c>State</c> is "answers", "not answering" or "name not
+/// served"; <c>Why</c> says why it is not answering.
+/// </summary>
+public record ModelCheck(string State, string[] Served, string? Why, DateTime At);
+
+/// <summary>The answer text (null on a failure) and one log line on what happened.</summary>
+public record ModelAnswer(string? Text, string Outcome);
+
+/// <summary>
+/// The last check, for the whole server. DiacriticsModel is a typed HttpClient, and the
+/// container makes a new one for each request, so it can not keep the result itself.
+/// </summary>
+public sealed class ModelCheckCache
+{
+    public ModelCheck? Last { get; set; }
 }

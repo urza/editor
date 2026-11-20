@@ -118,7 +118,7 @@ limited to 10 MB.
 | `GET`    | `/api/docs/{id}/revisions`        | History, newest first, without content.               |
 | `GET`    | `/api/docs/{id}/revisions/{rev}`  | One revision, or 404.                                 |
 | `DELETE` | `/api/docs/{id}/revisions?below=` | `{ purged }`. Removes revisions below `below`. The newest one always stays. |
-| `GET`    | `/api/model`                      | `{ diacritics: true }` when `VRTTI_MODEL_URL` is set, else `false`. |
+| `GET`    | `/api/model`                      | `{ diacritics: false }` without `VRTTI_MODEL_URL`. With it: `{ diacritics: true, name, state, served, why }`, where `state` is `answers`, `not answering` or `name not served` (a live check, see "Language model"). |
 | `POST`   | `/api/model/diacritics`           | Body `{ text }`, one paragraph of at most 20,000 characters. 200 `{ text }` with the answer of the model. 404 without a model, 413 above the limit, 502 when the model fails or takes more than 30 seconds. |
 
 Push body:
@@ -147,6 +147,35 @@ as a general door to the model. The app sends up to 16 paragraphs at the same ti
 vLLM batches them. The app checks each answer again and keeps only words that differ by
 diacritics alone. Thinking output (`<think>…</think>`) is removed, and the request asks
 Qwen-style templates not to think (`chat_template_kwargs`).
+
+The server checks the model at its start and writes the result to the log, so
+`docker logs vrtti-server` shows a wrong `VRTTI_MODEL_URL` or `VRTTI_MODEL_NAME` right
+after `docker run`. The check asks vLLM for `GET /v1/models` (3-second timeout) and
+looks for the name. `GET /api/model` runs the same check live, at most once per 30
+seconds, and the app shows the result in Settings › Editor › Model. The log gets a new
+line when the result changes.
+
+```
+2026-11-20 12:03:07 info: Vrtti.Server.DiacriticsModel[0] model check: http://10.0.0.5:8000/v1/ answers, "Qwen3-8B" is served (12 ms)
+2026-11-20 12:03:07 warn: Vrtti.Server.DiacriticsModel[0] model check: http://10.0.0.5:8000/v1/ answers, but it does not serve "qwen3"; it serves "Qwen/Qwen3-8B"
+```
+
+Each paragraph of "Add diacritics (vllm)" gives two log lines: "asked" when it arrives,
+and the result when the device got the answer. The app sends its device name (from the
+keyring, else the start of its device id), a run id for one command, and the paragraph
+number in the headers `X-Vrtti-Device`, `X-Vrtti-Run` and `X-Vrtti-Part`. The lines
+hold counts, times and states only, never text of a note or of the answer.
+
+```
+info: ... diacritics run 7f3a from Pixel: paragraph 1/3 asked, 412 characters
+info: ... diacritics run 7f3a paragraph 1/3: model 200 in 1.12 s, same length, 31 letters changed, relayed
+warn: ... diacritics run 7f3a paragraph 3/3: no model answer in 30 s, 502 relayed
+warn: ... diacritics run 91c0 paragraph 1/1: the device left after 0.80 s, not relayed
+```
+
+"other length" in place of "same length" means that the model broke the format; the app
+then keeps its local result for that paragraph. The log has one line per entry with the
+time. ASP.NET Core requests and outgoing HTTP calls log warnings only.
 
 `kind` is `text`, `deleted` or `detached`. `baseRev: null` means "attach without a
 claim" and always appends. `deleted` tells other devices to remove their copy;

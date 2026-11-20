@@ -46,7 +46,8 @@ export function setModelFixesCzechParagraphs(on) {
 }
 
 /**
- * @typedef {{ ask: (text: string) => Promise<string> }} Model
+ * The `part` of `ask` is "2/5", the paragraph and the count, for the server log.
+ * @typedef {{ ask: (text: string, part: string) => Promise<string> }} Model
  * @typedef {(text: string, sticky?: boolean) => void} Notice
  */
 
@@ -137,7 +138,7 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   await pool(paras, PARALLEL, async (p) => {
     const sent = after.slice(p.from, p.to);
     try {
-      const checked = checkAnswer(sent, await model.ask(sent), (w) => hunspell.isWord(w));
+      const checked = checkAnswer(sent, await model.ask(sent, `${paras.indexOf(p) + 1}/${paras.length}`), (w) => hunspell.isWord(w));
       if (!checked) dropped++;
       else {
         for (const w of prose) {

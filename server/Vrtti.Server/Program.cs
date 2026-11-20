@@ -37,14 +37,26 @@ const string defaultSpace = "personal";
 const string badSpace = "space must be 1-32 letters, digits, - or _";
 
 var builder = WebApplication.CreateBuilder(args);
+// The console is the log (`docker logs`). One line per entry with the time, and no
+// line for each request or each outgoing call: those were six lines per sync request,
+// and they buried the model log (Model.cs) and the start lines. Their warnings stay.
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = true;
+    options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
+});
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxBodyBytes);
 builder.Services.AddSingleton(new Db(dbPath));
 // The user's language model for "Add diacritics (vllm)", if VRTTI_MODEL_URL is set.
 builder.Services.AddSingleton(ModelSettings.FromEnvironment());
+builder.Services.AddSingleton<ModelCheckCache>();
 builder.Services.AddHttpClient<DiacriticsModel>();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
     .WithOrigins(origins)
-    .WithHeaders("Authorization", "Content-Type")
+    // The X-Vrtti-* headers name the caller of a model request for the log (Model.cs).
+    .WithHeaders("Authorization", "Content-Type", "X-Vrtti-Device", "X-Vrtti-Run", "X-Vrtti-Part")
     .WithMethods("GET", "POST", "DELETE")));
 
 var app = builder.Build();
@@ -85,11 +97,25 @@ var build = long.Parse(typeof(Program).Assembly
 api.MapGet("/version", () => Results.Ok(new { build }));
 
 // Behind the token, unlike /version: whether a model exists is nobody else's business.
-api.MapGet("/model", (DiacriticsModel model) => Results.Ok(new { diacritics = model.Available }));
+// "diacritics" says only that a model is set, and the app shows "Add diacritics (vllm)"
+// on it even when the model does not answer now: vLLM can start after the app.
+// "state" is a live check (Model.cs, Check) for Settings and for curl.
+api.MapGet("/model", async (DiacriticsModel model) =>
+{
+    if (!model.Available)
+    {
+        return Results.Ok(new { diacritics = false });
+    }
+
+    var check = await model.Check();
+    return Results.Ok(new { diacritics = true, name = model.Name, state = check.State, served = check.Served, why = check.Why });
+});
 
 // One paragraph in, the same paragraph with diacritics out (.work/mixed-spellcheck/plan.md).
 // The client sends many of these at once; the model batches them.
-api.MapPost("/model/diacritics", async (DiacriticsModel model, DiacriticsRequest request, HttpContext context) =>
+// Two log lines for each paragraph, with counts and states only, never text: "asked"
+// shows a request that hangs at the model, and the second line says how it ended.
+api.MapPost("/model/diacritics", async (DiacriticsModel model, DiacriticsRequest request, HttpContext context, ILogger<DiacriticsModel> log) =>
 {
     if (!model.Available)
     {
@@ -101,15 +127,35 @@ api.MapPost("/model/diacritics", async (DiacriticsModel model, DiacriticsRequest
         return Results.BadRequest(new ErrorResponse("text is required"));
     }
 
+    var (device, run, part) = DiacriticsModel.Caller(context.Request.Headers);
     if (request.Text.Length > DiacriticsModel.MaxChars)
     {
+        log.LogWarning("diacritics run {Run} from {Device}: paragraph {Part} refused, {Chars} characters is above the limit",
+            run, device, part, request.Text.Length);
         return Results.Json(new ErrorResponse("text too long"), statusCode: StatusCodes.Status413PayloadTooLarge);
     }
 
+    log.LogInformation("diacritics run {Run} from {Device}: paragraph {Part} asked, {Chars} characters",
+        run, device, part, request.Text.Length);
     var answer = await model.AddDiacritics(request.Text, context.RequestAborted);
-    return answer is null
+    var outcome = answer.Text is null ? answer.Outcome : $"{answer.Outcome}, {DiacriticsModel.Difference(request.Text, answer.Text)}";
+
+    // After the response is out, so "relayed" means the device got it. A device that
+    // closed the app during the call shows here too, with the time it waited.
+    context.Response.OnCompleted(() =>
+    {
+        var left = context.RequestAborted.IsCancellationRequested;
+        var level = left || answer.Text is null ? LogLevel.Warning : LogLevel.Information;
+        // A device that left during the model call is already in the outcome.
+        var relay = !left ? (answer.Text is null ? "502 relayed" : "relayed")
+            : answer.Outcome.StartsWith("the device left") ? "not relayed" : "not relayed, the device left";
+        log.Log(level, "diacritics run {Run} paragraph {Part}: {Outcome}, {Relay}", run, part, outcome, relay);
+        return Task.CompletedTask;
+    });
+
+    return answer.Text is null
         ? Results.Json(new ErrorResponse("the model did not answer"), statusCode: StatusCodes.Status502BadGateway)
-        : Results.Ok(new DiacriticsResponse(answer));
+        : Results.Ok(new DiacriticsResponse(answer.Text));
 });
 
 api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
@@ -234,6 +280,19 @@ api.MapDelete("/docs/{id}/revisions", (Db db, string id, long? below) =>
     using var conn = db.Open();
     return Results.Ok(new PurgeResponse(Revisions.Purge(conn, id, below.Value)));
 });
+
+// One model check at the start, so `docker logs` shows a wrong VRTTI_MODEL_URL or
+// VRTTI_MODEL_NAME right after `docker run`. Not awaited: vLLM may be slow or down,
+// and the sync server must start anyway.
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+{
+    using var scope = app.Services.CreateScope();
+    var model = scope.ServiceProvider.GetRequiredService<DiacriticsModel>();
+    if (model.Available)
+    {
+        await model.Check(logAlways: true);
+    }
+}));
 
 app.Run();
 return 0;
