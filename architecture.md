@@ -3265,6 +3265,13 @@ detach of a note that moved away.
   which has no key path (v8). WebKit refuses a CryptoKey in a store with a
   key path ("Evaluating the object store's key path did not yield a
   value", seen on an iPhone); `putSetting` picks the store.
+- An iPhone stores a CryptoKey but gives it back unusable ("reading stored
+  keys back" fails). There the switch offers readable keys, the user's
+  choice: the same keys, unwrapped with the passphrase one last time and
+  stored as strings (`readableIdentity`, `readableSigning`); the wrapped
+  copies go. Same device, no successor, nothing encrypted again. Any code on
+  the origin can read them, and a device backup holds them. The way back
+  wraps the same keys with a new passphrase.
 - "Where the browser can" is tested step by step with throwaway keys
   (`storedKeysProblem`): make, use, store in IndexedDB, read back, use
   again. The switch names the step that failed. No import is tested: an
