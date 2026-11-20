@@ -112,6 +112,11 @@ export function mountStatusbar(store, sync, zoom, view) {
     // After the editor's own "active" handler put the new state up.
     queueMicrotask(renderPos);
   });
+  // A lock (keys or PIN, §27) puts the placeholder up with setState too, and
+  // an unlock the text: neither runs an update listener.
+  for (const type of ["lock", "unlock"]) {
+    store.events.addEventListener(type, () => queueMicrotask(renderPos));
+  }
 
   // ---- Spellcheck languages -------------------------------------------------
 
