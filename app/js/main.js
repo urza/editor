@@ -31,6 +31,7 @@ import {
   keyringContentFor,
   mergeKeyringContent,
   readKeyringContent,
+  storedKeysProblem,
   supportsStoredKeys,
 } from "./crypto/keyring.js";
 import { PALETTE } from "./crypto/spaces.js";
@@ -731,8 +732,10 @@ async function start() {
     run: async () => {
       if (!keyring.isSetUp || !keyring.isUnlocked) return false;
       const to = !keyring.askPassphrase;
-      if (!to && !(await supportsStoredKeys())) {
-        await showNote({ title: "Not possible here", text: "This browser cannot keep a key without a passphrase." });
+      const problem = to ? null : await storedKeysProblem();
+      if (problem) {
+        // The step, so a refusal on a phone says what to look at next.
+        await showNote({ title: "Not possible here", text: "This browser cannot keep a key without a passphrase: " + problem + "." });
         return false;
       }
       const answer = await choose({
