@@ -1493,8 +1493,6 @@ img.twemoji {
   font-variant-numeric: tabular-nums;
 }
 
-#status-saveas { color: var(--st-gutter-fg); font-size: var(--ui-md); }
-
 /* ==== Phone mode (architecture.md §9, "Phone mode") ========================
 
    One block, and every rule that changes the app starts with `html.phone`.

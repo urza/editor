@@ -22,6 +22,7 @@ const CHORDS = {
 };
 const SHIFT_CHORDS = {
   KeyN: "workspace.new",
+  KeyS: "file.saveAs",
   KeyW: "workspace.close",
 };
 

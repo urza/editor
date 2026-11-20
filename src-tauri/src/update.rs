@@ -24,6 +24,10 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use crate::debug;
 
 const CHECK: &str = "shell.checkUpdates";
+/// The page's own update check (app/js/main.js): the service worker looks
+/// for a newer page build and reloads the window into it. The shell and the
+/// page update apart (architecture.md §18), so one menu item checks both.
+const PAGE_CHECK: &str = "app.update";
 const ABOUT: &str = "shell.about";
 
 /// Boot is not slowed: the first check waits this long after launch.
@@ -137,6 +141,13 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, id: &str) -> bool {
     let app = app.clone();
     match id {
         CHECK => {
+            // The page first: its check is a few requests, and a newer page
+            // reloads the window while the shell check may still download.
+            // The page reports in its status bar; the dialog below speaks
+            // for the shell only.
+            if let Some(window) = debug::target_window(&app) {
+                crate::deliver(&app, window.label(), PAGE_CHECK, None);
+            }
             std::thread::spawn(move || check(&app, true));
         }
         ABOUT => {
@@ -216,7 +227,14 @@ fn run_check<R: Runtime>(app: &AppHandle<R>, state: &State, manual: bool) {
         Ok(None) => {
             eprintln!("[vrtti update] {current} is up to date");
             if manual {
-                say(app, "Check for updates", &format!("vrtti {} is up to date.", display_version(&current)));
+                say(
+                    app,
+                    "Check for updates",
+                    &format!(
+                        "The vrtti app {} is up to date.\nThe page checks its own build and shows the result in the status bar.",
+                        display_version(&current)
+                    ),
+                );
             }
             return;
         }

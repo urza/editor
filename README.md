@@ -210,6 +210,7 @@ all options.
 | New note       | Alt+N                     | Ctrl+N      |
 | Close note     | Alt+W                     | Ctrl+W      |
 | Save           | automatic                 | Ctrl+S      |
+| Save as        | palette: Save to disk     | Ctrl+Shift+S |
 | New window     | Alt+Shift+N               | Ctrl+Shift+N |
 | Close window   | close the tab             | Ctrl+Shift+W |
 | Find in files  | Ctrl+Shift+F              | Ctrl+Shift+F |

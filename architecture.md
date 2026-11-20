@@ -2220,7 +2220,11 @@ switch, quiet failures).
   architecture, and the page build) and "Check for updates…", which runs
   the same check by hand and, when there is nothing or the check fails,
   says so in a dialog. This is the one place a check may speak when it
-  finds nothing.
+  finds nothing. The same item also sends `app.update` to the focused
+  window first, so the page checks its own build too (the service worker,
+  as Settings > Update does). The page reports that result in its status
+  bar and reloads into a newer build; the dialog speaks for the shell
+  only (user decision, 2026-11-20).
 - **Env hooks, read once at startup** (goose §6): `VRTTI_NO_UPDATE=1`
   disables the automatic check (the menu item still works),
   `VRTTI_UPDATE_URL` replaces the endpoint and `VRTTI_UPDATE_PUBKEY` the
