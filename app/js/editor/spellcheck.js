@@ -913,9 +913,20 @@ const phoneBox = [
   // would open behind the keyboard.
   tooltips({
     tooltipSpace: (view) => {
+      const root = view.dom.ownerDocument.documentElement.getBoundingClientRect();
       const vv = window.visualViewport;
-      if (!vv) return view.dom.ownerDocument.documentElement.getBoundingClientRect();
-      return { top: vv.offsetTop, left: vv.offsetLeft, bottom: vv.offsetTop + vv.height, right: vv.offsetLeft + vv.width };
+      if (!vv) return root;
+      // The visible part in the frame of getBoundingClientRect, which
+      // CodeMirror uses for the word. vv.offsetTop is right only where client
+      // coordinates start at the layout viewport; CodeMirror's own windowRect
+      // assumes they start at the visible top. Where they do, offsetTop moved
+      // the space down by the pan to a line near the keyboard, and the box
+      // opened below the word, behind the keyboard (phone test, 2026-11-20).
+      // pageTop is a page coordinate, and root.top is page y 0 in client
+      // coordinates, so their sum is right in both frames.
+      const top = vv.pageTop + root.top;
+      const left = vv.pageLeft + root.left;
+      return { top, left, bottom: top + vv.height, right: left + vv.width };
     },
   }),
 ];
