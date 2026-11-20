@@ -1295,6 +1295,72 @@ export function createDocStore({
     } else lockAll();
   });
 
+  // ---- Previews of encrypted notes (architecture.md §9, Phone mode) --------
+
+  /**
+   * The ciphertext of each note whose decode failed (a courier document, a
+   * note this device is no recipient of), by id. Without it every "change",
+   * so every keystroke, would try the same failed decode again. A new body
+   * gets a new try.
+   * @type {Map<string, string>}
+   */
+  const undecodable = new Map();
+  let warming = false;
+  let warmAgain = false;
+
+  /**
+   * Decode every encrypted note of the list into `plain`, in the background,
+   * so that loadedText has a preview for it. Since all notes are encrypted,
+   * a list that showed only what was opened by hand showed almost no
+   * previews. The sidebar itself still never decodes: it draws on every
+   * keystroke and reads loadedText only.
+   *
+   * One note at a time, and only what is missing: after the first pass a run
+   * is a walk over the records with a map lookup each. Runs at load, after
+   * an unlock (keys or PIN) and after every "change", which is how a synced
+   * note with new ciphertext (plain.delete in adoptFromWindow) gets its
+   * preview back. A run that starts while one is busy only asks it to walk
+   * once more.
+   *
+   * Plaintext stays in memory only, and lockAll clears it as before. A note
+   * behind the PIN and a file body that is not in the record are skipped.
+   */
+  async function warmPreviews() {
+    if (warming) {
+      warmAgain = true;
+      return;
+    }
+    warming = true;
+    let decoded = false;
+    try {
+      do {
+        warmAgain = false;
+        for (const record of [...openBuffers(), ...closedBuffers()]) {
+          if (!keyring.isUnlocked) return;
+          const { id, content, enc } = record;
+          if (!enc || typeof content !== "string" || isPinLocked(record)) continue;
+          if (plain.has(id) || undecodable.get(id) === content) continue;
+          try {
+            // decodeText caches only if the record still holds this body and
+            // the keyring is still open, so a lock during the await is safe.
+            await decodeText(id, content, enc);
+            undecodable.delete(id);
+            decoded = true;
+          } catch {
+            undecodable.set(id, content);
+          }
+        }
+      } while (warmAgain);
+    } finally {
+      warming = false;
+      // One redraw for the whole pass. The "change" starts another run, which
+      // finds nothing to do and so sends nothing: no loop.
+      if (decoded) emit("change");
+    }
+  }
+  events.addEventListener("change", () => void warmPreviews());
+  events.addEventListener("unlock", () => void warmPreviews());
+
   /**
    * Is this document encrypted for an older recipient set than it should be?
    * A "space" note follows the log position (§27): a lower `spaceSeq` than
@@ -3216,6 +3282,9 @@ export function createDocStore({
         needsPermission.add(stored.id);
       }
     }
+    // The keys can be open before the records are here (a device key that
+    // unlocks at start), and then no "unlock" comes after this.
+    void warmPreviews();
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------
