@@ -213,16 +213,20 @@ body {
    lists met with only a small heading between them, and the eye read one
    long list. The bar marks the edge and also looks like the toggle it is.
    margin 0: the bar must reach both sides of the sidebar.
-   The line on top is the caret orange (user choice, 2026-11-20: a grey
-   line was not enough). Orange is already the app's one accent, so the
-   edge adds no new color. */
+   The line on top turns caret orange while the list is open (user choice,
+   2026-11-20: grey was not enough with two long lists, and orange on a
+   closed bar was too loud). Orange is already the app's one accent, so the
+   edge adds no new color. 2px in both states, or the bar would move by a
+   pixel on every toggle. ui/sidebar.js sets aria-expanded. */
 #recent-heading,
 #fromserver-heading {
   margin: 0;
   padding: 7px 10px 6px;
   background: var(--st-ui-bg);
-  border-top: 2px solid var(--st-caret);
+  border-top: 2px solid #3A4048;
 }
+#recent-heading[aria-expanded="true"],
+#fromserver-heading[aria-expanded="true"] { border-top-color: var(--st-caret); }
 #recent-list,
 #fromserver-list { padding-top: 2px; }
 
