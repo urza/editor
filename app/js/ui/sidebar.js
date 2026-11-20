@@ -1086,6 +1086,9 @@ export function mountSidebar(store, folders, sync) {
     recentBlock.hidden = closed.length === 0;
     recentHeading.textContent =
       (recentCollapsed ? "▸" : "▾") + " Recent (" + closed.length + ")";
+    // For screen readers, and for app.css: the bar's orange line shows only
+    // while the list is open.
+    recentHeading.setAttribute("aria-expanded", String(!recentCollapsed));
     recentList.hidden = recentCollapsed;
     recentList.replaceChildren(
       ...(recentCollapsed ? [] : closed.map((b) => makeRow(b, { closable: false })))
@@ -1097,6 +1100,7 @@ export function mountSidebar(store, folders, sync) {
     fromserverBlock.hidden = stubs.length === 0;
     fromserverHeading.textContent =
       (fromserverCollapsed ? "▸" : "▾") + " From server (" + stubs.length + ")";
+    fromserverHeading.setAttribute("aria-expanded", String(!fromserverCollapsed));
     fromserverList.hidden = fromserverCollapsed;
     fromserverList.replaceChildren(...(fromserverCollapsed ? [] : stubRows(stubs)));
     refocusRow(focused);
