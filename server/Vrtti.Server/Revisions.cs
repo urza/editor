@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 
 namespace Vrtti.Server;
@@ -8,51 +9,57 @@ public static class Revisions
 {
     const string Columns = "doc_id, rev, seq, kind, content, meta, device_id, client_time, server_time, space";
 
-    /// <summary>The newest revision of each document with a row after <paramref name="since"/>.</summary>
+    /// <summary>The newest revision of each document of <paramref name="spaces"/> with a row after <paramref name="since"/>.</summary>
     /// <remarks>
-    /// Paging: the caller asks for one row more than the page size to learn whether more
-    /// rows wait, and the next cursor is the largest seq in the page.
     /// <para>
-    /// That cursor never skips a document. The rows are ordered by seq and every returned
-    /// row is a document's newest row, so a document left out of the page has its newest
-    /// row at a seq above every seq in the page, therefore above the cursor. The next call
-    /// with <c>since = next</c> finds it again. A document inside the page cannot come back
-    /// unless it gets a new row, and that row has a seq above the cursor as well.
+    /// A document is in the result when its newest row is in one of the spaces, or when a
+    /// row moved it out of one of them (<c>prev_space</c>). The second case tells a device of
+    /// the old space that the document left; without it the device never hears of the move
+    /// (architecture.md section 27). The caller hides the content of a row whose space it
+    /// may not read.
     /// </para>
     /// <para>
-    /// <paramref name="spaces"/> filters on the space of that outer row, the document's
-    /// newest row, and never on older rows: the newest row decides where a document lives.
-    /// A document that moved out of the named spaces is therefore omitted, even when older
-    /// rows sit in them. Null or empty means every space, which keeps an old client whole.
-    /// The paging argument above still holds, because the filter only drops whole
-    /// documents and every row it keeps is still a newest row.
+    /// Each document has a key: the seq of its newest row when that row is in the spaces,
+    /// else the seq of its last row that moved it out of them. The rows are filtered and
+    /// ordered by the key, and the key is the <c>Seq</c> the caller gets.
+    /// </para>
+    /// <para>
+    /// Paging: the caller asks for one row more than the page size to learn whether more
+    /// rows wait, and the next cursor is the largest key in the page. That cursor never
+    /// skips a document. Keys are distinct (each is the seq of a row of its own document)
+    /// and only grow, so a document left out of the page has a key above the cursor, and
+    /// the next call finds it again. The newest row's seq is no key for a document that
+    /// moved away: later rows in its new space would put it after a page of other rows,
+    /// and the next page would then test the move against a cursor that is past it.
     /// </para>
     /// </remarks>
     public static List<Change> Changes(
         SqliteConnection conn,
         long since,
         int limit,
-        IReadOnlyList<string>? spaces = null)
+        IReadOnlyCollection<string> spaces)
     {
         // One parameter per name: the names are validated, but they still never go into
         // the SQL text.
-        var names = spaces ?? [];
-        var filter = names.Count > 0
-            ? $"AND r.space IN ({string.Join(", ", names.Select((_, i) => $"$s{i}"))})"
-            : "";
-        var args = new List<(string, object?)> { ("$since", since), ("$limit", limit) };
-        args.AddRange(names.Select((name, i) => ($"$s{i}", (object?)name)));
+        var (list, args) = InList(spaces);
+        args.Add(("$since", since));
+        args.Add(("$limit", limit));
 
         using var cmd = Db.Command(
             conn,
             $"""
-             SELECT {Columns}
-             FROM revisions r
-             WHERE r.seq > $since
-               AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2
-                            WHERE r2.doc_id = r.doc_id AND r2.seq > $since)
-               {filter}
-             ORDER BY r.seq
+             SELECT doc_id, rev, k AS seq, kind, content, meta, device_id, client_time, server_time, space
+             FROM (SELECT r.*,
+                          CASE WHEN r.space IN ({list}) THEN r.seq
+                               ELSE (SELECT MAX(r3.seq) FROM revisions r3
+                                     WHERE r3.doc_id = r.doc_id AND r3.prev_space IN ({list}))
+                          END AS k
+                   FROM revisions r
+                   -- A key is never above the newest seq, so this narrows on the index first.
+                   WHERE r.seq > $since
+                     AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id))
+             WHERE k > $since
+             ORDER BY k
              LIMIT $limit
              """,
             [.. args]);
@@ -65,36 +72,6 @@ public static class Revisions
         }
 
         return changes;
-    }
-
-    /// <summary>Every space with its count of live documents, ordered by name.</summary>
-    /// <remarks>
-    /// A document counts in the space of its newest row, and only when that row is
-    /// <c>text</c>: a <c>deleted</c> or <c>detached</c> tombstone means the document is gone
-    /// from sync, and an older row in another space means it moved away. The reserved
-    /// <c>keyring</c> space is in the list too; the client hides it.
-    /// </remarks>
-    public static List<SpaceInfo> Spaces(SqliteConnection conn)
-    {
-        using var cmd = Db.Command(
-            conn,
-            """
-            SELECT r.space, COUNT(*)
-            FROM revisions r
-            WHERE r.kind = 'text'
-              AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id)
-            GROUP BY r.space
-            ORDER BY r.space
-            """);
-
-        using var reader = cmd.ExecuteReader();
-        var list = new List<SpaceInfo>();
-        while (reader.Read())
-        {
-            list.Add(new SpaceInfo(reader.GetString(0), reader.GetInt64(1)));
-        }
-
-        return list;
     }
 
     /// <summary>The current revision number, or 0 when the document has no rows.</summary>
@@ -131,25 +108,31 @@ public static class Revisions
     }
 
     /// <summary>History of one document, newest first, without the content.</summary>
-    public static List<RevisionInfo> History(SqliteConnection conn, string docId)
+    /// <remarks>
+    /// Only revisions of <paramref name="spaces"/>: a note that moved from a space of
+    /// which the caller is not a member keeps its old revisions hidden from the caller.
+    /// </remarks>
+    public static List<RevisionInfo> History(SqliteConnection conn, string docId, IReadOnlyCollection<string> spaces)
     {
+        var (list, args) = InList(spaces);
+        args.Add(("$id", docId));
         using var cmd = Db.Command(
             conn,
             // LENGTH() on text counts characters, not bytes. The size is a display hint
             // for the history dialog, so counting characters in SQL beats loading every
             // revision's content only to measure it.
-            """
-            SELECT rev, seq, kind, device_id, client_time, server_time,
-                   COALESCE(LENGTH(content), 0)
-            FROM revisions WHERE doc_id = $id ORDER BY rev DESC
-            """,
-            ("$id", docId));
+            $"""
+             SELECT rev, seq, kind, device_id, client_time, server_time,
+                    COALESCE(LENGTH(content), 0)
+             FROM revisions WHERE doc_id = $id AND space IN ({list}) ORDER BY rev DESC
+             """,
+            [.. args]);
 
         using var reader = cmd.ExecuteReader();
-        var list = new List<RevisionInfo>();
+        var history = new List<RevisionInfo>();
         while (reader.Read())
         {
-            list.Add(new RevisionInfo(
+            history.Add(new RevisionInfo(
                 Rev: reader.GetInt64(0),
                 Seq: reader.GetInt64(1),
                 Kind: reader.GetString(2),
@@ -159,10 +142,11 @@ public static class Revisions
                 Size: reader.GetInt32(6)));
         }
 
-        return list;
+        return history;
     }
 
     /// <summary>Appends one revision and returns its seq. Call inside a write transaction.</summary>
+    /// <param name="prevSpace">The space of the row before, when this row moves the document.</param>
     public static long Insert(
         SqliteConnection conn,
         string docId,
@@ -173,13 +157,14 @@ public static class Revisions
         string deviceId,
         long clientTime,
         long serverTime,
-        string space)
+        string space,
+        string? prevSpace)
     {
         using var cmd = Db.Command(
             conn,
             """
-            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time, space)
-            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime, $space)
+            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time, space, prev_space)
+            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime, $space, $prevSpace)
             RETURNING seq
             """,
             ("$id", docId),
@@ -190,7 +175,8 @@ public static class Revisions
             ("$device", deviceId),
             ("$clientTime", clientTime),
             ("$serverTime", serverTime),
-            ("$space", space));
+            ("$space", space),
+            ("$prevSpace", prevSpace));
         return (long)cmd.ExecuteScalar()!;
     }
 
@@ -218,6 +204,29 @@ public static class Revisions
             ("$newest", newest));
         return cmd.ExecuteNonQuery();
     }
+
+    /// <summary>The row as a device of the old space sees a document that moved away.</summary>
+    /// <remarks>
+    /// The device learns that the note left and where to, but not its text and not its
+    /// sealed meta: those are for the members of the new space.
+    /// </remarks>
+    public static Change WithoutSecrets(Change change)
+    {
+        JsonElement? meta = null;
+        if (change.Meta is { ValueKind: JsonValueKind.Object } value
+            && JsonNode.Parse(value.GetRawText()) is JsonObject node)
+        {
+            node.Remove("sealed");
+            meta = JsonSerializer.SerializeToElement(node);
+        }
+
+        return change with { Content = null, Meta = meta };
+    }
+
+    /// <summary>"$s0, $s1, ..." for an IN clause, with one parameter for each name.</summary>
+    static (string List, List<(string, object?)> Args) InList(IReadOnlyCollection<string> names) =>
+        (string.Join(", ", names.Select((_, i) => $"$s{i}")),
+         [.. names.Select((name, i) => ($"$s{i}", (object?)name))]);
 
     static Change ReadChange(SqliteDataReader reader) => new(
         DocId: reader.GetString(0),

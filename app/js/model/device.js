@@ -34,3 +34,14 @@ export async function deviceId() {
   cached = id;
   return id;
 }
+
+/**
+ * Take a new id: a change of the passphrase switch makes this browser profile
+ * a new device, with new keys and a new id (architecture.md §27). The server
+ * keys its member table by device id, so the new keys cannot keep the old one.
+ * @param {string} id
+ */
+export async function setDeviceId(id) {
+  await putSetting(KEY, id);
+  cached = id;
+}

@@ -299,7 +299,8 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
       // §5: search only sees currently unlocked documents. Nothing here may
       // prompt, so a locked store simply skips them and says how many.
-      if (record.enc && !store.isUnlocked) {
+      // A note behind the PIN is not searched either (§27).
+      if ((record.enc && !store.isUnlocked) || store.isPinLocked(record.id)) {
         run.locked++;
         continue;
       }

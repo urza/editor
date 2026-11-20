@@ -365,6 +365,8 @@ export function createEditorState(content, lang, onDocChanged, onDominantPaste, 
 }
 
 const LOCKED_TEXT = "🔒 Locked. Click to unlock with your passphrase.";
+// A note behind this device's PIN (architecture.md §27).
+const PIN_TEXT = "🔒 Locked note. Click to type the PIN.";
 const FOREIGN_TEXT =
   "🔒 This device has no key for this note. The device that made it can encrypt it for all devices.";
 /** @type {Record<string, string>} UnavailableError reasons (model/docs.js), as the placeholder says them. */
@@ -524,6 +526,21 @@ export function mountEditor(host, store) {
       });
   }
 
+  /**
+   * The PIN pad, once per activation, like the unlock prompt above.
+   * @param {string} id
+   */
+  function askPin(id) {
+    if (asking) return;
+    asking = true;
+    Promise.resolve(run("pin.unlock"))
+      .catch(() => false)
+      .then((ok) => {
+        asking = false;
+        if (ok && id === store.activeId) reactivate(id);
+      });
+  }
+
   /** @param {string} id Put a buffer on screen, placeholder or document. */
   function reactivate(id) {
     if (decodingId === id) return;
@@ -531,6 +548,13 @@ export function mountEditor(host, store) {
   }
 
   function stateFor(id) {
+    // Before the cache: a state kept from before the PIN locked again must
+    // not show the text (the lock event drops it too, this is the guard).
+    if (store.isPinLocked(id)) {
+      placeholderId = id;
+      askPin(id);
+      return createLockedState(PIN_TEXT);
+    }
     const cached = states.get(id);
     if (cached) {
       placeholderId = null;
@@ -684,7 +708,17 @@ export function mountEditor(host, store) {
     const active = store.activeId;
     if (!active || !ids.includes(active)) return;
     placeholderId = active;
-    view.setState(createLockedState());
+    view.setState(createLockedState(store.isPinLocked(active) ? PIN_TEXT : undefined));
+  });
+
+  // The placeholder says "Click to…": a click asks again. The first ask
+  // comes on activation; after a cancel, this is the way back, and on a
+  // phone (the drawer closed) the only one.
+  view.dom.addEventListener("click", () => {
+    const active = store.activeId;
+    if (!active || placeholderId !== active) return;
+    if (store.isPinLocked(active)) askPin(active);
+    else if (store.get(active)?.enc) askUnlock(active);
   });
 
   // The identity is back. Only a document that is showing the placeholder has

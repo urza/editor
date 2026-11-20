@@ -312,6 +312,72 @@ export function choose(opts) {
 }
 
 /**
+ * Tick any of a list: the spaces a new device gets (architecture.md §27).
+ * @param {{title?: string, hint?: string,
+ *          options: {id: string, label: string, checked?: boolean}[]}} opts
+ * @returns {Promise<string[] | null>} The ticked ids, or null when cancelled.
+ */
+export function chooseMany(opts) {
+  const { dialog, form, body, actions } = shell(opts.title ?? "Choose");
+  /** @type {HTMLInputElement[]} */
+  const boxes = [];
+  for (const option of opts.options) {
+    const wrap = document.createElement("label");
+    wrap.className = "dialog-check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = option.id;
+    box.checked = Boolean(option.checked);
+    const text = document.createElement("span");
+    text.textContent = option.label;
+    wrap.append(box, text);
+    body.appendChild(wrap);
+    boxes.push(box);
+  }
+  if (opts.hint) {
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = opts.hint;
+    body.appendChild(hint);
+  }
+  const error = errorLine(body);
+  actions.append(cancelButton(dialog), button("OK", "ok", true));
+  form.addEventListener("submit", (event) => {
+    if (!boxes.some((b) => b.checked)) {
+      event.preventDefault();
+      error.textContent = "Tick at least one.";
+      error.hidden = false;
+    }
+  });
+  const read = () => boxes.filter((b) => b.checked).map((b) => b.value);
+  return openModal(dialog, (value) => (value === "ok" ? read() : null));
+}
+
+/**
+ * A join code, large, for the user to type on the other device. Unlike
+ * showSecret it closes on Escape: the code is worth nothing once this
+ * device has answered the join, and a new one is one click away.
+ * @param {{title: string, code: string, note?: string}} opts
+ * @returns {Promise<void>}
+ */
+export function showCode(opts) {
+  const { dialog, body, actions } = shell(opts.title);
+  const code = document.createElement("pre");
+  code.className = "dialog-secret dialog-code";
+  code.tabIndex = 0;
+  code.textContent = opts.code;
+  body.appendChild(code);
+  if (opts.note) {
+    const note = document.createElement("p");
+    note.className = "settings-hint";
+    note.textContent = opts.note;
+    body.appendChild(note);
+  }
+  actions.append(button("Done", "ok", true));
+  return openModal(dialog, () => undefined);
+}
+
+/**
  * One paragraph and an OK button: for a step that ends on another device,
  * where nothing else on this screen would say that it is done.
  * @param {{title: string, text: string}} opts

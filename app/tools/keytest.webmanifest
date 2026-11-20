@@ -1,0 +1,7 @@
+{
+  "name": "vrtti key test",
+  "short_name": "key test",
+  "start_url": "./keytest.html",
+  "scope": "./keytest.html",
+  "display": "standalone"
+}

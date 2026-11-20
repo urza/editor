@@ -4,9 +4,6 @@
 // Everything below this stage treats content as opaque. That rule is what makes
 // encryption orthogonal to storage, disk, and sync, so this file is the only
 // place that knows a record can be ciphertext.
-//
-// Nothing in the app calls this yet; model/docs.js wires it into the write
-// pipeline in unit 2 (architecture.md §13.4).
 
 import * as age from "../crypto/age.js";
 
@@ -16,8 +13,8 @@ import * as age from "../crypto/age.js";
  * The keyring surface the codec needs. Typed as a shape, not as the class, so a
  * test can hand in a stub.
  * @typedef {Object} CodecKeyring
- * @property {string | CryptoKey | null} identity
- * @property {(preset: "all-devices" | "this-device") => string[]} recipientsFor
+ * @property {() => (string | CryptoKey)[]} identities
+ * @property {(preset: string, members?: string[]) => string[]} recipientsFor
  */
 
 /** Thrown when the keyring is locked or holds no matching identity. */
@@ -42,11 +39,13 @@ export class LockedError extends Error {
  * @param {string} text
  * @param {EncMeta | undefined} enc  Absent for a plaintext doc.
  * @param {CodecKeyring} keyring
+ * @param {string[]} [members]  The recipients of the note's space, for the
+ *   preset "space" (architecture.md §27).
  * @returns {Promise<string>} Armored ciphertext, or the text unchanged.
  */
-export async function encode(text, enc, keyring) {
+export async function encode(text, enc, keyring, members) {
   if (!enc) return text;
-  const recipients = keyring.recipientsFor(enc.preset);
+  const recipients = keyring.recipientsFor(enc.preset, members);
   if (!recipients.length) throw new Error("codec: preset resolved to no recipients");
   return /** @type {string} */ (await age.encrypt(text, recipients, { armored: true }));
 }
@@ -61,11 +60,10 @@ export async function encode(text, enc, keyring) {
  */
 export async function decode(content, enc, keyring) {
   if (!enc) return content;
-  if (!keyring.identity) throw new LockedError();
+  const identities = keyring.identities();
+  if (!identities.length) throw new LockedError();
   try {
-    return /** @type {string} */ (
-      await age.decrypt(content, { identities: [keyring.identity], output: "text" })
-    );
+    return /** @type {string} */ (await age.decrypt(content, { identities, output: "text" }));
   } catch (err) {
     // typage throws the same "no identity matched" error for a locked keyring
     // and for a doc this device is not a recipient of. The second case is the
@@ -77,12 +75,7 @@ export async function decode(content, enc, keyring) {
 
 /**
  * Build the `enc` field when a doc turns secret.
- *
- * Converting a plaintext doc must also purge its server revisions, or the old
- * plaintext history defeats the point (architecture.md §5). That purge is the
- * sync client's job; this function only mints the metadata.
- *
- * @param {"all-devices" | "this-device"} preset
+ * @param {"space" | "this-device"} preset
  * @returns {EncMeta}
  */
 export function newEncMeta(preset) {

@@ -103,8 +103,9 @@ export async function showHistory({ record, client, store }) {
         } catch {
           // Locked, or this device is not a recipient. The copy keeps the
           // ciphertext and its `enc`, which is exactly what a courier device
-          // can still hold and hand on (architecture.md §5).
-          copyEnc = enc;
+          // can still hold and hand on (architecture.md §5). A copy is a
+          // local note, so a "space" preset (§27) becomes a local one.
+          copyEnc = enc.preset === "space" ? { v: 1, preset: "this-device" } : enc;
         }
       }
       await store.createFrom({

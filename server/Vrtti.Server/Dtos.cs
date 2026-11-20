@@ -40,8 +40,8 @@ public record RevisionInfo(
 /// <c>BaseRev</c> null means "attach without a claim": the push always appends.
 /// A number is a claim about the current revision, and a mismatch is a 409.
 /// <para>
-/// <c>Space</c> null means <c>personal</c>, so a client from before spaces keeps working
-/// and its notes land where the migration put the old ones.
+/// There is no device id in the body: the server takes it from the device token, so a
+/// device cannot write a row in the name of another device.
 /// </para>
 /// </remarks>
 public record PushRequest(
@@ -49,9 +49,8 @@ public record PushRequest(
     string? Kind,
     string? Content,
     JsonElement? Meta,
-    string? DeviceId,
     long ClientTime,
-    string? Space = null);
+    string? Space);
 
 public record PushResponse(long Rev, long Seq);
 
@@ -62,10 +61,52 @@ public record ChangesResponse(IReadOnlyList<Change> Changes, long Next, bool Mor
 
 public record PurgeResponse(int Purged);
 
-/// <summary>One entry of <c>GET /api/spaces</c>: a space and its live documents.</summary>
-public record SpaceInfo(string Space, long Count);
+/// <summary>One entry of <c>GET /api/spaces</c>: a space of the caller.</summary>
+/// <remarks>
+/// <c>Count</c> is the number of live documents. <c>LogSeq</c> is the seq of the last
+/// log entry, so a device pulls the log only when it is behind.
+/// </remarks>
+public record SpaceInfo(string Space, long Count, long LogSeq);
 
 public record ErrorResponse(string Error);
+
+/// <summary>Body of <c>POST /api/devices</c> and <c>POST /api/devices/successor</c>.</summary>
+/// <remarks><c>TokenHash</c> is the lowercase hex SHA-256 of the device token.</remarks>
+public record RegisterRequest(string? Id, string? TokenHash);
+
+/// <summary>Body of <c>POST /api/spaces/{name}/log</c> and <c>.../claim</c>.</summary>
+/// <remarks>
+/// The entry travels as a string and not as an object: the next entry's <c>prev</c> is the
+/// SHA-256 of exactly these bytes, so no JSON layer may re-serialize it.
+/// </remarks>
+public record LogAppendRequest(string? Entry);
+
+public record LogAppendResponse(long Seq);
+
+/// <summary>One entry of <c>GET /api/spaces/{name}/log</c>; <c>Entry</c> is the stored text.</summary>
+public record LogEntry(long Seq, string Entry);
+
+/// <summary>Body of <c>POST /api/joins</c>, sent by the member that shows the code.</summary>
+public record JoinCreateRequest(string? Slot, string? Verifier, string[]? Spaces);
+
+/// <summary>Body of <c>POST /api/joins/redeem</c>, sent by the new device without a token.</summary>
+/// <remarks>
+/// <c>Entry</c> (the device entry) and <c>Proof</c> are opaque to the server; the member
+/// checks the proof with the code.
+/// </remarks>
+public record JoinRedeemRequest(
+    string? Slot,
+    string? Verifier,
+    string? DeviceId,
+    string? TokenHash,
+    string? Entry,
+    string? Proof);
+
+/// <summary>A used join that waits for its member (<c>GET /api/joins</c>).</summary>
+public record PendingJoin(string Slot, string[] Spaces, string DeviceId, string Entry, string Proof);
+
+/// <summary>The member's reply to a join; both null while the member has not answered.</summary>
+public record JoinReply(string? Reply, string? Mac);
 
 /// <summary>Body of <c>POST /api/model/diacritics</c>: one paragraph.</summary>
 public record DiacriticsRequest(string? Text);

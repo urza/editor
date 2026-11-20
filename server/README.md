@@ -1,8 +1,9 @@
 # vrtti sync server
 
 A thin sync backend for the vrtti editor. ASP.NET Core minimal API on .NET 10, SQLite,
-raw SQL. The server is content-agnostic. It stores opaque content and an opaque `meta`
-object, and it never looks inside them.
+raw SQL. The server stores age-encrypted content and a small `meta` object. It cannot
+read a note: it only checks that the content is an age file and that `meta` holds no
+readable fields.
 
 One exception, and only when the user asks for it: the command "Add diacritics (vllm)"
 sends paragraphs of a note to `POST /api/model/diacritics`, and the server passes them to
@@ -11,7 +12,8 @@ logged. This also holds for an encrypted note: the user starts the command, so t
 user decides.
 
 Every push appends a revision row. The newest row of a document is the current version.
-See `architecture.md`, sections 3 and 13.5.
+Each device has its own token, and a space is a list of devices. See `architecture.md`,
+sections 3, 13.5 and 27.
 
 ## Run it locally
 
@@ -41,7 +43,8 @@ points at a commit whose tests passed. Tags:
 The image is multi-arch, `linux/amd64` and `linux/arm64`, so the same tag runs on a
 normal VPS and on an ARM box.
 
-Generate the token once and keep it; the app needs the same value.
+Generate the token once and keep it; the first device types the same value. Other
+devices join with a code.
 
 ```sh
 export VRTTI_TOKEN=$(openssl rand -hex 32); echo "$VRTTI_TOKEN"
@@ -92,7 +95,7 @@ sync.example.com {
 
 | Variable        | Default                   | Meaning                                     |
 | --------------- | ------------------------- | ------------------------------------------- |
-| `VRTTI_TOKEN`   | none, required            | The bearer token. The server refuses to start without it. |
+| `VRTTI_TOKEN`   | none, required            | The server token. It only registers a device. The server refuses to start without it. |
 | `VRTTI_DB`      | `./data/vrtti.db`         | Path of the SQLite file.                    |
 | `VRTTI_ORIGINS` | `https://urza.github.io`  | Comma-separated list of allowed CORS origins. |
 | `ASPNETCORE_URLS` | Kestrel's default       | Listening address, for example `http://+:8080`. |
@@ -100,19 +103,41 @@ sync.example.com {
 | `VRTTI_MODEL_NAME` | `default`              | The model name for the chat request. |
 | `VRTTI_MODEL_KEY` | none                    | A bearer key for the model API, if it needs one. |
 
-Generate a token with `openssl rand -hex 32`. One static token serves the single user.
+Generate a token with `openssl rand -hex 32`.
+
+## Tokens
+
+- The **server token** (`VRTTI_TOKEN`) does one thing: `POST /api/devices`, which
+  registers the first device. Any other request with it is a 401
+  `{ error: "a device token is required" }`.
+- A **device token** is a random secret that a device makes for itself. The server
+  stores only its lowercase hex SHA-256 (`tokenHash`) and finds the device from it.
+  Every other request carries `Authorization: Bearer <device token>`, and the device id
+  of a pushed row comes from it.
+- A device joins with a join code (see Joins) and never needs the server token.
 
 ## Endpoints
 
-All paths need `Authorization: Bearer <token>`, except health and version. Request bodies are
-limited to 10 MB.
+All paths need a device token, except health, version, `POST /api/devices` (server
+token) and `POST /api/joins/redeem` (no token). Request bodies are limited to 10 MB.
 
 | Method   | Path                              | Result                                                |
 | -------- | --------------------------------- | ----------------------------------------------------- |
 | `GET`    | `/api/health`                     | `{ ok: true }`. No token needed.                      |
 | `GET`    | `/api/version`                    | `{ build: 202610171403 }`. The UTC minute of the build, `yyyyMMddHHmm`. No token needed. Compare it with your last build to see that a deploy took. |
-| `GET`    | `/api/changes?since=&limit=&spaces=` | `{ changes, next, more }`. Newest revision per document with `seq > since`. `since` defaults to 0, `limit` to 200, capped at 500. `spaces` filters by space, see below. |
-| `GET`    | `/api/spaces`                     | `[{ space, count }]`, ordered by name. See Spaces.    |
+| `POST`   | `/api/devices`                    | Server token. `{ id, tokenHash }`, 201. 409 when the id or hash is taken. 403 with a device token. |
+| `POST`   | `/api/devices/successor`          | `{ id, tokenHash }`, 201. Registers the successor of the caller, at most one. 409 on a second one. |
+| `GET`    | `/api/changes?since=&limit=&spaces=` | `{ changes, next, more }`. See Changes.            |
+| `GET`    | `/api/spaces`                     | `[{ space, count, logSeq }]`: the caller's spaces, ordered by name. |
+| `GET`    | `/api/spaces/{name}/log?since=`   | `[{ seq, entry }]`, members only (else 403).          |
+| `POST`   | `/api/spaces/{name}/log`          | `{ entry }`, 201 `{ seq }`. See Space log.            |
+| `GET`    | `/api/spaces/unclaimed`           | Names of spaces with rows and no member. Only for a device registered with the server token. |
+| `POST`   | `/api/spaces/{name}/claim`        | `{ entry }`: the `create` of an unclaimed space. Same rule as the list above. |
+| `POST`   | `/api/joins`                      | `{ slot, verifier, spaces }`, 201. See Joins.         |
+| `POST`   | `/api/joins/redeem`               | No token. `{ slot, verifier, deviceId, tokenHash, entry, proof }`, 201. |
+| `GET`    | `/api/joins`                      | `[{ slot, spaces, deviceId, entry, proof }]`: the caller's used joins that wait for a reply. |
+| `POST`   | `/api/joins/{slot}/reply`         | `{ reply, mac }`, 204. From the member that made the join. |
+| `GET`    | `/api/joins/{slot}/reply`         | `{ reply, mac }` for the device that joined; both null while it waits. |
 | `POST`   | `/api/docs/{id}/revisions`        | 201 `{ rev, seq }`. 409 `{ current }` when `baseRev` is a number and is not the current revision. |
 | `GET`    | `/api/docs/{id}`                  | The current revision, or 404.                         |
 | `GET`    | `/api/docs/{id}/revisions`        | History, newest first, without content.               |
@@ -127,15 +152,31 @@ Push body:
 {
   "baseRev": 3,
   "kind": "text",
-  "content": "…",
-  "meta": { "title": "Notes", "lang": "markdown" },
-  "deviceId": "…",
+  "content": "-----BEGIN AGE ENCRYPTED FILE-----\n…",
+  "meta": { "enc": { "preset": "space", "spaceSeq": 4 }, "sealed": "-----BEGIN AGE ENCRYPTED FILE-----\n…" },
   "clientTime": 1700000000000,
   "space": "personal"
 }
 ```
 
-`space` is optional. A missing or null `space` means `personal`.
+`space` is required. `kind` is `text`, `deleted` or `detached`. `baseRev: null` means
+"attach without a claim" and always appends. `deleted` tells other devices to remove
+their copy; `detached` means the document left sync and the local copies stay.
+
+The server refuses plain text with a 400, in each space but `keyring`:
+
+- the content of a `text` row starts with `-----BEGIN AGE ENCRYPTED FILE-----`;
+  a tombstone has no content, or age content;
+- `meta` is an object with no keys but `kind`, `enc` and `sealed`;
+- `meta.sealed` is an armored age file too.
+
+Purge exists for the conversion of a plaintext document to an encrypted one. The old
+revisions still hold the readable text, so the client purges them after the first
+encrypted push.
+
+A change row (from `/api/changes`, `/api/docs/{id}` and one revision) has the fields
+`docId`, `rev`, `seq`, `kind`, `content`, `meta`, `deviceId`, `clientTime`,
+`serverTime` and `space`.
 
 ## Language model
 
@@ -177,49 +218,89 @@ warn: ... diacritics run 91c0 paragraph 1/1: the device left after 0.80 s, not r
 then keeps its local result for that paragraph. The log has one line per entry with the
 time. ASP.NET Core requests and outgoing HTTP calls log warnings only.
 
-`kind` is `text`, `deleted` or `detached`. `baseRev: null` means "attach without a
-claim" and always appends. `deleted` tells other devices to remove their copy;
-`detached` means the document left sync and the local copies stay.
+## Access
 
-Purge exists for the conversion of a plaintext document to an encrypted one. The old
-revisions still hold the readable text, so the client purges them after the first
-encrypted push.
+A device reads and writes the spaces of which it is a member, and the `keyring` space.
 
-A change row (from `/api/changes`, `/api/docs/{id}` and one revision) has the fields
-`docId`, `rev`, `seq`, `kind`, `content`, `meta`, `deviceId`, `clientTime`,
-`serverTime` and `space`.
+- `GET /api/changes` without `spaces=` means all of the caller's spaces. A name in
+  `spaces=` that is not one of them is a 403.
+- `GET /api/docs/{id}`, the history and one revision are 404 when the current space of
+  the note is not one of the caller's. The history leaves out revisions of spaces of
+  which the caller is not a member.
+- A push, a tombstone and a purge need a membership of the current space of the note
+  (else 404). A push to a space of which the caller is not a member is a 403, so a move
+  needs both spaces.
+- `keyring` holds one document, `keyring`, and that document lives nowhere else (else
+  400). It has no tombstone. Every device writes this space, a removed one too, and the
+  plain-text check skips it, so any other document there would reach each device as a
+  readable note.
 
-## Spaces
+## Changes
 
-A space is a named bucket. Every row has one, and the space of a document's newest row
-is the space of the document. A push with another space moves the document; the table
-stays append-only. See `architecture.md`, section 25.
+`/api/changes` returns the newest revision of each document whose key is above `since`.
+`since` defaults to 0, `limit` to 200, capped at 500. A document is in the result when
+its newest row is in one of the asked spaces (key: the `seq` of that row), or when a row
+moved it out of one of them (key: the `seq` of the last such move). In the second case
+the caller learns where the note went; when it is not a member of the new space, the
+row comes without `content` and without `meta.sealed`. The `seq` of a returned row is
+its key.
 
-- Names are 1 to 32 characters from `A-Z a-z 0-9 - _`. Any other name is a 400
-  `{ error: "space must be 1-32 letters, digits, - or _" }`, on a push and on each item
-  of `spaces=`. A new name makes a new space; nothing registers it.
-- `spaces=a,b` on `/api/changes` returns only documents whose newest row is in one of
-  those spaces. A document that moved out of them is left out. Items are trimmed and
-  empty items are ignored. Absent or empty means every space.
-- `GET /api/spaces` counts, per space, the documents whose newest row is `text`. A
-  document whose newest row is `deleted` or `detached` does not count.
-- `keyring` holds the keyring record. The server treats it as any other space; the
-  client reserves it.
+## Space log
 
-The filter is a subscription, not access control. The one token can still ask for every
-space.
+A space is a list of devices. The list follows from a numbered log of signed entries;
+the server stores each entry as the exact text it gets.
+
+```json
+{ "seq": 2, "prev": "<sha256 hex of entry 1>", "op": "add", "space": "personal",
+  "device": "<entry key>", "by": "<entry key>", "sig": "…" }
+```
+
+- `op` is `create`, `add`, `remove` or `color`. An entry key is the device entry as
+  lines, `vrtti-device`, id, name, recipient, sign key, added time; the server reads the
+  id from its second line.
+- `prev` is the lowercase hex SHA-256 of the previous entry's text, `null` for seq 1.
+- The server checks: `by` is the caller; the caller is a member (for `create`: the name
+  has no log and no rows, and `device` is the caller); `seq` and `prev` follow the last
+  entry (else 409, and the client pulls the log and tries again); an added device is
+  registered and not yet a member; a removed one is a member; the last member cannot
+  remove itself (409). Then it writes the entry and the member row in one transaction.
+- The server does not check `sig`. The clients do, and they decide who is a member.
+- `keyring` cannot be created.
+
+## Joins
+
+A member makes a 10-character code, for example `K7MQ2-XWD4P`. The first 3 characters
+are the slot, a public id; the server never sees the rest.
+
+1. The member sends `{ slot, verifier, spaces }`. It must be a member of each space. A
+   slot that still serves another join is a 409, and the member draws a new code.
+2. The new device sends the slot, the verifier from the typed code, its device entry,
+   its token hash and a proof. A wrong verifier is a 403 and counts; after 5 wrong ones,
+   or after 10 minutes, the join is gone (404). A correct one registers the device.
+3. The member finds the used join in `GET /api/joins`, checks the proof, adds the device
+   to the spaces, and posts its reply.
+4. The new device reads the reply from `GET /api/joins/{slot}/reply`.
 
 ## Migration
 
-The server migrates the database at start, with no manual step. A database from before
-spaces gets the `space` column: existing rows become `personal`, and rows whose meta has
-`"kind": "keyring"` become `keyring`. Then the `revisions_space` index is created. A
-second start finds the column and changes nothing.
+The server migrates the database at start, with no manual step.
+
+1. A database from before spaces gets the `space` column: existing rows become
+   `personal`, and rows whose meta has `"kind": "keyring"` become `keyring`.
+2. A database from before device spaces gets the `prev_space` column, and the old
+   readable fields `title`, `lang`, `langSource` and `spellOff` leave the `meta` of each row. The rows
+   and their history stay.
+3. The tables `devices`, `members`, `space_log` and `joins`, and the indexes, are created
+   when they are missing.
+
+A second start finds the columns and changes nothing. After the upgrade no space has a
+member: the first device registers with the server token and claims the old spaces.
 
 ## Paging
 
 `next` is the largest `seq` in the page, or the `since` you sent when the page is empty.
 Call again with `since = next` while `more` is true. The cursor never skips a document:
-every returned row is a document's newest row, so a document left out of the page has
-its newest `seq` above the cursor and appears in a later page. The `spaces` filter
-keeps this true, because it drops whole documents and never an older row.
+the rows are ordered by key, keys are distinct and only grow, so a document left out of
+the page has its key above the cursor and appears in a later page. A document that moved
+away keeps the `seq` of the move as its key: later rows in its new space must not put it
+behind a page of other rows, past the cursor of the next call.

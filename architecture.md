@@ -195,6 +195,9 @@ Optional, per document. Uses the real age format via typage
 
 ### Identities and recipients
 
+- **Replaced by §27** for the next two points: a device keeps its keys as
+  non-extractable WebCrypto keys by default, and a passphrase is a switch for
+  each device; who reads a note follows from the signed space logs.
 - Each device generates one X25519 identity at setup.
   The public key is the device recipient. A synced plaintext keyring doc lists
   all device public keys with friendly names. Public keys are not secret.
@@ -205,7 +208,9 @@ Optional, per document. Uses the real age format via typage
   (paper or password manager), added to every recipient set by default.
   This is non-optional; it is the answer to a lost device.
 - Recipient sets per doc. Start with presets (decided): "all devices" and
-  "this device only". Per-device picking comes later.
+  "this device only". Per-device picking comes later. **Replaced by §27:**
+  the presets are "space" (the members of the note's space, for every synced
+  note) and "this device" (a `.age` file on disk, a local note).
 - A device outside the recipient set still stores and syncs the ciphertext.
   It is a courier and shows a locked row.
 
@@ -2415,6 +2420,11 @@ same as a readable one; the difference shows only when the row is opened.
 
 ## 21. Signed keyring: who may be a reader (agreed 2026-09-24)
 
+**Replaced by §27 (2026-11-20).** The approvals, the pairing code, the
+confirmation and the trust computation are gone. Who reads a note follows
+from the signed log of its space. This section stays as the record of the
+design before.
+
 §26 (2026-11-11) changes four things here: trust is per entry and not per
 device id, a confirmed device is stored with its keys, the merge is a
 plain union, and the code and the fingerprint cover the recipient (the
@@ -2868,6 +2878,13 @@ drop, Shift+drop on the taskbar).
 
 ## 25. Spaces: where a synced note lives, and what a device receives (agreed 2026-10-10)
 
+**Partly replaced by §27 (2026-11-20).** A space is now a group of devices,
+and the server gives a space only to its members. These parts of this
+section no longer hold: the mode "Not here" (a device leaves the space
+instead), the one token for every device (each device has its own), and
+the detach of a note that moved away (the device puts its copy into its
+local trash). The cursors, the stubs of "Titles only" and the routing stay.
+
 Sync was one flat namespace with one token (§3): every device pulled every
 synced note, and a note nobody held opened as a tab in main (§14.3). The
 user writes notes on the phone and the home desktop, and every one of them
@@ -3070,6 +3087,9 @@ window's click.
 
 ## 26. Claims and pins: the device list after the review (2026-11-11)
 
+**Replaced by §27 (2026-11-20)**, with §21: trust is per space now, and
+the pins of a device are the creators of its spaces.
+
 A review of the whole codebase (2026-11-11) reproduced a break of §21.
 The trust computation started from device ids: this device's id and the
 ids the user confirmed by hand. An entry under such an id was trusted
@@ -3187,3 +3207,229 @@ notice; one device on each version; the notice after an unlock prompt
 at start; the "join again" wording. 24 checks plus the 17 Node tests,
 all green on 2026-11-11. The harness lived in the session scratchpad
 under gate26/ and dies with the sandbox.
+
+
+## 27. Spaces as groups of devices (agreed 2026-11-20)
+
+This section is the model, the shapes and the rules as built. The options
+the brainstorm and two reviews rejected are in the pull request that brought
+it ("Spaces as groups of devices").
+
+### The model
+
+The user's words: a space works like a group chat for devices.
+
+1. A device has a key. No other kind of key exists.
+2. A space is a list of devices. The device that makes a space is its first
+   member.
+3. A member adds and removes devices. The last member cannot remove itself.
+   There are no admins.
+4. A note is in one space. Only the members of that space get it and can
+   read it.
+
+It replaces §21 and §26 (trust for each device, approvals, pairing codes),
+the presets of §5, and from §25 the one token, the mode "Not here" and the
+detach of a note that moved away.
+
+### Keys of a device (`crypto/keyring.js`, `crypto/sign.js`)
+
+- X25519 (age) and Ed25519 (log signatures). With the switch "Ask for a
+  passphrase at start" off, the default, both are non-extractable WebCrypto
+  keys stored as CryptoKeys in the `keyring` settings row: no prompt, and no
+  script can copy a key off the device. With the switch on, both secrets are
+  age-wrapped with the passphrase, as before.
+- A browser without WebCrypto X25519 or Ed25519 gets the switch forced on.
+- A change of the switch makes a new device (new keys, new id, new device
+  token, registered with `POST /api/devices/successor` under the old token).
+  A non-extractable key cannot be wrapped later, and the server keys its
+  member table by device id. While the device holds both keys it adds the
+  new device to each of its spaces, takes the new keys, encrypts its notes
+  and "Titles only" stubs again, then removes the old device.
+- Each step of that change can stop (no network, a closed app). The new keys
+  and token are stored before the server hears of them (`sync.successor`),
+  and each step is safe to run twice: a stop before the new keys took over
+  goes on at the next try of the switch (with the passphrase chosen at the
+  first try); after it, each sync round goes on (`finishSuccessor`).
+- The old keys and the ids of the notes still encrypted for them are stored
+  too (`keyring.rekey`): an app closed half way still opens every note at
+  the next start. A note leaves the list when it is encrypted again (in the
+  window that owns its tab, for a `.age` file once it can be read), and the
+  old keys go with the last one.
+- The grid hides a device that a switch change replaced: its log shows the
+  old key adding the new one, and the new one removing the old key.
+- A row from before (`v: 1`) asks its old passphrase once at start; where
+  the browser can, the secrets become stored keys and the device never asks
+  again.
+- The keyring record (§13.3) stays, as a directory of device entries for
+  names only. It decides nothing.
+
+### The space log (`crypto/spaces.js`)
+
+An entry is JSON text, built once and stored and hashed as it is:
+
+```
+{seq, prev, op: create|add|remove|color, space, device, by, color?, sig}
+```
+
+`device` and `by` are entry keys (`vrtti-device`, id, name, recipient, sign
+key, added time, one per line). `prev` is the lowercase hex SHA-256 of the
+previous entry's text, null for seq 1. `sig` is the Ed25519 signature of
+`by` over the label `vrtti-space-log` and every other field, one per line.
+
+`replay(log, creator)` gives the members. An entry counts when its seq is
+next, its prev matches, its author is a member at that point, its
+signature verifies, and its op makes sense (no add of a member, no remove of
+a non-member or of the last member). The first entry is a `create` of its
+own author, and counts only for the creator this device pinned when it made
+or joined the space. The replay stops at the first entry that does not
+count. A removed device can still sign, but cannot place an entry before its
+removal.
+
+The server keeps the same member table from the same entries, in one SQLite
+transaction with the entry (`server/Vrtti.Server/SpaceLog.cs`). It does not
+check signatures; it checks seq, prev, membership and the last-member rule,
+and refuses an entry whose `by` is not the caller.
+
+### Server (`server/README.md`)
+
+- Each device has its own token; the server stores its SHA-256. The server
+  token (`VRTTI_TOKEN`) only registers a device (`POST /api/devices`).
+- A device reads and writes only its own spaces and `keyring`: changes are
+  403 for another space; a note, its history and a push are 404 when the
+  note's current space is not the caller's.
+- `keyring` holds one document, the keyring record, and the record lives
+  nowhere else; it has no tombstone. Every device writes that space, a
+  removed one too, and the plain-text check skips it. The client drops any
+  other row there too.
+- The server refuses plain text: content and `meta.sealed` must be armored
+  age, and `meta` holds only `kind`, `enc`, `sealed` (`keyring` excepted).
+- A row that moves a note stores `prev_space`; changes for the old space
+  return the newest row of such a note, without content and sealed meta for
+  a caller outside the new space. Its paging key is the seq of the move, not
+  of its newest row: a later edit in the new space must not put it behind a
+  page boundary that the next call starts after.
+- The migration adds `prev_space`, removes `title`, `lang`, `langSource` and
+  `spellOff` from the meta of old rows, and creates `devices`, `members`, `space_log`
+  and `joins`.
+
+### Join (`sync/client.js`)
+
+A code is 10 characters of Crockford base32 (`K7MQ2-XWD4P`); the first 3
+are the slot. The member sends the slot, `verifier = scrypt(code,
+"vrtti-join-verify")` and the ticked spaces. The new device sends the slot,
+the verifier, its entry, its token hash and `proof = HMAC(scrypt(code,
+"vrtti-join-proof"), entry)`; five wrong verifiers end the join, and it
+lives ten minutes. The member checks the proof at its next sync, adds the
+device, and replies with its own entry, the creator of each space and the
+recovery recipients, under `HMAC(scrypt(code, "vrtti-join-reply"), reply)`.
+The new device checks the MAC with the typed code and only then pins the
+creators. The member keeps the code in `sync.invites` until it answered.
+
+### Notes (`model/docs.js`)
+
+- `enc.preset` is `space` for every synced note, with `spaceSeq`, the log
+  position its recipients came from; `this-device` for a `.age` file and a
+  local note. IndexedDB v7 turned `all-devices` into one of the two.
+- A note that starts to sync is encrypted at once, also when empty
+  (`sealForSpace`). A note that leaves sync (Stop syncing, a restore from the
+  trash, a conflict copy) turns back into plain text (`toLocal`).
+- Sealed meta: `meta.sealed` is one age blob for the same recipients, with
+  `{line, origin, title?, lang?, langSource?, pin?, spellOff}`. `spellOff`
+  is always sent; a missing one keeps the device's own. `line` is the first
+  line, the row's title; `record.firstLine` keeps it on the device. A device
+  that is locked keeps `record.sealed` and opens it at the next unlock.
+- Re-encryption follows the log position: a note with a lower `spaceSeq`
+  than the device applied is encrypted again; a higher one is left alone
+  (the device is behind). A re-encryption push is marked `rewrap`, so a 409
+  on it takes the other member's row without a conflict copy. Notes held as
+  "Titles only" are fetched, encrypted again and pushed by the client.
+- A device that loses a note (a move to a space it is not in, its removal,
+  a space the server no longer gives it, a space from before the upgrade
+  that it did not join and that has a member) puts its copy into the local trash
+  (`store.trash`, the whole job: copy of unsent text, tab, active note).
+- "Move to <space>" encrypts the note for the new members and pushes it with
+  the new space.
+- A device in no space makes local notes; a default space it lost falls back
+  to its first space.
+
+### Look, PIN, backup
+
+- A synced row has a thin bar in its space's color (`::before`, because the
+  drag marks use `box-shadow`); the hover says the space and the origin
+  device. The cloud mark is gone; the lock mark means the PIN lock. The
+  palette is Mariana; a space takes the first color not in use, and a
+  `color` entry changes it.
+- PIN (`ui/pin.js`): one PIN per device, a salted PBKDF2 hash in settings.
+  `record.pin` marks a note (sealed for a synced one). A locked note shows
+  its title or "Locked note", no preview, no search hit; "Copy text" and
+  "History…" ask the PIN. The right PIN opens all locked notes in every
+  window; they lock again at start and after five minutes with every window
+  hidden, also when the timer slept (a phone in the background, a laptop
+  lid): the wake checks the gap first. Five wrong PINs make the pad wait 30
+  seconds, also across a reload. The mark syncs and the PIN does not: a
+  device without a PIN chooses one before a locked note opens. "Lock with
+  PIN" takes the text off the screen at once, also in other windows; a
+  rename asks the PIN first. A guard for the screen, not encryption.
+- Backup (`model/backup.js`): each note of a space, from the server or the
+  device's newer text, and the notes the server has not got yet, into a picked folder as `.md` or armored `.md.age`
+  (this device and the recovery key). Names are the title with the
+  characters Windows forbids as `_`; a clash without case adds a part of the
+  id. Desktop shell and Chromium only.
+
+### Upgrade
+
+Old and new clients do not work together. A device whose config holds the
+server token of the time before asks at start whether it is the first device
+or joins with a code. The first device registers with a new server token,
+lists the spaces with rows and no member (`GET /api/spaces/unclaimed`, only
+for a device registered with the server token) and claims them; it pulls
+them whole, encrypts each plain note, pushes it and purges the readable old
+versions (`store.sealSynced`). A synced file stops syncing instead of being
+renamed to `.age` without a question. An encrypted note from before arrives
+with `all-devices`; the pull makes it `space` with `spaceSeq` 0, and the next
+pass encrypts it for the members, with a sealed meta of its first line.
+
+A device that joins after the upgrade loses the old spaces it did not join
+(its notes there go to its trash) once the join reply arrived and the space
+has a member. An unclaimed space stays, so the first device can still take
+it over.
+
+### Limits that stay
+
+- The server sees note ids, space names, sizes, times, the device of each
+  change, and the keyring record (device names and member lists).
+- A device that someone takes over can change its own spaces: add and
+  remove devices there, and lock the user's other devices out of them. It
+  cannot touch other spaces.
+- A person who controls the server during a join can guess the 35 secret
+  bits of a code offline from the verifier; each guess costs one scrypt run,
+  and the code lives ten minutes.
+- The server can hide the newest entries of a log, for example a removal.
+  It cannot change or reorder entries.
+- A removed device keeps the copies and old versions it got before.
+- Whoever has the server token can register a device and make spaces; that
+  device is a member of no other space.
+- After a change to "Ask for a passphrase at start", the old keys stay on
+  the device without a passphrase until the last note is encrypted again: a
+  non-extractable key cannot be wrapped. A `.age` file that the browser may
+  not read keeps them there until it can.
+- The keyring record is written by every device, a removed one too. It
+  gives names only: a device of a space this device is not in shows the
+  name the record says.
+
+### Gate
+
+`dotnet test` in `server/` (70 tests: tokens, access, the keyring rule, the
+log rules, joins, successors, the move rule and its paging, the history
+filter, the migration, the model routes). `node --test
+tests/*.test.mjs` (the log replay, the join code, the re-encryption rule,
+the keyring record, backup names). Playwright against `dotnet run`, two to
+three browser contexts as devices, in three scripts: the join, the
+dev device and `personal`, moves, a removal, restart without a prompt,
+Stop syncing, the grid and the bars; Titles only and its re-encryption, the
+PIN pad and its wait, the backup in OPFS, the passphrase switch and the
+prompt after it, one row for the switched device, the old keys gone; a
+device without a PIN; the upgrade from a v1 keyring and a server-token config
+with plain rows, an encrypted row the device never held, and a dev machine
+that joins only `dev-work`. 82 checks, all green on 2026-11-20. The scripts lived in
+the session scratchpad and die with the sandbox.

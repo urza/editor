@@ -12,13 +12,13 @@ import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { activeLangs } from "../editor/mixed.js";
 import { modelFixesCzechParagraphs, setModelFixesCzechParagraphs } from "../editor/adddiacritics.js";
-import { isPersisted, storageEstimate } from "../model/capabilities.js";
+import { hasDisk, isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
 import { listRowsLong } from "./sidebar.js";
 import { watchBack } from "./shell.js";
-import { titleOf, KEYRING_SPACE } from "../model/docs.js";
+import { titleOf } from "../model/docs.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
 /**
@@ -48,67 +48,10 @@ let store = null;
 let testResult = "";
 
 /**
- * Names from the device list, for a sentence. They come from the server, so
- * each is cut to a row's width before it reaches a dialog.
- * @param {string[]} names
- */
-function quoted(names) {
-  return names.map((name) => "“" + name.slice(0, 40) + "”").join(", ");
-}
-
-/**
- * What this device found in the list of your devices and refuses to believe
- * (architecture.md §26), as one text; "" when there is nothing. One function
- * for the two places that say it: the notice main.js shows once, and the
- * Security row that stays for as long as it is true.
- * @param {{own: number, conflicts: string[], unpinned: string[]}} audit
- *   KeyRing.audit().
- */
-export function describeAudit(audit) {
-  /** @type {string[]} */
-  const parts = [];
-  if (audit.own > 0) {
-    parts.push(
-      "The list of your devices on the server holds other keys under this " +
-        "device's name. This device ignores them. If you set up encryption " +
-        "on this device a second time, that is the old entry."
-    );
-  }
-  if (audit.conflicts.length > 0) {
-    parts.push(
-      quoted(audit.conflicts) +
-        (audit.conflicts.length === 1 ? " is" : " are") +
-        " in the list with more than one set of keys. Only the keys you " +
-        "approved or confirmed count."
-    );
-  }
-  if (audit.unpinned.length > 0) {
-    parts.push(
-      "This device could not check " +
-        quoted(audit.unpinned) +
-        " again, and it encrypts no notes for " +
-        (audit.unpinned.length === 1 ? "that device" : "those devices") +
-        " now. Approve this device from there, then confirm here."
-    );
-  }
-  return parts.join(" ");
-}
-
-/**
- * The server's spaces as the last `/api/spaces` answer gave them (§25). The
- * Spaces list paints from this at once and asks again in the background,
- * because a list row's `rows()` is synchronous.
- * @type {{space: string, count: number}[]}
- */
-let serverSpaces = [];
-/** A request is out; a repaint while it runs must not start a second one. */
-let spacesLoading = false;
-
-/**
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
- * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper" | "list"} type
+ * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper" | "list" | "grid"} type
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a toggle, info or action row.
@@ -138,13 +81,22 @@ let spacesLoading = false;
  *                             on every paint. A list whose source is fetched
  *                             calls `repaint` when the answer lands.
  * @property {{ text: string, href: string }[]} [links]  note: external links.
+ * @property {() => Grid} [grid]  grid: the table, read on every paint.
+ */
+
+/**
+ * A table of ticks: Settings › Devices (architecture.md §27). Each cell and
+ * each column head dispatches through its `act`, like any other row.
+ * @typedef {{ columns: { key: string, label: string, color?: string, title?: string, act?: () => any }[],
+ *            rows: { key: string, label: string,
+ *                    cells: { checked: boolean, label: string, act: () => any }[] }[] }} Grid
  */
 
 /**
  * One row of a `list` item: a label with a value line under it, and an
  * optional button or select. Read fresh on every paint, so a list follows its
  * source. `select.set` dispatches the picked value, like a toggle's `set`.
- * @typedef {{ key: string, label: string, value: string, hint?: string,
+ * @typedef {{ key: string, label: string, value: string, hint?: string, color?: string,
  *            button?: string, act?: () => any,
  *            select?: { value: string, options: { value: string, label: string }[],
  *                       set: (value: string) => Promise<unknown> | unknown } }} ListRow
@@ -201,59 +153,70 @@ function syncStatusText() {
   return text;
 }
 
-/** The three modes of a space (§25), in the order the select offers them. */
+/** The two modes of a space (§25, §27), in the order the select offers them. */
 const SPACE_MODES = [
-  { value: "none", label: "Nothing" },
   { value: "list", label: "Titles only" },
   { value: "tab", label: "Open as tabs" },
 ];
 
 /**
- * The Spaces list (§25): the server's spaces, the device's map and its
- * default space, minus `keyring`, by name. Each paint also asks the server
- * again; `listSpaces()` caches for ten seconds, and only an answer that
- * differs repaints, so a paint never loops into another request.
- * @param {() => void} repaint
+ * The Spaces list: this device's spaces, with their notes and what this
+ * device does with each (§25, §27). To stop receiving a space, the device
+ * leaves it in the grid of Settings › Devices.
  * @returns {ListRow[]}
  */
-function spaceRows(repaint) {
+function spaceRows() {
   if (!sync) return [];
   const client = sync;
-  if (!spacesLoading) {
-    spacesLoading = true;
-    client
-      .listSpaces()
-      .then((list) => {
-        if (JSON.stringify(list) === JSON.stringify(serverSpaces)) return;
-        serverSpaces = list;
-        repaint();
-      })
-      // Offline or a failing server: the list shows what the device knows,
-      // and the status row already says why sync is down.
-      .catch(() => {})
-      .finally(() => (spacesLoading = false));
-  }
-  const counts = new Map(serverSpaces.map((entry) => [entry.space, entry.count]));
-  const { modes, defaultSpace } = client.spaces;
-  const names = new Set([...counts.keys(), ...Object.keys(modes), defaultSpace]);
-  names.delete(KEYRING_SPACE);
-  return [...names].sort().map((name) => {
-    const count = counts.get(name);
-    const isDefault = name === defaultSpace;
-    return {
-      key: "space-" + name,
-      label: isDefault ? name + " · default" : name,
-      value: count === undefined ? "" : count === 1 ? "1 note" : count + " notes",
-      select: {
-        value: client.modeOf(name) ?? "none",
-        // The default space is always received (§25), so Nothing is not
-        // offered for it; the client would refuse it anyway.
-        options: isDefault ? SPACE_MODES.filter((mode) => mode.value !== "none") : SPACE_MODES,
-        set: (value) =>
-          run("sync.spaceMode", { space: name, mode: value === "none" ? null : value }),
-      },
-    };
-  });
+  return client.listSpaces().map(({ space, count }) => ({
+    key: "space-" + space,
+    label: space,
+    color: client.colorOf(space),
+    value: count === 1 ? "1 note" : count + " notes",
+    select: {
+      value: client.modeOf(space) ?? "tab",
+      options: SPACE_MODES,
+      set: (value) => run("sync.spaceMode", { space, mode: value }),
+    },
+  }));
+}
+
+/**
+ * The grid of Settings › Devices (§27): this device's spaces as columns, the
+ * devices their logs name as rows, a tick where a device is a member. A
+ * click adds or removes; the last member of a space cannot leave it.
+ * @returns {Grid}
+ */
+function deviceGrid() {
+  if (!sync) return { columns: [], rows: [] };
+  const grid = sync.grid();
+  return {
+    columns: grid.spaces.map((space) => ({
+      key: space.name,
+      label: space.name,
+      color: space.color,
+      title: "Change the color of " + space.name,
+      act: () => run("space.color", space.name),
+    })),
+    rows: grid.devices.map((device) => ({
+      key: device.id,
+      label: device.me ? device.name + " (this device)" : device.name,
+      cells: grid.spaces.map((space) => {
+        const member = grid.isMember(space.name, device.key);
+        return {
+          checked: member,
+          label: (member ? "Remove " : "Add ") + device.name + (member ? " from " : " to ") + space.name,
+          act: () =>
+            run(member ? "space.remove" : "space.add", {
+              space: space.name,
+              key: device.key,
+              name: device.name,
+              me: device.me,
+            }),
+        };
+      }),
+    })),
+  };
 }
 
 /** @type {Section[]} */
@@ -420,26 +383,22 @@ const SECTIONS = [
     status: () => syncStateWord(),
     items: [
       {
-        type: "text",
+        type: "info",
         key: "sync-url",
-        label: "Server URL",
-        hint: "Your own vrtti server. Leave it empty and your notes stay on this device.",
-        placeholder: "https://sync.example.com",
-        get: () => sync?.config.url ?? "",
-        // Both fields dispatch the whole config: the client stores one row, and
-        // a half-written config would make it inert on the next reload.
-        set: (value) =>
-          run("sync.configure", { url: value, token: sync?.config.token ?? "" }),
+        label: "Server",
+        hint: "Your own vrtti server. Without one, your notes stay on this device.",
+        value: () => (sync?.isConfigured || sync?.needsUpgrade ? sync.config.url : "none"),
       },
       {
-        type: "text",
-        key: "sync-token",
-        label: "Token",
-        hint: "The VRTTI_TOKEN you set when you started the server.",
-        password: true,
-        get: () => sync?.config.token ?? "",
-        set: (value) =>
-          run("sync.configure", { url: sync?.config.url ?? "", token: value }),
+        type: "action",
+        key: "sync-connect",
+        label: "Sync with a server",
+        hint:
+          "The first device types the server URL and the VRTTI_TOKEN. Every other device joins with a code " +
+          "from “Add a device” in Settings › Devices on a device that syncs.",
+        button: "connect",
+        visible: () => Boolean(keyring?.isSetUp && !sync?.isConfigured),
+        act: () => run("device.connect"),
       },
       {
         type: "info",
@@ -465,28 +424,32 @@ const SECTIONS = [
         key: "sync-spaces",
         label: "Spaces",
         hint:
-          "A space is a group of synced notes on the server. Pick what this " +
-          "device takes from each one: every note as a tab, titles only under " +
-          "From server in the sidebar, or nothing. Notes already here stay in " +
-          "every case, but with Nothing they stop syncing.",
-        visible: () => Boolean(sync?.isConfigured),
+          "The spaces of this device. Take every note as a tab, or titles only under From server in the sidebar. " +
+          "To stop receiving a space, leave it in Settings › Devices.",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         rows: spaceRows,
       },
       {
-        type: "text",
+        type: "list",
         key: "sync-default-space",
         label: "Default space",
-        hint:
-          "The space a note joins when you turn sync on. A new name makes a " +
-          "new space. Letters, digits, - and _ only.",
-        placeholder: "personal",
-        // The command answers false for a name the server would refuse, and
-        // stores nothing. The repaint after the commit puts the old name back
-        // in the field, and this line says why.
-        invalid: "That name was not accepted. Letters, digits, - and _ only, up to 32 characters.",
-        get: () => sync?.defaultSpace() ?? "",
-        set: (value) => run("sync.defaultSpace", String(value ?? "").trim()),
-        visible: () => Boolean(sync?.isConfigured),
+        hint: "The space a note joins when you turn sync on, and where new notes go.",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        rows: () => {
+          const client = /** @type {NonNullable<typeof sync>} */ (sync);
+          return [
+            {
+              key: "default-space",
+              label: "New notes go to",
+              value: "",
+              select: {
+                value: client.defaultSpace() ?? "",
+                options: client.mySpaces().map((space) => ({ value: space, label: space })),
+                set: (value) => run("sync.defaultSpace", value),
+              },
+            },
+          ];
+        },
       },
       {
         type: "toggle",
@@ -496,9 +459,9 @@ const SECTIONS = [
           "Every new note syncs from the start, to the default space. Off " +
           "means you turn sync on per note, from its menu. A phone starts " +
           "with this on, because sync is its only backup there.",
-        // Hidden until a server exists: before that the switch could only
+        // Hidden until a space exists: before that the switch could only
         // store a choice for a sync that does not run.
-        visible: () => Boolean(sync?.isConfigured),
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         get: () => Boolean(sync?.syncDefaultOn()),
         set: () => run("sync.defaultToggle"),
       },
@@ -508,10 +471,27 @@ const SECTIONS = [
         label: "Sync every open note",
         hint:
           "Turns on sync for each note in this window's Open list, into the " +
-          "default space. Notes in Recent stay as they are.",
+          "default space. Notes in Recent and files stay as they are.",
         button: "sync all",
-        visible: () => Boolean(sync?.isConfigured),
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("sync.all"),
+      },
+      {
+        type: "list",
+        key: "sync-backup",
+        label: "Back up to a folder",
+        hint:
+          "Writes each note of a space into a folder you pick, as plain text or as .age files for this device " +
+          "and the recovery key. A second run writes the same files again.",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length && hasDisk),
+        rows: () =>
+          (sync?.mySpaces() ?? []).map((space) => ({
+            key: "backup-" + space,
+            label: space,
+            value: "",
+            button: "back up",
+            act: () => run("space.backup", space),
+          })),
       },
       {
         type: "action",
@@ -522,28 +502,34 @@ const SECTIONS = [
         visible: () => Boolean(sync?.isConfigured),
         act: () => run("sync.now"),
       },
+      {
+        type: "action",
+        key: "sync-disconnect",
+        label: "Stop syncing this device",
+        hint: "This device forgets its server. Your notes stay here.",
+        button: "stop",
+        visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
+        act: () => run("sync.disconnect"),
+      },
     ],
   },
   {
-    title: "Security",
+    title: "Devices",
     status: () => {
       if (!keyring?.isSetUp) return "not set up";
-      return keyring.isUnlocked ? "unlocked" : "locked";
+      return keyring.isUnlocked ? keyring.deviceName ?? "" : "locked";
     },
     items: [
       {
-        type: "info",
-        key: "encryption",
-        label: "Encryption",
+        type: "action",
+        key: "device-setup",
+        label: "Set up this device",
         hint:
-          "You encrypt one note at a time, from its menu. Your passphrase " +
-          "unlocks this device until you press Lock or close the last window.",
-        value: () => {
-          if (!keyring?.isSetUp) return "not set up";
-          // Whether the device secret sits in a CryptoKey or in the JS heap
-          // (§5) is a debugging detail; keyring.identityKind still tells.
-          return keyring.isUnlocked ? "unlocked" : "locked";
-        },
+          "This device gets a key and a name. Your first device also makes a recovery key; " +
+          "every other device joins with a code.",
+        button: "set up",
+        visible: () => !keyring?.isSetUp,
+        act: () => run("device.setup"),
       },
       {
         type: "info",
@@ -554,125 +540,50 @@ const SECTIONS = [
         value: () => keyring?.deviceName ?? "",
       },
       {
-        type: "info",
-        key: "device-key",
-        label: "Device key",
+        type: "grid",
+        key: "device-grid",
+        label: "Devices and spaces",
         hint:
-          "This device's public key, not a secret. Your other devices encrypt " +
-          "notes to it once they approve this device.",
-        block: true,
-        visible: () => Boolean(keyring?.isSetUp),
-        value: () => keyring?.deviceRecipient ?? "",
-      },
-      {
-        type: "info",
-        key: "pairing-code",
-        label: "Pairing code",
-        hint:
-          "A device you already use must approve this one, and it asks for " +
-          "this code. Its device list shows this device with the fingerprint.",
-        block: true,
-        visible: () => Boolean(keyring?.isSetUp && keyring.pairingCode),
-        value: () => keyring?.pairingCode + "   ·   fingerprint " + keyring?.fingerprint(),
-      },
-      {
-        type: "info",
-        key: "device-check",
-        label: "Device check",
-        hint: "What this device found in the list of your devices and does not trust.",
-        block: true,
-        visible: () => Boolean(keyring && describeAudit(keyring.audit())),
-        value: () => (keyring ? describeAudit(keyring.audit()) : ""),
-      },
-      {
-        type: "list",
-        key: "devices",
-        label: "Devices",
-        hint:
-          "The devices that hold a key for your encrypted notes. A note for " +
-          "all devices goes only to the trusted ones.",
-        visible: () => Boolean(keyring?.isSetUp),
-        rows: () =>
-          (keyring?.deviceRows() ?? []).map((row, index, rows) => {
-            const when = new Date(row.addedAt).toLocaleDateString();
-            const fp = row.fingerprint ? " · " + row.fingerprint : "";
-            // One device id can stand on two rows (architecture.md §26: the
-            // list holds claims, and a second one under a known id is shown,
-            // never merged away), so a later row adds its position.
-            const nth = rows.slice(0, index).filter((r) => r.id === row.id).length;
-            const base = {
-              key: "device-" + row.id + (nth ? "-" + nth : ""),
-              label: row.name + fp,
-              value: "",
-            };
-            // An untrusted row under the id of a device this one trusts.
-            const other = row.conflict ? "other keys under a trusted name · " : "";
-            // The commands take the row's own key, not the device id: with
-            // two rows for one id, the button must act on the row it sits on.
-            switch (row.state) {
-              case "this device":
-                return { ...base, value: "this device · since " + when };
-              case "trusted":
-                return { ...base, value: "trusted · since " + when };
-              case "approved you":
-                return {
-                  ...base,
-                  value: other + "approved this device · confirm it is yours",
-                  button: "confirm",
-                  act: () => run("crypto.confirm", row.key),
-                };
-              case "needs update":
-                return {
-                  ...base,
-                  value: "older version · unlock it there once, then approve it here",
-                };
-              case "not confirmed":
-                return {
-                  ...base,
-                  value:
-                    other + "not yet trusted · approve this device from it, then confirm it here",
-                };
-              default:
-                return {
-                  ...base,
-                  value: other + "waiting for approval · type its pairing code",
-                  button: "approve",
-                  act: () => run("crypto.approve", row.key),
-                };
-            }
-          }),
-      },
-      {
-        type: "info",
-        key: "recovery-key",
-        label: "Recovery key",
-        hint:
-          "The public part of the recovery key you wrote down at setup. Every " +
-          "note is encrypted to that key too, so it opens every note with the " +
-          "age tool.",
-        block: true,
-        visible: () => Boolean(keyring?.isSetUp),
-        value: () => (keyring?.recoveryRecipients ?? []).join(" "),
+          "A space is a group of devices. Only its members get its notes and can read them. " +
+          "Tick to add a device, untick to remove it. Click a space name to change its color.",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        grid: deviceGrid,
       },
       {
         type: "action",
-        key: "crypto-setup",
-        label: "Set up encryption",
+        key: "device-invite",
+        label: "Add a device",
+        hint: "You tick the spaces it gets, and this device shows a code. The new device types the server URL and the code.",
+        button: "add",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        act: () => run("device.invite"),
+      },
+      {
+        type: "action",
+        key: "space-create",
+        label: "New space",
+        hint: "This device is its first member. Add your other devices in the grid.",
+        button: "new",
+        visible: () => Boolean(sync?.isConfigured),
+        act: () => run("space.create"),
+      },
+      {
+        type: "action",
+        key: "passphrase-switch",
+        label: "Ask for a passphrase at start",
         hint:
-          "You choose a passphrase for this device, and the app shows a " +
-          "recovery key one time. If another device already uses encryption, " +
-          "enter the sync server first, so this device joins it.",
-        button: "set up",
-        visible: () => !keyring?.isSetUp,
-        act: () => run("crypto.setup"),
+          "Off: this device keeps its key and opens your notes at once. On: each start asks for the passphrase. " +
+          "A change gives this device new keys.",
+        button: "change",
+        visible: () => Boolean(keyring?.isSetUp && keyring.isUnlocked),
+        value: () => (keyring?.askPassphrase ? "on" : "off"),
+        act: () => run("device.passphraseSwitch"),
       },
       {
         type: "action",
         key: "crypto-unlock",
         label: "Unlock",
-        hint:
-          "Asks your passphrase. Encrypted notes then open until you press " +
-          "Lock or close the last window.",
+        hint: "Asks your passphrase. Your notes then open until you press Lock or close the last window.",
         button: "unlock",
         visible: () => Boolean(keyring?.isSetUp) && !keyring?.isUnlocked,
         act: () => run("crypto.unlock"),
@@ -683,8 +594,28 @@ const SECTIONS = [
         label: "Lock",
         hint: "Encrypted notes close until you unlock again. Their undo history is dropped.",
         button: "lock",
-        visible: () => Boolean(keyring?.isUnlocked),
+        visible: () => Boolean(keyring?.isUnlocked && keyring.askPassphrase),
         act: () => run("crypto.lock"),
+      },
+      {
+        type: "info",
+        key: "recovery-key",
+        label: "Recovery key",
+        hint:
+          "The public part of the recovery key your first device made. Every synced note is encrypted " +
+          "to it too, so it opens every note with the age tool.",
+        block: true,
+        visible: () => Boolean(keyring?.recoveryRecipients.length),
+        value: () => (keyring?.recoveryRecipients ?? []).join(" "),
+      },
+      {
+        type: "info",
+        key: "device-key",
+        label: "Device key",
+        hint: "This device's public key, not a secret.",
+        block: true,
+        visible: () => Boolean(keyring?.isSetUp),
+        value: () => keyring?.deviceRecipient ?? "",
       },
     ],
   },
@@ -974,6 +905,7 @@ function makeRow(item, refresh) {
           text.className = "settings-list-text";
           const label = document.createElement("div");
           label.textContent = entry.label;
+          if (entry.color) label.prepend(swatch(entry.color));
           text.appendChild(label);
           const value = document.createElement("div");
           value.className = "settings-hint";
@@ -1028,6 +960,70 @@ function makeRow(item, refresh) {
     };
   }
 
+  if (item.type === "grid") {
+    row.classList.add("settings-row-list");
+    const wrap = document.createElement("div");
+    wrap.className = "settings-grid-wrap";
+    row.appendChild(wrap);
+    paintOwn = () => {
+      // Not while a click in the grid waits for its answer: the repaint
+      // after it shows the result.
+      if (wrap.querySelector("button:disabled")) return;
+      const grid = item.grid ? item.grid() : { columns: [], rows: [] };
+      const table = document.createElement("table");
+      table.className = "settings-grid";
+      const head = table.createTHead().insertRow();
+      head.appendChild(document.createElement("th"));
+      for (const column of grid.columns) {
+        const th = document.createElement("th");
+        th.scope = "col";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "settings-grid-head";
+        if (column.title) button.title = column.title;
+        if (column.color) button.appendChild(swatch(column.color));
+        button.append(column.label);
+        button.addEventListener("click", () => act(button, column.act));
+        th.appendChild(button);
+        head.appendChild(th);
+      }
+      const bodyRows = table.createTBody();
+      for (const line of grid.rows) {
+        const tr = bodyRows.insertRow();
+        tr.dataset.key = line.key;
+        const th = document.createElement("th");
+        th.scope = "row";
+        th.textContent = line.label;
+        tr.appendChild(th);
+        for (const cell of line.cells) {
+          const td = tr.insertCell();
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "settings-grid-cell";
+          button.setAttribute("role", "checkbox");
+          button.setAttribute("aria-checked", String(cell.checked));
+          button.setAttribute("aria-label", cell.label);
+          button.title = cell.label;
+          button.textContent = cell.checked ? "✓" : "";
+          button.addEventListener("click", () => act(button, cell.act));
+          td.appendChild(button);
+        }
+      }
+      wrap.replaceChildren(table);
+    };
+    /** @param {HTMLButtonElement} button @param {(() => any) | undefined} run */
+    const act = async (button, run) => {
+      if (!run) return;
+      button.disabled = true;
+      try {
+        await run();
+      } finally {
+        button.disabled = false;
+        refresh();
+      }
+    };
+  }
+
   if (item.type === "info" || (item.type === "action" && item.value)) {
     const value = document.createElement("span");
     value.className = "settings-value";
@@ -1069,6 +1065,20 @@ function makeRow(item, refresh) {
     });
   };
   return { el: row, paint };
+}
+
+/**
+ * A small square in a space's color, before its name. Decorative: the name
+ * says which space it is.
+ * @param {string} color
+ */
+function swatch(color) {
+  const el = document.createElement("span");
+  el.className = "space-swatch";
+  el.setAttribute("aria-hidden", "true");
+  // A CSS variable, not `background`: the stylesheet decides how it is drawn.
+  el.style.setProperty("--space-color", color);
+  return el;
 }
 
 /**
@@ -1247,6 +1257,10 @@ export function mountSettings(deps = {}) {
   // on the network. The status row would otherwise sit at whatever it said
   // when the panel opened.
   sync?.events.addEventListener("status", () => {
+    if (!panel.hidden) refresh();
+  });
+  // The grid and the space rows follow the space logs (§27).
+  sync?.events.addEventListener("spaces", () => {
     if (!panel.hidden) refresh();
   });
 

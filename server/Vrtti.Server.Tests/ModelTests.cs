@@ -52,7 +52,7 @@ public class ModelTests
     public async Task Model_says_false_without_VRTTI_MODEL_URL_and_post_is_404()
     {
         using var app = new TestApp();
-        var client = app.Client();
+        var client = (await app.Register("dev-a")).Http;
 
         var info = await client.GetFromJsonAsync<JsonElement>("/api/model");
         Assert.False(info.GetProperty("diacritics").GetBoolean());
@@ -62,16 +62,19 @@ public class ModelTests
     }
 
     [Fact]
-    public async Task The_model_routes_need_the_token()
+    public async Task The_model_routes_need_a_device_token()
     {
         using var app = new TestApp(new FakeModel(_ => FakeModel.Chat("x")));
-        var anonymous = app.Client(token: null);
 
-        using var get = await anonymous.GetAsync("/api/model");
-        using var post = await anonymous.PostAsJsonAsync("/api/model/diacritics", new { text = "ahoj" });
+        // The server token only registers a device (architecture.md section 27).
+        foreach (var client in new[] { app.Client(token: null), app.Client() })
+        {
+            using var get = await client.GetAsync("/api/model");
+            using var post = await client.PostAsJsonAsync("/api/model/diacritics", new { text = "ahoj" });
 
-        Assert.Equal(HttpStatusCode.Unauthorized, get.StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, post.StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, get.StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, post.StatusCode);
+        }
     }
 
     [Fact]
@@ -79,7 +82,7 @@ public class ModelTests
     {
         var model = new FakeModel(_ => FakeModel.Chat("tlačítko palcové otevře menu"));
         using var app = new TestApp(model);
-        var client = app.Client();
+        var client = (await app.Register("dev-a")).Http;
 
         var info = await client.GetFromJsonAsync<JsonElement>("/api/model");
         Assert.True(info.GetProperty("diacritics").GetBoolean());
@@ -102,7 +105,7 @@ public class ModelTests
     public async Task A_think_block_is_removed_from_the_answer()
     {
         using var app = new TestApp(new FakeModel(_ => FakeModel.Chat("<think>\nhmm\n</think>\n\nže")));
-        using var response = await app.Client().PostAsJsonAsync("/api/model/diacritics", new { text = "ze" });
+        using var response = await (await app.Register("dev-a")).Http.PostAsJsonAsync("/api/model/diacritics", new { text = "ze" });
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("že", body.GetProperty("text").GetString());
@@ -112,7 +115,7 @@ public class ModelTests
     public async Task A_failing_model_gives_502()
     {
         using var app = new TestApp(new FakeModel(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)));
-        using var response = await app.Client().PostAsJsonAsync("/api/model/diacritics", new { text = "ahoj" });
+        using var response = await (await app.Register("dev-a")).Http.PostAsJsonAsync("/api/model/diacritics", new { text = "ahoj" });
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
     }
@@ -123,7 +126,7 @@ public class ModelTests
         var model = new FakeModel(_ => FakeModel.Chat("x"));
         using var app = new TestApp(model);
         var text = new string('a', DiacriticsModel.MaxChars + 1);
-        using var response = await app.Client().PostAsJsonAsync("/api/model/diacritics", new { text });
+        using var response = await (await app.Register("dev-a")).Http.PostAsJsonAsync("/api/model/diacritics", new { text });
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
         Assert.Empty(model.Requests);
@@ -138,7 +141,7 @@ public class ModelTests
         var model = new FakeModel(_ => FakeModel.Chat("x")) { Served = served };
         using var app = new TestApp(model);
 
-        var info = await app.Client().GetFromJsonAsync<JsonElement>("/api/model");
+        var info = await (await app.Register("dev-a")).Http.GetFromJsonAsync<JsonElement>("/api/model");
 
         // "diacritics" stays true while the model is down: the app keeps the menu entry.
         Assert.True(info.GetProperty("diacritics").GetBoolean());
@@ -151,7 +154,7 @@ public class ModelTests
     public async Task The_log_names_the_caller_and_the_outcome_and_never_the_text()
     {
         using var app = new TestApp(new FakeModel(_ => FakeModel.Chat("tlačítko palcové")));
-        var client = app.Client();
+        var client = (await app.Register("dev-a")).Http;
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/model/diacritics")
         {
             Content = JsonContent.Create(new { text = "tlacitko palcove" }),
@@ -182,7 +185,7 @@ public class ModelTests
     public async Task A_client_without_the_headers_still_works_and_logs_question_marks()
     {
         using var app = new TestApp(new FakeModel(_ => FakeModel.Chat("ze")));
-        using var response = await app.Client().PostAsJsonAsync("/api/model/diacritics", new { text = "ze" });
+        using var response = await (await app.Register("dev-a")).Http.PostAsJsonAsync("/api/model/diacritics", new { text = "ze" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains(app.Logs, line => line == "Information: diacritics run ? from ?: paragraph ? asked, 2 characters");

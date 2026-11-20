@@ -19,27 +19,21 @@ import {
   isDesktop,
   requestPersistence,
 } from "./model/capabilities.js";
-import {
-  createDocStore,
-  DEFAULT_SPACE,
-  firstLineTitle,
-  KEYRING_ID,
-  KEYRING_SPACE,
-  titleOf,
-} from "./model/docs.js";
+import { createDocStore, KEYRING_ID, titleOf } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
 import { deviceId } from "./model/device.js";
 import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
 import { register, run } from "./commands/registry.js";
-import { createSyncClient, isValidSpace } from "./sync/client.js";
+import { createSyncClient } from "./sync/client.js";
 import * as age from "./crypto/age.js";
 import {
-  entryKey,
   KeyRing,
   keyringContentFor,
   mergeKeyringContent,
   readKeyringContent,
+  supportsStoredKeys,
 } from "./crypto/keyring.js";
+import { PALETTE } from "./crypto/spaces.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
@@ -47,9 +41,18 @@ import { isEnabled, setEnabled } from "./editor/spellcheck.js";
 import { activeLangs, switchLang } from "./editor/mixed.js";
 import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
-import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
+import {
+  askPassphrase,
+  askText,
+  choose,
+  chooseMany,
+  showBusy,
+  showCode,
+  showNote,
+  showSecret,
+} from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
-import { describeAudit, mountSettings } from "./ui/settings.js";
+import { mountSettings } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountTitle } from "./ui/title.js";
@@ -63,12 +66,12 @@ import { mountWordWrap } from "./ui/wordwrap.js";
 import { mountNewButton } from "./ui/newbutton.js";
 import { mountThumb } from "./ui/thumb.js";
 import { showHistory } from "./ui/history.js";
+import { mountPin } from "./ui/pin.js";
+import { fileNames, writeFiles } from "./model/backup.js";
+import { openDirectoryPicker } from "./storage/fsa.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
 const UNLOCK_ATTEMPTS = 3;
-
-/** Settings row: the device list notice this device showed last (§26). */
-const AUDIT_SEEN_KEY = "keyring.auditSeen";
 
 /**
  * A first guess at the device name, so the user usually just presses Enter.
@@ -110,12 +113,13 @@ async function start() {
   const store = createDocStore({
     keyring,
     syncDefault: () => Boolean(sync && sync.syncDefaultOn()),
-    // Same late binding as syncDefault (§25). Before the client exists the
-    // answer is a device with no space setting, never Not here: a routed
-    // change arriving that early must not detach a record.
+    // Same late binding as syncDefault (§25, §27). Only store.create() and a
+    // pull ask, both long after the client exists.
     spaces: {
-      defaultSpace: () => (sync ? sync.defaultSpace() : DEFAULT_SPACE),
-      modeOf: (space) => (sync ? sync.modeOf(space) : "tab"),
+      defaultSpace: () => (sync ? sync.defaultSpace() : null),
+      modeOf: (space) => (sync ? sync.modeOf(space) : undefined),
+      recipients: (space) => (sync ? sync.recipients(space) : []),
+      logSeq: (space) => (sync ? sync.logSeq(space) : 0),
     },
     workspaces,
   });
@@ -126,27 +130,23 @@ async function start() {
   // and whether it syncs depends on the setting this reads.
   await sync.load();
 
-  // Peers are read after store.load(), because the keyring resolves "all
-  // devices" against the hidden keyring record the store just read (§13.3).
-  /** Point the keyring at the hidden record: it resolves trust from it (§21). */
+  // The keyring record lists the device entries, for names (§13.3, §27).
   function refreshPeers() {
     keyring.setContent(readKeyringContent(store.keyringRecord()));
   }
   refreshPeers();
-  // The record also changes when a pull merges another device into it, so the
-  // peers follow the record itself and not the one command that writes it.
   store.events.addEventListener("system", refreshPeers);
-  // Once per device, here and not later: a device confirmed before §26 is
-  // stored as an id only, and its keys are pinned from this device's own
-  // copy of the record before the first pull of this session can change it
-  // (architecture.md §26). A no-op at every later start.
-  await keyring
-    .migratePins()
-    .catch((err) => console.log("[vrtti] pinning the confirmed devices failed", err));
+
+  // A window that does not run the schedule learns of a new member list
+  // through the settings message (the logs row); its own tabs are its to
+  // encrypt again (§27). The leader does it inside each sync round.
+  sync.events.addEventListener("spaces", () => {
+    if (!sync.isRunning) void store.reencryptStale();
+  });
 
   /**
    * Write a new keyring content into the hidden record (architecture.md
-   * §13.3, §21). Dirty when synced, so the other devices learn of it.
+   * §13.3). Dirty when synced, so the other devices learn of it.
    * @param {import("./crypto/keyring.js").KeyringContent} content
    */
   async function writeKeyring(content) {
@@ -166,97 +166,17 @@ async function start() {
   }
 
   /**
-   * After an unlock: the record learns this device's signing key and its
-   * self-approved recovery keys, once (architecture.md §21). A device from
-   * before the unit gets its key in the same unlock.
+   * The record lists this device's entry, so the others can show its name
+   * (§27). Only adds: a union never removes anyone else's entry.
    */
   async function ensureOwnEntry() {
-    if (!keyring.isUnlocked) return;
-    const next = keyring.selfUpdate();
-    if (next) await writeKeyring(next);
+    if (!keyring.ownEntry()) return;
+    const current = readKeyringContent(store.keyringRecord());
+    const next = mergeKeyringContent(keyringContentFor(keyring), current);
+    if (JSON.stringify(next) !== JSON.stringify(mergeKeyringContent(null, current))) await writeKeyring(next);
   }
-
-  // Dialogs a cancelled answer must not repeat in this session; the Settings
-  // device list keeps a button for each.
-  /** @type {Set<string>} */
-  const dismissedJoins = new Set();
-  /** @type {Set<string>} */
-  const dismissedApprovers = new Set();
-  let offering = false;
-
-  /**
-   * The two questions of §21, asked where they can be answered: this window
-   * has focus, the keyring is unlocked, and no other dialog is open. One
-   * question at a time; the record write after each answer runs this again.
-   */
-  async function offerApprovals() {
-    if (offering || !keyring.isUnlocked || !document.hasFocus()) return;
-    if (document.querySelector("dialog[open]")) return;
-    offering = true;
-    try {
-      // By entry, not by device id: a second entry under the same id is a
-      // different question, and a "no" to one must not silence the other.
-      const approver = keyring
-        .pendingApprovers()
-        .find((d) => !dismissedApprovers.has(entryKey(d)));
-      if (approver) {
-        const key = entryKey(approver);
-        if (!(await run("crypto.confirm", key))) dismissedApprovers.add(key);
-        return;
-      }
-      const join = keyring.pendingJoins().find((d) => !dismissedJoins.has(entryKey(d)));
-      if (join) {
-        const key = entryKey(join);
-        if (!(await run("crypto.approve", key))) dismissedJoins.add(key);
-      }
-    } finally {
-      offering = false;
-    }
-  }
-  store.events.addEventListener("system", () => void offerApprovals());
-  keyring.addEventListener("change", () => {
-    if (!keyring.isUnlocked) return;
-    void ensureOwnEntry().then(offerApprovals);
-  });
-  window.addEventListener("focus", () => void offerApprovals());
-
-  /** The notice text this window showed or found stored already. */
-  let auditShown = "";
-
-  /**
-   * Tell the user, once, when the device list holds something this device
-   * refuses to believe (architecture.md §26): other keys under its own
-   * name, two sets of keys for one device, a confirmed device that could
-   * not be pinned. Once per finding, not per start: the text shown last is
-   * stored, and the same text is not shown again. Settings › Security keeps
-   * the line for as long as it is true. Same conditions as the questions
-   * above: the window has focus and no other dialog is open.
-   */
-  async function reportAudit() {
-    const text = describeAudit(keyring.audit());
-    if (!text || text === auditShown) return;
-    if ((await getSetting(AUDIT_SEEN_KEY)) === text) {
-      auditShown = text;
-      return;
-    }
-    // Tested after the read, in the same tick as the dialog below: an
-    // approval question may have opened while the read was out.
-    if (!document.hasFocus()) return;
-    const open = document.querySelector("dialog[open]");
-    if (open) {
-      // A start with an encrypted note on screen opens the unlock prompt
-      // first, and nothing else would call this again once it is answered.
-      open.addEventListener("close", () => void reportAudit(), { once: true });
-      return;
-    }
-    auditShown = text;
-    // Not awaited, so nothing can open between the test and the dialog. A
-    // second window that gets focus while this one shows it reads the row.
-    void putSetting(AUDIT_SEEN_KEY, text);
-    await showNote({ title: "Check your devices", text });
-  }
-  store.events.addEventListener("system", () => void reportAudit());
-  window.addEventListener("focus", () => void reportAudit());
+  keyring.addEventListener("change", () => void ensureOwnEntry());
+  store.events.addEventListener("system", () => void ensureOwnEntry());
 
   // Built on every platform: without a disk backend no directory handle can be
   // stored, so the store loads nothing and the sidebar draws no section. Only
@@ -489,129 +409,155 @@ async function start() {
       ),
   });
 
-  // Encryption (architecture.md §5, §13.2). No keyboard shortcuts: setup runs
-  // once in a lifetime and unlock is dispatched by whatever needs a key.
+  // Devices and keys (architecture.md §5, §27). No keyboard shortcuts: setup
+  // runs once in a lifetime and unlock is dispatched by whatever needs a key.
+
   /**
-   * One sync run, awaited through the status: the leader resolves its own
-   * run, a mirror window hears the leader's status over the channel
-   * (architecture.md §14.3). Resolves with the final state, or "timeout".
-   * @returns {Promise<string>}
+   * The server token or the join code, as the first device or a new one
+   * (§27). Returns false when the user walks away.
+   * @returns {Promise<boolean>}
    */
-  function syncOnce() {
-    return new Promise((resolve) => {
-      /** @param {Event} event */
-      const done = (event) => {
-        const state = /** @type {CustomEvent} */ (event).detail?.state;
-        if (state === "syncing") return;
-        finish(state ?? "unknown");
-      };
-      /** @param {string} state */
-      const finish = (state) => {
-        sync.events.removeEventListener("status", done);
-        clearTimeout(timer);
-        resolve(state);
-      };
-      const timer = setTimeout(() => finish("timeout"), 15000);
-      sync.events.addEventListener("status", done);
-      void sync.syncNow();
+  async function connectDevice() {
+    const how = await choose({
+      title: "Sync with a server",
+      options: [
+        {
+          id: "join",
+          label: "Join with a code",
+          hint: "Another device of yours already syncs. In Settings › Devices there, use “Add a device”, then type the server URL and the code here.",
+        },
+        {
+          id: "first",
+          label: "First device on this server",
+          hint: "Type the server URL and the VRTTI_TOKEN of the server. Your other devices then join with a code.",
+        },
+      ],
     });
+    if (!how) return false;
+    const url = await askText({
+      title: "Server",
+      label: "Server URL",
+      value: sync.config.url,
+      placeholder: "https://sync.example.com",
+    });
+    if (url === null) return false;
+    if (how === "join") return run("device.join", url);
+    const token = await askPassphrase({ title: "Server token", label: "VRTTI_TOKEN" });
+    if (token === null) return false;
+    const busy = showBusy("Registering this device…");
+    try {
+      await sync.registerFirst(url, token);
+    } catch (err) {
+      busy.close();
+      await showNote({ title: "Not registered", text: String(/** @type {any} */ (err)?.message ?? err) });
+      return false;
+    }
+    busy.close();
+    await takeOverOldSpaces();
+    return true;
+  }
+
+  /**
+   * The first device after the upgrade takes over the spaces from before
+   * §27, which have notes and no member yet. Explicit: a dev machine that
+   * updated first must not take `personal` (§27). With nothing to take over
+   * and no space yet, the device makes `personal`.
+   */
+  async function takeOverOldSpaces() {
+    const old = await sync.listUnclaimed().catch(() => []);
+    if (old.length) {
+      const answer = await choose({
+        title: "Take over the spaces " + old.join(", ") + "?",
+        options: [
+          {
+            id: "yes",
+            label: "Take them over",
+            hint:
+              "This device becomes their first member. It encrypts their notes and removes the readable old versions from the server. " +
+              "Synced files stop syncing; turn sync on again from their menu.",
+          },
+          { id: "no", label: "Not now", hint: "Only a device that typed the server token can take them over later." },
+        ],
+      });
+      if (answer === "yes") {
+        for (const space of old) {
+          await sync.createSpace(space, { claim: true }).catch((err) => {
+            console.log("[vrtti] claim failed", space, err);
+            statusbar.notice("could not take over " + space);
+          });
+        }
+      }
+    }
+    if (!sync.mySpaces().length) {
+      await sync.createSpace("personal").catch((err) => console.log("[vrtti] first space failed", err));
+    }
   }
 
   register({
-    id: "crypto.setup",
-    title: "Set up encryption",
+    id: "device.setup",
+    title: "Set up this device",
     run: async () => {
-      if (keyring.isSetUp) return false;
-      // The join-order guard (architecture.md §20). A device that sets up
-      // before it has pulled the keyring mints a second recovery key, and
-      // the merge keeps both for ever. So with a server configured and no
-      // keyring record here, one sync runs first; the record then arrives or
-      // the server has none. Only an unreachable server leaves it open, and
-      // then the user decides.
-      if (sync.isConfigured && !store.keyringRecord()) {
-        const busy = showBusy("Looking for a keyring on the server…");
-        let state = "";
-        try {
-          state = await syncOnce();
-        } finally {
-          busy.close();
-        }
-        if (!store.keyringRecord() && state !== "idle") {
-          const answer = await choose({
-            title: "The server did not answer",
-            options: [
-              {
-                id: "later",
-                label: "Set up later",
-                hint: "If another device already uses encryption, try again when the server answers. This device then joins it.",
-              },
-              {
-                id: "anyway",
-                label: "Set up anyway",
-                hint: "This device starts alone, with a recovery key of its own. The devices join up later, and both recovery keys stay valid.",
-              },
-            ],
-          });
-          if (answer !== "anyway") return false;
-        }
-      }
+      if (keyring.isSetUp) return connectDevice();
       const deviceName = await askText({
-        title: "Set up encryption",
+        title: "Set up this device",
         label: "Device name",
         value: defaultDeviceName(),
-        hint: "Your other devices show this name, and a note's history does too. It cannot change later.",
+        hint: "Your other devices show this name. It cannot change later.",
       });
       if (deviceName === null) return false;
-      const passphrase = await askPassphrase({
-        title: "Choose a passphrase",
-        confirm: true,
-        hint:
-          "It protects the key on this device, and each device has its own. " +
-          "There is no reset. If you forget it, this device cannot read " +
-          "encrypted notes again.",
+      const canStore = await supportsStoredKeys();
+      const mode = canStore
+        ? await choose({
+            title: "Passphrase",
+            options: [
+              {
+                id: "none",
+                label: "No passphrase",
+                hint: "This device keeps its key and opens your notes at once. The key cannot be copied off the device.",
+              },
+              {
+                id: "ask",
+                label: "Ask for a passphrase at start",
+                hint: "For a device that can get stolen. Each start asks for it.",
+              },
+            ],
+          })
+        : "ask";
+      if (!mode) return false;
+      /** @type {string | undefined} */
+      let passphrase;
+      if (mode === "ask") {
+        const typed = await askPassphrase({
+          title: "Choose a passphrase",
+          confirm: true,
+          hint:
+            (canStore ? "" : "This browser cannot keep a key without one. ") +
+            "There is no reset. If you forget it, this device cannot read your notes again.",
+        });
+        if (typed === null) return false;
+        passphrase = typed;
+      }
+      const first = await choose({
+        title: "Other devices",
+        options: [
+          { id: "first", label: "This is my first device", hint: "It makes your recovery key." },
+          { id: "join", label: "Another device of mine syncs already", hint: "This device joins it with a code." },
+        ],
       });
-      if (passphrase === null) return false;
-
+      if (!first) return false;
       const busy = showBusy("Generating keys…");
       /** @type {string | null} */
       let recoveryIdentity;
       try {
-        // A keyring record already here came from the server: this device is
-        // joining a keyring that exists. It adopts the recovery recipients and
-        // mints no second paper key, so setup() returns null and the recovery
-        // dialog below is skipped (architecture.md §13.2, §13.3).
-        const previous = store.keyringRecord();
-        const existing = readKeyringContent(previous);
-        ({ recoveryIdentity } = await keyring.setup(passphrase, {
+        ({ recoveryIdentity } = await keyring.setup({
           deviceName,
-          joining: Boolean(existing),
+          askPassphrase: mode === "ask",
+          passphrase,
+          firstDevice: first === "first",
         }));
-        const now = Date.now();
-        /** @type {import("./storage/idb.js").BufferRecord} */
-        const record = {
-          id: KEYRING_ID,
-          kind: "keyring",
-          createdAt: now,
-          ...previous,
-          // Union, never replace: the pulled list already names the other
-          // devices, and dropping them would leave them out of every future
-          // "all my devices" recipient set (architecture.md §13.3).
-          // The pulled list leads and this device's entry goes last, the
-          // order every later merge keeps.
-          content: JSON.stringify(
-            mergeKeyringContent(keyringContentFor(keyring), existing)
-          ),
-          updatedAt: now,
-        };
-        // The other devices have to learn about this one. Harmless with no
-        // server configured: the flag simply waits for one.
-        if (record.sync) record.sync = { ...record.sync, dirty: true };
-        // Emits "system", which refreshes the peers.
-        await store.putSystemRecord(record);
       } finally {
         busy.close();
       }
-
       if (recoveryIdentity) {
         await showSecret({
           title: "Recovery key",
@@ -619,32 +565,223 @@ async function start() {
           note:
             "Shown once, never stored. Keep it on paper or in a password " +
             "manager. If you lose every device, this key still opens your " +
-            "notes with the age command line tool. vrtti itself has no place " +
-            "to enter it.",
-        });
-      } else {
-        // Joined the devices that exist: nothing else on this screen would
-        // say so, and the next step happens on another device.
-        await showNote({
-          title: "This device joined your devices",
-          text:
-            "A device you already use must approve it. Unlock that device, " +
-            "and it asks for the pairing code shown under Settings › Security " +
-            "here.",
+            "synced notes with the age command line tool.",
         });
       }
+      if (first === "join") {
+        const url = await askText({ title: "Server", label: "Server URL", placeholder: "https://sync.example.com" });
+        if (url === null) return true;
+        await run("device.join", url);
+        return true;
+      }
+      const server = await choose({
+        title: "Sync",
+        options: [
+          { id: "now", label: "Connect a server now", hint: "The server URL and the VRTTI_TOKEN." },
+          { id: "later", label: "Later", hint: "Settings › Sync has it. Your notes stay on this device until then." },
+        ],
+      });
+      if (server === "now") await connectDevice();
       return true;
     },
   });
   register({
+    id: "device.join",
+    title: "Join with a code",
+    run: async (url) => {
+      if (!keyring.isSetUp) return run("device.setup");
+      let message = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const code = await askText({
+          title: "Join with a code",
+          label: "Code",
+          placeholder: "K7MQ2-XWD4P",
+          hint:
+            (message ? message + " " : "") +
+            "In Settings › Devices on a device of yours, use “Add a device” and tick the spaces this device gets. The code works once, for ten minutes.",
+        });
+        if (code === null) return false;
+        const busy = showBusy("Joining…");
+        try {
+          await sync.redeem(url ?? sync.config.url, code);
+          busy.close();
+          await showNote({
+            title: "Waiting for your other device",
+            text: "This device joined the server. Your other device adds it to the spaces at its next sync; keep it open or open it now.",
+          });
+          return true;
+        } catch (err) {
+          busy.close();
+          message = String(/** @type {any} */ (err)?.message ?? err) + ".";
+          if (/** @type {any} */ (err)?.status !== 403) {
+            await showNote({ title: "Not joined", text: message });
+            return false;
+          }
+        }
+      }
+      return false;
+    },
+  });
+  register({
+    id: "device.connect",
+    title: "Sync with a server",
+    run: () => connectDevice(),
+  });
+  register({
+    id: "device.invite",
+    title: "Add a device",
+    run: async () => {
+      const spaces = sync.mySpaces();
+      if (!spaces.length) return false;
+      const picked = await chooseMany({
+        title: "Add a device",
+        hint: "The new device gets the spaces you tick. You can change this later in the grid.",
+        options: spaces.map((space) => ({ id: space, label: space, checked: false })),
+      });
+      if (!picked || !picked.length) return false;
+      const busy = showBusy("Making a code…");
+      let code;
+      try {
+        code = await sync.invite(picked);
+      } catch (err) {
+        busy.close();
+        await showNote({ title: "No code", text: String(/** @type {any} */ (err)?.message ?? err) });
+        return false;
+      } finally {
+        busy.close();
+      }
+      await showCode({
+        title: "Code for the new device",
+        code,
+        note:
+          "On the new device, choose “Join with a code” and type the server URL " +
+          sync.config.url + " and this code. It works once, for ten minutes. " +
+          "Keep this device open: it adds the new device at its next sync.",
+      });
+      void sync.syncNow();
+      return true;
+    },
+  });
+  register({
+    id: "space.create",
+    title: "New space",
+    run: async () => {
+      const name = await askText({
+        title: "New space",
+        label: "Name",
+        hint: "Letters, digits, - and _, up to 32. This device is its first member.",
+      });
+      if (name === null) return false;
+      try {
+        await sync.createSpace(name.trim());
+        return true;
+      } catch (err) {
+        await showNote({ title: "No new space", text: String(/** @type {any} */ (err)?.message ?? err) });
+        return false;
+      }
+    },
+  });
+  /** @param {string} title @param {() => Promise<unknown>} work */
+  async function spaceChange(title, work) {
+    try {
+      await work();
+      return true;
+    } catch (err) {
+      await showNote({ title, text: String(/** @type {any} */ (err)?.message ?? err) });
+      return false;
+    }
+  }
+  register({
+    id: "space.add",
+    title: "Add a device to a space",
+    run: ({ space, key }) => spaceChange("Not added", () => sync.addDevice(space, key)),
+  });
+  register({
+    id: "space.remove",
+    title: "Remove a device from a space",
+    run: async ({ space, key, name, me }) => {
+      const answer = await choose({
+        title: me ? "Leave “" + space + "”?" : "Remove “" + name + "” from “" + space + "”?",
+        options: [
+          {
+            id: "yes",
+            label: me ? "Leave" : "Remove",
+            hint: me
+              ? "The notes of this space go to the trash on this device."
+              : "That device gets no more notes of this space. What it has already stays there.",
+          },
+        ],
+      });
+      if (answer !== "yes") return false;
+      return spaceChange("Not removed", () => sync.removeDevice(space, key));
+    },
+  });
+  register({
+    id: "space.color",
+    title: "Change the color of a space",
+    run: (space) => {
+      const current = sync.colorOf(space);
+      const next = PALETTE[(PALETTE.indexOf(current) + 1) % PALETTE.length];
+      return spaceChange("Color not changed", () => sync.setColor(space, next));
+    },
+  });
+  register({
+    id: "device.passphraseSwitch",
+    title: "Ask for a passphrase at start",
+    run: async () => {
+      if (!keyring.isSetUp || !keyring.isUnlocked) return false;
+      const to = !keyring.askPassphrase;
+      if (!to && !(await supportsStoredKeys())) {
+        await showNote({ title: "Not possible here", text: "This browser cannot keep a key without a passphrase." });
+        return false;
+      }
+      const answer = await choose({
+        title: to ? "Ask for a passphrase at start?" : "Stop asking for a passphrase?",
+        options: [
+          {
+            id: "yes",
+            label: "Change",
+            hint:
+              "This device gets new keys and becomes a new device in your spaces. " +
+              "It encrypts its notes again; keep it open until the sync is done.",
+          },
+        ],
+      });
+      if (answer !== "yes") return false;
+      /** @type {string | undefined} */
+      let passphrase;
+      if (to) {
+        const typed = await askPassphrase({ title: "Choose a passphrase", confirm: true });
+        if (typed === null) return false;
+        passphrase = typed;
+      }
+      const busy = showBusy("New keys for this device…");
+      try {
+        await sync.changePassphraseSwitch({ askPassphrase: to, passphrase });
+        return true;
+      } catch (err) {
+        console.log("[vrtti] passphrase switch failed", err);
+        busy.close();
+        // The change goes on from where it stopped at the next try.
+        await showNote({ title: "Not changed", text: String(/** @type {any} */ (err)?.message ?? err) });
+        return false;
+      } finally {
+        busy.close();
+      }
+    },
+  });
+  register({
     id: "crypto.unlock",
-    title: "Unlock encryption",
+    title: "Unlock",
     // Resolves true when the identity is in memory afterwards, so a caller that
     // hit a locked document can simply retry its own work.
     run: async () => {
       if (!keyring.isSetUp) return false;
       if (keyring.isUnlocked) return true;
-      let message = "";
+      // The one-time question of the upgrade (§27): a device from before
+      // asks its old passphrase once, and without the switch never again.
+      const upgrade = keyring.needsUpgrade;
+      let message = upgrade ? "vrtti changed how devices keep their keys. Type your passphrase one more time." : "";
       for (let attempt = 0; attempt < UNLOCK_ATTEMPTS; attempt++) {
         const passphrase = await askPassphrase({ title: "Unlock", message });
         if (passphrase === null) return false;
@@ -667,127 +804,25 @@ async function start() {
   });
   register({
     id: "crypto.lock",
-    title: "Lock encryption",
+    title: "Lock",
     run: () => keyring.lock(),
   });
-  // The two sides of a join (architecture.md §21). Both take a device id from
-  // the record; offerApprovals() dispatches them, and the Settings device
-  // list has a button for each.
-  register({
-    id: "crypto.approve",
-    title: "Approve a device",
-    // The argument is an entryKey (crypto/keyring.js), not a device id: two
-    // entries can carry one id, and the user approves exactly one of them.
-    run: async (key) => {
-      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
-      const device = keyring.entry(key);
-      if (!device) return false;
-      // A second entry under the id of a device this one already trusts
-      // (architecture.md §26). The honest case is a device that set up
-      // encryption again; the other case is the server using a trusted
-      // name, so the question must not read like a first join.
-      const again = keyring.trustedIds().has(device.id);
-      let message = "";
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const code = await askText({
-          title: "“" + device.name + "” wants to join" + (again ? " again" : ""),
-          label: "Pairing code",
-          hint:
-            (message ? message + " " : "") +
-            (again
-              ? "This device is already trusted, and this entry has other keys. Go on only if you set up encryption on that device a second time. "
-              : "") +
-            "Type the six-digit pairing code from Settings › Security on that device. If it does not match, that device is not yours. Cancel.",
-          placeholder: "000 000",
-        });
-        if (code === null) return false;
-        const next = keyring.approve(key, code);
-        if (next) {
-          await writeKeyring(next);
-          return true;
-        }
-        message = "The code does not match.";
-      }
-      statusbar.notice("not approved");
-      return false;
-    },
-  });
-  register({
-    id: "crypto.confirm",
-    title: "Confirm an approving device",
-    run: async (key) => {
-      const device = keyring.entry(key);
-      if (!device || !device.signKey) return false;
-      const answer = await choose({
-        title: "Approved by “" + device.name + "”",
-        options: [
-          {
-            id: "yes",
-            label: "Yes, that is my device",
-            hint:
-              "Its fingerprint is " + keyring.fingerprint(device) +
-              ". Settings › Security on that device shows the same sixteen characters.",
-          },
-          {
-            id: "no",
-            label: "No",
-            hint: "This device then encrypts for itself only, and your other devices cannot read its notes. You can confirm later in Settings › Security.",
-          },
-        ],
-      });
-      if (answer !== "yes") return false;
-      return keyring.confirm(key);
-    },
-  });
 
-  // Per-document encryption (architecture.md §13.4). The commands own the
-  // prompts; the store owns the records and refuses to work while locked.
+  // A file on disk turns into an `.age` file for this device and the
+  // recovery key (architecture.md §19). A synced note is encrypted anyway
+  // (§27), so the row menu offers this for files only.
   register({
     id: "doc.encrypt",
-    title: "Encrypt note",
+    title: "Encrypt file",
     // No arg means the active buffer, like buffer.close.
     run: async (id) => {
       const target = id ?? store.activeId;
       if (!target) return false;
-      // The first encryption is also the moment encryption gets set up. Both
-      // steps return false when the user walks away from their dialog.
-      if (!keyring.isSetUp && !(await run("crypto.setup"))) return false;
+      if (!keyring.isSetUp && !(await run("device.setup"))) return false;
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
-      const preset = await choose({
-        title: "Encrypt to",
-        options: [
-          {
-            id: "all-devices",
-            label: "All my devices",
-            hint: "Every trusted device, plus the recovery key.",
-          },
-          {
-            id: "this-device",
-            label: "This device only",
-            hint: "This device and the recovery key. Other devices see only the name.",
-          },
-        ],
-      });
-      if (!preset) return false;
-      // The label is plaintext everywhere, server included (architecture.md
-      // §5). Prefilled with the first line, so the user sees exactly what will
-      // stay readable and can change it before it leaves the device. A file
-      // is prefilled with its name instead: the name is plaintext on disk
-      // already, and it is what the other devices see, because a file-backed
-      // doc syncs as a scratch doc (§13.5).
       const record = store.get(target);
-      const label = await askText({
-        title: "Name the encrypted note",
-        label: "Name",
-        value:
-          record?.title ||
-          (record?.file ? record.file.name : firstLineTitle(record?.content)),
-        hint: "The name is not encrypted. It shows in the sidebar, in the file name and on the server. Leave it empty for no name.",
-        allowEmpty: true,
-      });
-      if (label === null) return false;
       try {
-        await store.encrypt(target, /** @type {any} */ (preset), label);
+        await store.encrypt(target, "this-device");
       } catch (err) {
         // A file that cannot be renamed to `.age` (a taken name, a lost
         // permission) stays as it was; the record was not touched.
@@ -809,22 +844,8 @@ async function start() {
       // out of the ciphertext, and nothing else holds it.
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
       const record = store.get(target);
-      // A synced note goes back to the server readable, and the server keeps
-      // what it gets: that deserves one question. A local note is a local
-      // change only, and Encrypt undoes it.
-      if (record?.sync) {
-        const answer = await choose({
-          title: "Decrypt “" + titleOf(record) + "”?",
-          options: [
-            {
-              id: "yes",
-              label: "Decrypt",
-              hint: "The readable text goes to the server as a new revision. The encrypted revisions stay there.",
-            },
-          ],
-        });
-        if (answer !== "yes") return false;
-      }
+      // A synced note stays encrypted (§27); the row menu never offers this.
+      if (record?.sync) return false;
       try {
         await store.decrypt(target);
       } catch (err) {
@@ -848,15 +869,27 @@ async function start() {
     for (const folderId of [...folders.folders.keys()]) await folders.refresh(folderId);
   }
 
-  // Sync (architecture.md §3, §13.6). Registered on every platform: sync is a
-  // server target, and every platform can hold one. The client stays inert
-  // until a URL and a token exist, so each of these is a no-op until then.
+  // Sync (architecture.md §3, §13.6, §27). Registered on every platform: sync
+  // is a server target, and every platform can hold one. The client stays
+  // inert until a device token exists, so each of these is a no-op until then.
   register({
-    id: "sync.configure",
-    title: "Set the sync server",
-    // The settings rows dispatch this instead of calling the client, so the
-    // panel keeps its rule: an item never writes state itself.
-    run: (next) => sync.configure(next ?? {}),
+    id: "sync.disconnect",
+    title: "Stop syncing this device",
+    run: async () => {
+      const answer = await choose({
+        title: "Stop syncing this device?",
+        options: [
+          {
+            id: "yes",
+            label: "Stop",
+            hint: "This device forgets its server. Your notes stay here. To sync again it joins with a code.",
+          },
+        ],
+      });
+      if (answer !== "yes") return false;
+      await sync.disconnect();
+      return true;
+    },
   });
   register({
     id: "doc.sync.on",
@@ -867,14 +900,37 @@ async function start() {
       const { id, space } = typeof arg === "object" && arg ? arg : { id: arg, space: undefined };
       const target = id ?? store.activeId;
       if (!target) return false;
-      if (space !== undefined && (!isValidSpace(space) || space === KEYRING_SPACE)) return false;
+      if (space !== undefined && sync.modeOf(space) === undefined) return false;
       if (!sync.isConfigured) {
         // A log, not a dialog: the row menu already carries the hint that says
         // where a server is set, and this path is only reachable around it.
         console.log("[vrtti] sync: no server configured");
         return false;
       }
-      await store.setSync(target, true, space);
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const record = store.get(target);
+      // A synced note is encrypted (§27), and a file holds what the device
+      // writes: it turns into an `.age` file, which deserves one question.
+      if (record?.file && !record.enc) {
+        const answer = await choose({
+          title: "Sync “" + titleOf(record) + "”?",
+          options: [
+            {
+              id: "yes",
+              label: "Encrypt and sync",
+              hint: "The file becomes " + record.file.name + ".age, readable with your devices' keys and the age tool.",
+            },
+          ],
+        });
+        if (answer !== "yes") return false;
+      }
+      try {
+        await store.setSync(target, true, space);
+      } catch (err) {
+        console.log("[vrtti] sync on failed", err);
+        statusbar.notice("sync failed");
+        return false;
+      }
       return true;
     },
   });
@@ -891,6 +947,20 @@ async function start() {
     },
   });
   register({
+    id: "doc.move",
+    title: "Move to a space",
+    run: async ({ id, space }) => {
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      try {
+        return await store.move(id, space);
+      } catch (err) {
+        console.log("[vrtti] move failed", err);
+        statusbar.notice("move failed");
+        return false;
+      }
+    },
+  });
+  register({
     id: "sync.now",
     title: "Sync now",
     run: () => sync.syncNow(),
@@ -901,9 +971,9 @@ async function start() {
     // The bulk switch of architecture.md §3: it only sets the per-document
     // flag, one document at a time. There is no second kind of sync target.
     run: async () => {
-      if (!sync.isConfigured) return false;
+      if (!sync.isConfigured || !sync.defaultSpace()) return false;
       for (const record of store.openBuffers()) {
-        if (!record.sync) await store.setSync(record.id, true);
+        if (!record.sync && !record.file) await store.setSync(record.id, true).catch(() => {});
       }
       return true;
     },
@@ -968,8 +1038,92 @@ async function start() {
       const target = id ?? store.activeId;
       const record = target ? store.get(target) : undefined;
       if (!record || !sync.isConfigured) return false;
+      // Old versions hold the same text the PIN keeps off the screen (§27).
+      if (record.pin && !(await pin.allow("History needs the PIN"))) return false;
       await showHistory({ record, client: sync, store });
       return true;
+    },
+  });
+
+  // The PIN lock (architecture.md §27). `pin` is mounted further down in
+  // start(), next to the status bar it reports through; every run() comes
+  // after that.
+  register({
+    id: "pin.unlock",
+    title: "Open the locked notes",
+    run: () => pin.unlock(),
+  });
+  register({
+    id: "doc.pin",
+    title: "Lock with PIN",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      return pin.lockNote(target);
+    },
+  });
+  register({
+    id: "doc.unpin",
+    title: "Remove PIN lock",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      if (!target) return false;
+      return pin.unlockNote(target);
+    },
+  });
+
+  // "Back up to a folder" (architecture.md §27): each note of a space as a
+  // file in a picked folder. Only where a folder can be picked (hasDisk).
+  register({
+    id: "space.backup",
+    title: "Back up a space to a folder",
+    run: async (space) => {
+      if (!hasDisk || !sync.isConfigured) return false;
+      if ((await getSetting("pin.hash")) && !(await pin.allow("The backup needs the PIN"))) return false;
+      if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      const kind = await choose({
+        title: "Back up “" + space + "”",
+        options: [
+          { id: "plain", label: "Plain text", hint: "One .md file for each note, readable by any program." },
+          { id: "age", label: ".age files", hint: "Encrypted for this device and the recovery key. The age tool opens them." },
+        ],
+      });
+      if (!kind) return false;
+      let dir;
+      try {
+        dir = await openDirectoryPicker();
+      } catch (err) {
+        if (/** @type {any} */ (err)?.name !== "AbortError") console.log("[vrtti] backup folder", err);
+        return false;
+      }
+      const busy = showBusy("Backing up " + space + "…");
+      try {
+        const notes = [];
+        /** @type {{docId: string}[]} */
+        const rows = await sync.allNotes(space);
+        // A note made here and not pushed yet has no server row.
+        const onServer = new Set(rows.map((row) => row.docId));
+        for (const id of store.idsInSpace(space)) if (!onServer.has(id)) rows.push({ docId: id });
+        for (const row of rows) {
+          const read = await store.readForBackup(row);
+          if (read) notes.push({ id: row.docId, ...read });
+        }
+        const names = fileNames(notes, kind === "age" ? ".md.age" : ".md");
+        const files = [];
+        for (const note of notes) {
+          const content = kind === "age" ? await store.encryptForBackup(note.text) : note.text;
+          files.push({ name: /** @type {string} */ (names.get(note.id)), content });
+        }
+        const count = await writeFiles(dir, files);
+        statusbar.notice(count === 1 ? "1 note backed up" : count + " notes backed up");
+        return true;
+      } catch (err) {
+        console.log("[vrtti] backup failed", err);
+        statusbar.notice("backup failed");
+        return false;
+      } finally {
+        busy.close();
+      }
     },
   });
   register({
@@ -985,6 +1139,7 @@ async function start() {
       if (!record || !target) return false;
       // An encrypted body needs the key, as reading it does.
       if (record.enc && !keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
+      if (record.pin && !(await pin.allow("Copy needs the PIN"))) return false;
       // `statusbar` is declared further down in start(); every run() comes
       // after the mount, so the reference is never ahead of it.
       try {
@@ -1183,6 +1338,7 @@ async function start() {
   mountThumb();
   mountSidebar(store, folders, sync);
   const statusbar = mountStatusbar(store, sync, zoom, editor.view);
+  const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({
@@ -1190,7 +1346,13 @@ async function start() {
     folders,
     isBlankBuffer: (id) => {
       const record = store.get(id);
-      return !record || (record.kind !== "file" && !record.enc && !(record.content ?? "").trim());
+      if (!record) return true;
+      if (record.kind === "file") return false;
+      // A synced note is encrypted from its first moment, also when empty
+      // (§27), so its text is the decoded one; undefined (locked, or behind
+      // the PIN) is never blank.
+      const text = store.loadedText(id);
+      return text !== undefined && !text.trim();
     },
   });
   mountResizer();
@@ -1201,7 +1363,26 @@ async function start() {
   // After the store is up and listening to the keyring: an answer flips the
   // locked placeholders to text.
   keyring.askUnlock();
-  void reportAudit();
+  // The switch "Ask for a passphrase at start" (§27), and the one-time
+  // question of a device from before: asked now, not at the first note. A
+  // window that another one unlocks meanwhile skips the prompt.
+  if (keyring.isSetUp && !keyring.isUnlocked) {
+    setTimeout(() => {
+      if (!keyring.isUnlocked && !document.querySelector("dialog[open]")) void run("crypto.unlock");
+    }, 300);
+  }
+  // The upgrade (§27): a device that still holds the server token of the
+  // time before asks, once per start, whether it is the first device or
+  // joins with a code. In the main window only, and after the unlock above.
+  let upgradeOffered = false;
+  const offerUpgrade = () => {
+    if (upgradeOffered || !sync.needsUpgrade || workspaces.id !== MAIN_WORKSPACE) return;
+    if (document.querySelector("dialog[open]") || (keyring.isSetUp && !keyring.isUnlocked)) return;
+    upgradeOffered = true;
+    void run(keyring.isSetUp ? "device.connect" : "device.setup");
+  };
+  setTimeout(offerUpgrade, 800);
+  keyring.addEventListener("change", () => setTimeout(offerUpgrade, 300));
   // Last: its first run pulls, and a pull emits "replace" and "active" into UI
   // that has to be mounted already. One client per origin (architecture.md
   // §14.3, the lock ships with §14.2): the window that holds the lock runs
@@ -1253,6 +1434,8 @@ async function start() {
     // Sync surface for the checks (architecture.md §13.6). The app itself
     // reaches all of this through commands and the settings panel.
     sync,
+    // The store itself, for the space checks (§27): typing, moves, the trash.
+    store,
     applyRemote: (change) => store.applyRemote(change),
     // From server stubs (architecture.md §25).
     remotes: () => store.remotes(),

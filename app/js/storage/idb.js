@@ -40,7 +40,14 @@
  *
  * @typedef {Object} EncMeta
  * @property {1} v
- * @property {'all-devices' | 'this-device'} preset
+ * @property {'space' | 'this-device' | 'all-devices'} preset  'space': the
+ *   members of the note's space (architecture.md §27), the preset of every
+ *   synced note. 'this-device': this device, for a `.age` file on disk and a
+ *   local note. 'all-devices' is from before §27; v7 rewrote it, and a stray
+ *   one reads as 'this-device'.
+ * @property {number} [spaceSeq]  'space' only: the log position of the member
+ *   list the note is encrypted for. A device that applied a later position
+ *   encrypts the note again.
  */
 
 /**
@@ -53,9 +60,12 @@
  * @property {true} [purge]  Ask the push loop to delete older server revisions
  *                           after the next successful push (encrypt conversion, §5).
  * @property {string} [space]  The server space the doc lives in (architecture.md
- *                           §25). Set when the sync starts and kept for life:
- *                           a move between spaces is not built yet. Absent
- *                           only before the v6 backfill ran.
+ *                           §25, §27). A move changes it. Absent only before
+ *                           the v6 backfill ran.
+ * @property {true} [rewrap]  The only change waiting for a push is a new
+ *                           encryption for the current members, which every
+ *                           member makes on its own. A 409 on such a push
+ *                           forks nothing (model/docs.js applyRemote).
  */
 
 /**
@@ -71,6 +81,10 @@
  * @property {number} rev  The newest revision seen, so a re-delivered older
  *                           row does not overwrite a newer title.
  * @property {true} [enc]  The note is encrypted.
+ * @property {number} [spaceSeq]  `meta.enc.spaceSeq`, for the re-encryption of
+ *                           a note this device holds as a title only (§27).
+ * @property {string} [sealed]  `meta.sealed`, kept while the device is locked,
+ *                           so the title can be read at the next unlock.
  * @property {number} updatedAt  The other device's clock, for the sort.
  */
 
@@ -105,8 +119,17 @@
  * @property {string[]} [spellOff]  The spellcheck languages ("cs", "en") that are off
  *                            for this note. Absent or empty means both are on.
  * @property {number} [trashedAt]  Set when a `deleted` tombstone reached this
- *                            record (architecture.md §22): out of every list,
- *                            restorable for thirty days, then removed.
+ *                            record (architecture.md §22), or the device lost
+ *                            the note (§27): out of every list, restorable for
+ *                            thirty days, then removed.
+ * @property {string} [firstLine]  The first line of an encrypted note's text,
+ *                            set by the device whenever it reads or writes the
+ *                            text, so the row has a title while the text stays
+ *                            ciphertext (architecture.md §27). Travels sealed.
+ * @property {true} [pin]     Locked with this device's PIN (architecture.md §27).
+ * @property {string} [origin]  The device id of the first revision. Travels sealed.
+ * @property {string} [sealed]  `meta.sealed` of a pulled revision this device
+ *                            could not open yet (locked); unsealed at unlock.
  */
 
 /**
@@ -146,7 +169,7 @@
 import { reviveHandle } from "./native.js";
 
 const DB_NAME = "vrtti";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const STORE = "buffers";
 const HANDLES = "handles";
 const SETTINGS = "settings";
@@ -201,11 +224,15 @@ export function openDb() {
         // the old rows, and the later put would bring back what the earlier
         // step removed (`closed`, a file record's second body).
         if (old > 0 && old < 4 && tx) {
-          migrateToWorkspaces(tx, () => migrateToOneBody(tx, () => migrateToSpaces(tx)));
+          migrateToWorkspaces(tx, () =>
+            migrateToOneBody(tx, () => migrateToSpaces(tx, () => migrateToSpacePreset(tx)))
+          );
         } else if (old === 4 && tx) {
-          migrateToOneBody(tx, () => migrateToSpaces(tx));
+          migrateToOneBody(tx, () => migrateToSpaces(tx, () => migrateToSpacePreset(tx)));
         } else if (old === 5 && tx) {
-          migrateToSpaces(tx);
+          migrateToSpaces(tx, () => migrateToSpacePreset(tx));
+        } else if (old === 6 && tx) {
+          migrateToSpacePreset(tx);
         }
       };
       req.onsuccess = () => {
@@ -319,8 +346,9 @@ function migrateToOneBody(tx, then) {
  * own migration puts the same rows. The strings are repeated here, not
  * imported from the model: this layer imports nothing it does not store.
  * @param {IDBTransaction} tx
+ * @param {() => void} [then]  The next migration, started once the puts are queued.
  */
-function migrateToSpaces(tx) {
+function migrateToSpaces(tx, then) {
   const buffers = tx.objectStore(STORE);
   buffers.getAll().onsuccess = (event) => {
     /** @type {any[]} */
@@ -328,6 +356,33 @@ function migrateToSpaces(tx) {
     for (const record of all) {
       if (!record.sync || record.sync.space) continue;
       record.sync.space = record.kind === "keyring" ? "keyring" : "personal";
+      buffers.put(record);
+    }
+    then?.();
+  };
+}
+
+/**
+ * v6 to v7: spaces as groups of devices (architecture.md §27). The preset
+ * "all my devices" goes: a synced note is encrypted for the members of its
+ * space ("space"), a local one for this device ("this-device"). The
+ * ciphertext stays as it is; the spaceSeq of 0 makes the first device that
+ * knows the members encrypt it again. A synced plain note keeps no `enc`
+ * here: the upgrade encrypts it once the space has members (model/docs.js
+ * sealSynced).
+ * @param {IDBTransaction} tx
+ */
+function migrateToSpacePreset(tx) {
+  const buffers = tx.objectStore(STORE);
+  buffers.getAll().onsuccess = (event) => {
+    /** @type {any[]} */
+    const all = /** @type {IDBRequest} */ (event.target).result;
+    for (const record of all) {
+      if (!record.enc || record.enc.preset !== "all-devices") continue;
+      record.enc =
+        record.sync && record.kind !== "keyring"
+          ? { v: 1, preset: "space", spaceSeq: 0 }
+          : { v: 1, preset: "this-device" };
       buffers.put(record);
     }
   };
