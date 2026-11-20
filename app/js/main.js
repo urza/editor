@@ -790,10 +790,20 @@ async function start() {
           await keyring.unlock(passphrase);
           return true;
         } catch (err) {
-          // typage reports a wrong passphrase and a corrupt blob with the same
-          // error, and the user can only act on the first, so say that.
-          message = "Wrong passphrase. Try again.";
           console.log("[vrtti] unlock failed", err);
+          // typage reports a wrong passphrase and a corrupt blob with the same
+          // error, and the user can only act on the first, so say that. Any
+          // other error is not about the passphrase: say what it is, or the
+          // user types a right passphrase again and again.
+          if (/** @type {any} */ (err)?.name !== "WrongPassphraseError") {
+            busy.close();
+            await showNote({
+              title: "Unlock failed",
+              text: "The passphrase was right, but this browser refused a later step: " + String(/** @type {any} */ (err)?.message ?? err),
+            });
+            return false;
+          }
+          message = "Wrong passphrase. Try again.";
         } finally {
           busy.close();
         }
