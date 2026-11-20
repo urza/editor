@@ -131,7 +131,8 @@ Backend: ASP.NET Core minimal API plus SQLite. Endpoints:
 The server is content-agnostic: opaque content plus metadata. It never inspects text.
 One exception since 2026-11-20, on the user's command only: "Add diacritics (vllm)"
 passes paragraphs through `POST /api/model/diacritics` to the user's language model
-(§11, "Czech and English in one note"). Nothing of it is stored or logged.
+(§11, "Czech and English in one note"). No text of it is stored or logged; the log
+names the device, the paragraph number and the outcome (server/README.md, "Language model").
 
 ### What syncs
 
@@ -3418,7 +3419,7 @@ it over.
 
 ### Gate
 
-`dotnet test` in `server/` (61 tests: tokens, access, the keyring rule, the
+`dotnet test` in `server/` (70 tests: tokens, access, the keyring rule, the
 log rules, joins, successors, the move rule and its paging, the history
 filter, the migration, the model routes). `node --test
 tests/*.test.mjs` (the log replay, the join code, the re-encryption rule,

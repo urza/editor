@@ -21,6 +21,7 @@ import {
 } from "./model/capabilities.js";
 import { createDocStore, KEYRING_ID, titleOf } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
+import { deviceId } from "./model/device.js";
 import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
 import { register, run } from "./commands/registry.js";
 import { createSyncClient } from "./sync/client.js";
@@ -341,8 +342,21 @@ async function start() {
       statusbar.notice("the note is not open for editing");
       return;
     }
+    // For the server log only: which device, and which run of the command
+    // (one run sends many paragraphs at once). The keyring name is the one
+    // the user picked; a device without encryption has none, and setup
+    // without a name stores "this device" (keyring.js), so the start of
+    // its id stands in (the same id is in the history of each note).
+    const name = keyring.deviceName;
+    const caller = {
+      device: name && name !== "this device" ? name : "device " + (await deviceId()).slice(0, 8),
+      run: crypto.randomUUID().slice(0, 4),
+    };
     await addDiacritics(view, {
-      model: withModel && sync ? { ask: (text) => /** @type {any} */ (sync).addDiacritics(text) } : null,
+      model:
+        withModel && sync
+          ? { ask: (text, part) => /** @type {any} */ (sync).addDiacritics(text, { ...caller, part }) }
+          : null,
       notice: statusbar.notice,
       wholeNote: id !== undefined,
       stillHere: () => store.activeId === target,

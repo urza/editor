@@ -205,7 +205,8 @@ export function createSyncClient({ store, keyring }) {
   });
 
   /**
-   * @param {string} path @param {{method?: string, body?: any, url?: string, token?: string | null}} [opts]
+   * @param {string} path
+   * @param {{method?: string, body?: any, headers?: Record<string, string>, url?: string, token?: string | null}} [opts]
    *   `url` and `token` for a request outside the stored config: a
    *   registration or a join, before there is a device token. `token: null`
    *   sends none.
@@ -220,7 +221,7 @@ export function createSyncClient({ store, keyring }) {
     if (token) headers.Authorization = "Bearer " + token;
     return fetch(url + path, {
       method: opts.method ?? "GET",
-      headers,
+      headers: { ...headers, ...opts.headers },
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       // The service worker ignores cross-origin requests, but an HTTP cache in
       // front of the API would be just as wrong: a cached /changes page would
@@ -1232,29 +1233,60 @@ export function createSyncClient({ store, keyring }) {
   // Asked once per configuration, in every window (not only the sync leader),
   // because any window can show the menu entry.
   let model = false;
+  /**
+   * The last answer of GET /api/model: the model name and a live check
+   * ("answers", "not answering", "name not served"). Null without a model,
+   * and from a server before the check, which sends only `diacritics`.
+   * @type {{name: string, state: string, why?: string | null} | null}
+   */
+  let modelState = null;
 
   async function probeModel() {
-    model = false;
+    // Set together at the end: Settings asks again while the menu may be
+    // open, and the entry must not blink out during the request.
+    let has = false;
+    /** @type {typeof modelState} */
+    let state = null;
     if (isConfigured()) {
       try {
         const res = await request("/api/model");
         // 404: a server from before this endpoint, which has no model.
-        if (res.ok) model = (await res.json()).diacritics === true;
+        if (res.ok) {
+          const info = await res.json();
+          has = info.diacritics === true;
+          if (has && info.state) state = { name: info.name, state: info.state, why: info.why };
+        }
       } catch {
-        // Offline at startup: no entry until the next configuration or
-        // reload. The command asks again (runDiacritics in main.js).
+        // Offline: keep the last answer, so a network error while Settings
+        // repaints does not hide the menu entry. At startup the last answer
+        // is "no model"; the command asks again (runDiacritics in main.js).
+        return model;
       }
     }
+    model = has;
+    modelState = state;
     return model;
   }
 
   /**
    * One paragraph to the model, through the server. Throws on any failure;
-   * the caller keeps its local result for that paragraph.
-   * @param {string} text @returns {Promise<string>}
+   * the caller keeps its local result for that paragraph. `caller` goes to
+   * the server log only (who asked, which command, which paragraph); the
+   * device name is URI-encoded, because fetch() refuses a header value with
+   * characters outside Latin-1, and a name can be "Telefon Šárky".
+   * @param {string} text
+   * @param {{device: string, run: string, part: string}} [caller]
+   * @returns {Promise<string>}
    */
-  async function addDiacritics(text) {
-    const res = await request("/api/model/diacritics", { method: "POST", body: { text } });
+  async function addDiacritics(text, caller) {
+    // Only to a server that knows the headers (it reports `state`). An older
+    // server's CORS rule allows Authorization and Content-Type only, so the
+    // browser would refuse the whole request, and Pages deploys the app
+    // before the user pulls the new server image.
+    const headers = caller && modelState
+      ?{ "X-Vrtti-Device": encodeURIComponent(caller.device), "X-Vrtti-Run": caller.run, "X-Vrtti-Part": caller.part }
+      : undefined;
+    const res = await request("/api/model/diacritics", { method: "POST", body: { text }, headers });
     if (!res.ok) throw httpError(res);
     return (await res.json()).text;
   }
@@ -1389,6 +1421,9 @@ export function createSyncClient({ store, keyring }) {
     // Whether the server has a model for "Add diacritics (vllm)".
     get hasModel() {
       return model;
+    },
+    get modelState() {
+      return modelState;
     },
     addDiacritics,
     probeModel,
