@@ -700,6 +700,11 @@ export function createDocStore({
     await persistNow(id);
   }
 
+  /** Every save still in its debounce, now: before the app reloads itself for an update. */
+  async function flushAll() {
+    for (const id of [...saveTimers.keys()]) await saveNow(id);
+  }
+
   /**
    * Cancel the persist debounce of a buffer. For a caller that is about to
    * write the record and the file itself: a timer firing in between would put
@@ -3458,6 +3463,7 @@ export function createDocStore({
     createFromFile,
     saveAs,
     saveNow,
+    flushAll,
     replaceFromDisk,
     checkExternalChanges,
     needsReconnect,

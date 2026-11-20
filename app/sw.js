@@ -47,6 +47,10 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
+  // The app's update check asks the network which build is live
+  // (checkForUpdate in js/model/capabilities.js). The cache below matches
+  // with ignoreSearch, so it would answer with the old version.js.
+  if (url.searchParams.has("live")) return;
 
   event.respondWith(
     // caches.match without a cache name searches every cache, so an already

@@ -1480,6 +1480,10 @@ body {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   user-select: text;
+  /* The log (Settings › Update › Log) is up to 200 lines: the box scrolls,
+     so the buttons below stay on a phone's screen. */
+  max-height: 50vh;
+  overflow-y: auto;
 }
 
 .dialog-actions {

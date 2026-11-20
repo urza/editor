@@ -671,6 +671,15 @@ const SECTIONS = [
             repaint();
           }),
       },
+      {
+        // Here, beside the build: a report of a problem needs both.
+        type: "action",
+        key: "log",
+        label: "Log",
+        hint: "What the app did lately, and its errors. Copy it into a bug report.",
+        button: "show",
+        act: () => run("app.log"),
+      },
     ],
   },
   {
