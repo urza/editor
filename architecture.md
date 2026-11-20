@@ -129,6 +129,9 @@ Backend: ASP.NET Core minimal API plus SQLite. Endpoints:
 - purge revisions of one doc (needed when a doc converts to encrypted, section 5)
 
 The server is content-agnostic: opaque content plus metadata. It never inspects text.
+One exception since 2026-11-20, on the user's command only: "Add diacritics (vllm)"
+passes paragraphs through `POST /api/model/diacritics` to the user's language model
+(§11, "Czech and English in one note"). Nothing of it is stored or logged.
 
 ### What syncs
 
@@ -442,7 +445,7 @@ hit or a chord opened further down.
 The user wants the full path on hover, as Sublime shows on a tab. A page
 cannot have it: the File System Access API hands over a handle with a name
 and no location, on purpose. What is known is shown: a file row and the
-status bar title carry "On disk: <folder>/<path>" for a file opened from a
+status bar state sign (its tooltip; the title until 2026-11-20) carry "On disk: <folder>/<path>" for a file opened from a
 folder (the folder's name now leads `file.path`), or the file name for a
 picker-opened file; a folder heading says its name and that the full path
 is not available to the page. The native disk backend (goose patterns §4)
@@ -514,7 +517,7 @@ Escape, an outside click, a scroll, or a resize closes it; arrows walk it.
 
 Items: Rename, "Use first line" on a renamed scratch buffer, "Copy text" (the
 whole document to the clipboard, the phone's stand-in for Ctrl+A, Ctrl+C; the
-status bar's save slot says "copied" for a moment), Sync, Encrypt,
+status bar's state sign says "copied" for a moment), Sync, Encrypt,
 then Close or Reopen. Sync and Encrypt are listed and **disabled** until
 sections 3 and 5 ship. A toggle that says "encrypted" while nothing encrypts
 would be the one lie this app cannot afford; an empty menu slot is honest.
@@ -570,8 +573,8 @@ dismisses it. No modal library, no routing.
   mutations still go through commands, never directly from the panel.
 - Planned sections: Editor (spellcheck, emoji), Storage (persistence state),
   Sync (server URL and token, when sync ships), Security (keys, lock),
-  Update (build stamp and the update check, which the status bar has too;
-  phone mode has no status bar, so there this is the only one),
+  Update (build stamp and the update check; since 2026-11-20 the only
+  place for them, as the status bar dropped both),
   About (vendored licenses, the Twemoji CC-BY attribution).
 - Storage: localStorage per device for now. A `settings` IndexedDB store (and
   later sync for the sharable subset) arrives with the sync phase.
@@ -853,7 +856,8 @@ puts every control at the bottom right and makes the list full screen.
 - **No status bar.** Phone mode hides `#statusbar` (user decision,
   2026-11-19): its buttons are too small for a thumb. The Update section of
   the settings panel has the build stamp and the update check, and Sync and
-  Editor have the sync and spellcheck states. The notices of the save slot
+  Editor have the sync and spellcheck states. Editor also has the two
+  spellcheck languages of the open note, in phone mode only. The notices of the save slot
   ("copied", "encrypt failed") show in `#notice`, a small box above the
   thumb button: `ui/statusbar.js` writes each notice to both places, and
   `app.css` shows the box in phone mode only.
@@ -926,10 +930,57 @@ better than Sublime's. Czech comes later via Hunspell (section 8 item 4).
 - Suggestions are the expensive call (up to 55 ms a word), so they are cached
   per word and computed under a 60 ms budget per pass; the rest fill in idle
   time and the pass re-runs. A pasted page of Czech never freezes the editor.
-- One toggle for both languages (`spell.toggle`, the statusbar button, the
-  settings row). The statusbar label shows what the pass found in the active
-  buffer: "cs", "en", "cs+en". A manual per-document language override and a
-  custom dictionary are later work.
+- One toggle for both languages (`spell.toggle`, the settings row), per
+  device. The routing and the one statusbar label of this section were
+  replaced on 2026-11-20; see the next section. A custom dictionary is later
+  work.
+
+### Czech and English in one note (2026-11-20, shipped)
+
+Plan, review and measurements: `.work/mixed-spellcheck/` (not in Git).
+
+- The rule (`editor/mixed.js`): a word gets a mark only when each active
+  language rejects it. The cost, accepted: a typo that is a word of the other
+  language passes (measured: 0.6 % of Czech one-letter typos are English
+  words, 1.2 % the other way).
+- Active languages are per note: `spellOff` in the record, a list of the
+  languages that are off. It travels in the sync meta and is the one meta
+  field that is not "absent means absent": every build that knows it always
+  sends it, and `applyMeta` keeps the local value when a push has none, so
+  an older build can not switch a note's languages back on. The editor reads
+  it through the `noteSpellOff` facet, by the id captured for each state. A
+  change emits the store event `spell`, which re-runs the lint.
+- Routing stays per paragraph, for speed: the detection's English
+  paragraphs go to Harper as text (grammar hints included); every other
+  paragraph is tokenized, and each word is asked of Hunspell and of Harper's
+  `isLikelyEnglish` (0.04 ms a word, cached). Harper never lints a Czech
+  paragraph as text: on 2,000 Czech words it built 1,450 spelling lints with
+  suggestions in 1.7 s, in one block of the main thread.
+- Czech without diacritics (`editor/diacritics.js`): a word both reject and
+  that has twins (the same letters plus Czech diacritics) gets a blue mark
+  whose fixes are the twins. The twin search tries the diacritic variants
+  with Hunspell, without the ones Czech never writes (ď ť ň before e/i, ě
+  after other letters than b p v f m d t n, ů first), and gives up past
+  1,024 variants: 98 % of words found, the slowest word 20 ms, 0.75 s for a
+  fresh note of 2,000 words in idle slices. The twins share the Hunspell
+  cache (20,000 entries) and its budget. A worker for Hunspell is the next
+  step if a phone stutters.
+- A checker that is still loading means no marks yet; one that failed counts
+  as off.
+- Phone: a tap on a marked word shows its fixes in a box below it (a
+  CodeMirror tooltip that never takes the focus, so the keyboard stays). All
+  tooltips get their space from `visualViewport`.
+- Commands (`editor/adddiacritics.js`): "Add diacritics (local)" changes
+  each word with a blue mark and exactly one twin; "Add diacritics (vllm)"
+  also asks the user's model through the sync server, one paragraph per
+  request, 16 at a time. The client keeps a model change only when the
+  answer (NFC) has the same length, each changed character only gains a
+  diacritic, the word is Czech, and, outside a Czech paragraph, the word
+  had a blue mark. In a Czech paragraph a word Harper takes as English
+  ("az", "tim") is protected only when the device setting "Model may fix
+  English-looking words in Czech paragraphs" is off (default on). Both
+  work on the selection or the whole note, end in one undo step, and change
+  nothing when the note changed while the model worked.
 
 ## 12. Decision log
 
@@ -1061,8 +1112,9 @@ Open: none.
   the dialogs, the row menu, History and the editor placeholders say
   note, sync / stop syncing, your devices, space, and never doc, buffer,
   attach, keyring, bearer, flag, CryptoKey or a section number. One
-  table (`SYNC_LABEL`) gives the sync state its words in the status bar
-  and in Settings alike. The row menu names the direction ("Sync to
+  table (`SYNC_LABEL`) gives the sync state its words in Settings. (Since
+  2026-11-20 the status bar shows one sign for save and sync of the open
+  note instead: ✓, … or the problem in words; `ui/statustext.js`.) The row menu names the direction ("Sync to
   personal", "Stop syncing", "Decrypt") instead of a checked item, and
   the mode names are Open as tabs, Titles only, Nothing. From the user's
   review: the hints described the implementation, not what to expect.
@@ -1290,7 +1342,8 @@ the settings store. `sync.deviceId` is minted once. `sync.cursor` is the seq.
 - age wraps a fresh file key per save, so ciphertext differs on every push
   even when the text did not change. No "skip if unchanged" by bytes, ever.
 - Status events `{ state: 'off' | 'idle' | 'syncing' | 'error' | 'offline',
-  message, lastSyncAt }` drive a statusbar element; click runs `sync.now`.
+  message, lastSyncAt }` drive the statusbar state sign, together with the
+  open note's own `sync.dirty` and `rev`; click runs `sync.now`.
 - Commands: `doc.sync.on`, `doc.sync.off` (pushes a `detached` tombstone),
   `sync.now`, `sync.all` (attach every open doc), `doc.history`.
 - Settings Sync section: server URL and token as text rows (the panel gains a

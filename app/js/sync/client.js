@@ -422,6 +422,7 @@ export function createSyncClient({ store, keyring }) {
     config = { url, token };
     await putSetting(CONFIG_KEY, config);
     post("setting", { key: CONFIG_KEY });
+    void probeModel();
     if (!isConfigured()) {
       setStatus({ state: "off" });
       return;
@@ -582,6 +583,40 @@ export function createSyncClient({ store, keyring }) {
     defaultOn = await getSetting(DEFAULT_ON_KEY);
     await loadSpaces();
     setStatus({ state: isConfigured() ? "idle" : "off" });
+    void probeModel();
+  }
+
+  // ---- The user's language model (.work/mixed-spellcheck/plan.md) ---------
+  //
+  // The sync server can pass text to a model for "Add diacritics (vllm)".
+  // Asked once per configuration, in every window (not only the sync leader),
+  // because any window can show the menu entry.
+  let model = false;
+
+  async function probeModel() {
+    model = false;
+    if (isConfigured()) {
+      try {
+        const res = await request("/api/model");
+        // 404: a server from before this endpoint, which has no model.
+        if (res.ok) model = (await res.json()).diacritics === true;
+      } catch {
+        // Offline at startup: no entry until the next configuration or
+        // reload. The command asks again (runDiacritics in main.js).
+      }
+    }
+    return model;
+  }
+
+  /**
+   * One paragraph to the model, through the server. Throws on any failure;
+   * the caller keeps its local result for that paragraph.
+   * @param {string} text @returns {Promise<string>}
+   */
+  async function addDiacritics(text) {
+    const res = await request("/api/model/diacritics", { method: "POST", body: { text } });
+    if (!res.ok) throw httpError(res);
+    return (await res.json()).text;
   }
 
   /** The space settings and the cursors (§25), with their two defaults. */
@@ -744,6 +779,12 @@ export function createSyncClient({ store, keyring }) {
     get isConfigured() {
       return isConfigured();
     },
+    // Whether the server has a model for "Add diacritics (vllm)".
+    get hasModel() {
+      return model;
+    },
+    addDiacritics,
+    probeModel,
     get config() {
       return config ?? { url: "", token: "" };
     },

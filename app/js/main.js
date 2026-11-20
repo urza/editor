@@ -42,7 +42,9 @@ import {
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
-import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { activeLangs, switchLang } from "./editor/mixed.js";
+import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import { askPassphrase, askText, choose, showBusy, showNote, showSecret } from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
@@ -382,6 +384,59 @@ async function start() {
       setEnabled(!isEnabled());
       return isEnabled();
     },
+  });
+  register({
+    id: "spell.lang",
+    title: "Switch a spellcheck language of the note",
+    // The argument is "cs" or "en". With the spellcheck off on this device,
+    // a click turns it on and makes sure the clicked language is on: the
+    // user clicked to see that language, whatever the note had stored.
+    run: async (/** @type {"cs" | "en"} */ lang) => {
+      const id = store.activeId;
+      const record = id ? store.get(id) : undefined;
+      if (!id || !record) return;
+      const on = !isEnabled() || !activeLangs(record.spellOff)[lang];
+      setEnabled(true);
+      await store.setSpellOff(id, switchLang(record.spellOff, lang, on));
+    },
+  });
+  // A command from the menu of a note gets its id and works on the whole
+  // note, which it opens first: the store has no safe way to change the text
+  // of a note that is not on screen (a parked editor state would write the
+  // old text back). The key shortcut passes no id and works on the selection.
+  /** @param {string | undefined} id @param {boolean} withModel */
+  async function runDiacritics(id, withModel) {
+    // Asked again here: the answer from startup is "no" when the device was
+    // offline then (code review, UX finding 4).
+    if (withModel && !sync?.hasModel && !(await sync?.probeModel())) {
+      statusbar.notice(sync?.isConfigured ? "the sync server has no model" : "no sync server is set");
+      return;
+    }
+    const target = id ?? store.activeId;
+    if (!target) return;
+    if (target !== store.activeId) await store.activate(target);
+    const view = editor.view;
+    // A locked note, or one still being read, shows a read-only placeholder.
+    if (store.activeId !== target || view.state.readOnly) {
+      statusbar.notice("the note is not open for editing");
+      return;
+    }
+    await addDiacritics(view, {
+      model: withModel && sync ? { ask: (text) => /** @type {any} */ (sync).addDiacritics(text) } : null,
+      notice: statusbar.notice,
+      wholeNote: id !== undefined,
+      stillHere: () => store.activeId === target,
+    });
+  }
+  register({
+    id: "diacritics.local",
+    title: "Add diacritics (local)",
+    run: (id) => runDiacritics(id, false),
+  });
+  register({
+    id: "diacritics.model",
+    title: "Add diacritics (vllm)",
+    run: (id) => runDiacritics(id, true),
   });
   register({
     id: "syntax.set",
@@ -1099,7 +1154,7 @@ async function start() {
   mountNewButton();
   mountThumb();
   mountSidebar(store, folders, sync);
-  const statusbar = mountStatusbar(store, sync, zoom);
+  const statusbar = mountStatusbar(store, sync, zoom, editor.view);
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({
@@ -1182,7 +1237,7 @@ async function start() {
     settings: { get: getSetting, put: putSetting },
     // Spellcheck surface for the checks (architecture.md §11): the language
     // the last pass found, and the detector itself for table-driven cases.
-    spell: { languages: detectedLanguages, detect: detectLanguage, segments },
+    spell: { detect: detectLanguage, segments },
   };
 }
 

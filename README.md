@@ -79,10 +79,36 @@ Ctrl+Shift+Up and Down, and Cmd+click.
 
 English runs on [Harper](https://github.com/Automattic/harper), Czech on
 Hunspell with a Czech dictionary. Both run in the page as WebAssembly, so the
-check works offline and your text stays on the device. vrtti detects the
-language per paragraph, so a Czech shopping list under English meeting notes
-gets the right dictionary for each part. Hover a marked word for suggestions,
-and click one to apply it.
+check works offline and your text stays on the device. You can mix the two
+languages freely, also in one sentence: a word gets a mark only when each
+language of the note rejects it. The buttons **cs** and **en** in the status
+bar switch a language off or on for the open note, and the choice syncs with
+the note. On a phone the same switches are in Settings.
+
+A typo gets a red mark. Czech written without diacritics gets a blue mark, and
+its suggestions are the Czech words with the same letters plus diacritics
+("tlacitko" gives "tlačítko"). Hover a marked word for suggestions, press
+Ctrl+. for them as a menu, or tap the word on a phone, and pick one to apply it.
+
+**Add diacritics.** Two commands put the diacritics into the selection, or
+into the whole note when nothing is selected. Each one is a single undo step.
+
+- **Add diacritics (local)**, Ctrl+K Ctrl+A, changes each word that has
+  exactly one fitting Czech word. A word with more than one ("palcove" can be
+  "palcové" or "palcově") keeps its blue mark. The text stays on the device.
+- **Add diacritics (vllm)**, Ctrl+K Ctrl+G, does the same, then asks your own
+  language model for the other words, for example "ze" or "že". It shows only
+  when your sync server has a model (`VRTTI_MODEL_URL`, see
+  [server/README.md](server/README.md)). The paragraphs with such words go to
+  the sync server and from there to the model, also from an encrypted note,
+  and only when you start the command. vrtti keeps a change of the model only
+  when it adds diacritics and the result is a Czech word. In an English
+  paragraph it changes only words with a blue mark. Short Czech words such as
+  "az" or "tim" look English to the checker; the setting **Model may fix
+  English-looking words in Czech paragraphs** (Settings › Editor, on by
+  default) lets the model write "až" and "tím" in a Czech paragraph.
+
+The menu of a note (**⋯**) has the two commands too, for the whole note.
 
 ### Emoji
 
@@ -189,6 +215,9 @@ all options.
 | Find in files  | Ctrl+Shift+F              | Ctrl+Shift+F |
 | Toggle sidebar | Alt+B                     | Alt+B       |
 | Zoom note      | Ctrl+wheel                | Ctrl+wheel  |
+| Spelling fixes | Ctrl+.                    | Ctrl+.      |
+| Add diacritics (local) | Ctrl+K Ctrl+A     | Ctrl+K Ctrl+A |
+| Add diacritics (vllm)  | Ctrl+K Ctrl+G     | Ctrl+K Ctrl+G |
 
 The Alt keys also work in the desktop app. On a Mac, Cmd takes the place of
 Ctrl. In the desktop app, Ctrl+S writes a file note to disk at once, and asks
@@ -204,7 +233,7 @@ off, the note scrolls sideways. The choice is kept per device.
 - **Storage:** IndexedDB for notes, the File System Access API for files, and a small Rust disk backend in the desktop app.
 - **Offline:** a service worker caches the whole app.
 - **Desktop:** Tauri 2. The shell loads the deployed page, so a push to `main` updates the desktop app too.
-- **Server:** ASP.NET Core minimal API on .NET 10 with SQLite. It stores each note as opaque content and never looks inside.
+- **Server:** ASP.NET Core minimal API on .NET 10 with SQLite. It stores each note as opaque content and never looks inside. The one exception is "Add diacritics (vllm)": the paragraphs it sends pass through the server to your model, on your command only.
 
 [architecture.md](architecture.md) records each design decision and the reason for it.
 

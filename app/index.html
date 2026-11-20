@@ -245,22 +245,24 @@
     </main>
   </div>
   <footer id="statusbar">
-    <span id="status-title"></span>
-    <span id="status-save">saved</span>
+    <!-- "Line 12, Column 8 · 214 words", from ui/statusbar.js. -->
+    <span id="status-pos"></span>
     <!-- Note zoom. Hidden here and shown by ui/statusbar.js while the open
          note is zoomed (ui/zoom.js): at 100% there is nothing to say. -->
     <button id="status-zoom" class="icon-button" type="button" hidden></button>
-    <span id="status-build"></span>
-    <!-- No title and no state class here: ui/statusbar.js owns both, because
-         the spellcheck state comes from localStorage, not from the markup. -->
-    <button id="status-spell" class="icon-button" type="button">abc</button>
-    <!-- Sync state. Hidden here and shown by ui/statusbar.js only once a server
-         is configured: with no sync there is nothing to report. -->
-    <button id="status-sync" class="icon-button" type="button" hidden></button>
+    <!-- The spellcheck languages of the open note. No title and no state
+         class here: ui/statusbar.js owns both, because the state comes from
+         the note and from localStorage, not from the markup. -->
+    <span class="status-langs">
+      <button id="status-cs" class="status-lang" type="button">cs</button>
+      <button id="status-en" class="status-lang" type="button">en</button>
+    </span>
+    <!-- One sign for "saved on this device and on the server": ✓, … or the
+         problem in words. A click syncs now. -->
+    <button id="status-state" class="icon-button" type="button">✓</button>
     <!-- Save to disk. Hidden here and shown by ui/statusbar.js for scratch
          buffers only, and only where the File System Access API exists. -->
     <button id="status-saveas" class="icon-button" type="button" title="Save to disk…" hidden>⤓</button>
-    <button id="status-update" class="icon-button" type="button" title="Check for update">↻</button>
   </footer>
   <script type="module" src="./js/main.js"></script>
   <script>

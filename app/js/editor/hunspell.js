@@ -7,7 +7,10 @@
 // Everything runs on the main thread, like Harper. Measured in Node: the
 // dictionary loads in about 120 ms, a spelling test costs microseconds, and
 // a suggestion costs 5 to 55 ms. The suggestion cost is the one that matters,
-// so suggestions are cached per word and computed under a time budget.
+// so suggestions are cached per word and computed under a time budget. The
+// twin search (Czech without diacritics) is the same kind of cost.
+
+import { twins } from "./diacritics.js";
 
 // Resolved against this module, not the page: these are plain fetches made
 // here, so `import.meta.url` is the stable anchor. The wasm binary itself
@@ -26,8 +29,13 @@ const SUGGEST_BUDGET_MS = 60;
 const MAX_SUGGESTIONS = 5;
 
 // Bounded so a long session over many documents cannot grow it forever. A
-// wipe costs a few recomputed suggestions, nothing visible.
-const CACHE_LIMIT = 4000;
+// wipe costs a few recomputed answers, nothing visible. The twins share the
+// cache, and a note at the spellcheck limit (100,000 characters) without
+// diacritics has about 4,000 distinct words that need them
+// (.work/mixed-spellcheck/experiment/results.md), so the limit sits well
+// above that: a lower one would empty the cache on every pass of such a note
+// and redo seconds of search after each pause in typing.
+const CACHE_LIMIT = 20000;
 
 /** @type {Promise<void> | null} */
 let loading = null;
@@ -35,12 +43,15 @@ let loading = null;
 let engine = null;
 let engineBroken = false;
 
+// One cache for two answers about a word: its suggestions ("s" + word) and
+// its twins ("t" + word, see diacritics.js). Both cost milliseconds, both are
+// asked on every lint pass, and both use the budget and the idle fill below.
 /** @type {Map<string, string[]>} */
-const suggestionCache = new Map();
+const cache = new Map();
 
 /**
- * The words that missed the suggestion budget in the last `suggest` calls.
- * `fillIdle` works through them off the lint pass.
+ * The keys that missed the budget in the last calls. `fillIdle` works
+ * through them off the lint pass.
  * @type {Set<string>}
  */
 const pending = new Set();
@@ -95,8 +106,19 @@ export function isBroken() {
  * @returns {boolean}
  */
 export function isWord(word) {
-  return engine.testSpelling(word);
+  // Cached: every pass asks each word of the note again, and on a long note
+  // the uncached tests alone cost 0.2 to 1 s per pass (code review, finding 2).
+  let known = words.get(word);
+  if (known === undefined) {
+    if (words.size >= CACHE_LIMIT) words.clear();
+    known = Boolean(engine.testSpelling(word));
+    words.set(word, known);
+  }
+  return known;
 }
+
+/** @type {Map<string, boolean>} */
+const words = new Map();
 
 /**
  * Suggestions for a misspelled word, from the cache when present. Returns
@@ -107,21 +129,52 @@ export function isWord(word) {
  * @returns {string[] | null}
  */
 export function suggest(word, budget) {
-  const cached = suggestionCache.get(word);
-  if (cached) return cached;
-  if (performance.now() > budget.deadline) {
-    pending.add(word);
-    return null;
-  }
-  return compute(word);
+  return answer("s" + word, budget);
 }
 
-/** @param {string} word */
-function compute(word) {
-  if (suggestionCache.size >= CACHE_LIMIT) suggestionCache.clear();
-  const list = engine.getSpellingSuggestions(word).slice(0, MAX_SUGGESTIONS);
-  suggestionCache.set(word, list);
-  pending.delete(word);
+/**
+ * The twins of a word (diacritics.js), from the cache when present. Same
+ * contract as `suggest`: null means "not known yet, queued for fillIdle". An
+ * empty list means none, or a word too long to search.
+ * @param {string} word
+ * @param {{ deadline: number }} budget
+ * @returns {string[] | null}
+ */
+export function twinsOf(word, budget) {
+  return answer("t" + word, budget);
+}
+
+/**
+ * The twins now, without a budget: for a command the user started, which
+ * may take its time.
+ * @param {string} word
+ * @returns {string[]}
+ */
+export function twinsNow(word) {
+  return cache.get("t" + word) ?? compute("t" + word);
+}
+
+/** @param {string} key @param {{ deadline: number }} budget */
+function answer(key, budget) {
+  const cached = cache.get(key);
+  if (cached) return cached;
+  if (performance.now() > budget.deadline) {
+    pending.add(key);
+    return null;
+  }
+  return compute(key);
+}
+
+/** @param {string} key */
+function compute(key) {
+  if (cache.size >= CACHE_LIMIT) cache.clear();
+  const word = key.slice(1);
+  const list =
+    key[0] === "s"
+      ? engine.getSpellingSuggestions(word).slice(0, MAX_SUGGESTIONS)
+      : twins(word, (w) => engine.testSpelling(w)) ?? [];
+  cache.set(key, list);
+  pending.delete(key);
   return list;
 }
 
@@ -141,9 +194,9 @@ export function fillIdle(done) {
   idleScheduled = true;
   const slice = () => {
     const stop = performance.now() + SUGGEST_BUDGET_MS;
-    for (const word of pending) {
+    for (const key of pending) {
       if (performance.now() > stop) break;
-      compute(word);
+      compute(key);
     }
     if (pending.size > 0) {
       later(slice);

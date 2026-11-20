@@ -4,6 +4,12 @@ A thin sync backend for the vrtti editor. ASP.NET Core minimal API on .NET 10, S
 raw SQL. The server is content-agnostic. It stores opaque content and an opaque `meta`
 object, and it never looks inside them.
 
+One exception, and only when the user asks for it: the command "Add diacritics (vllm)"
+sends paragraphs of a note to `POST /api/model/diacritics`, and the server passes them to
+the user's language model (see "Language model" below). The text is never stored or
+logged. This also holds for an encrypted note: the user starts the command, so the
+user decides.
+
 Every push appends a revision row. The newest row of a document is the current version.
 See `architecture.md`, sections 3 and 13.5.
 
@@ -90,6 +96,9 @@ sync.example.com {
 | `VRTTI_DB`      | `./data/vrtti.db`         | Path of the SQLite file.                    |
 | `VRTTI_ORIGINS` | `https://urza.github.io`  | Comma-separated list of allowed CORS origins. |
 | `ASPNETCORE_URLS` | Kestrel's default       | Listening address, for example `http://+:8080`. |
+| `VRTTI_MODEL_URL` | none                    | Base URL of an OpenAI-compatible API (vLLM), for example `http://10.0.0.5:8000/v1`. Without it the server has no model. |
+| `VRTTI_MODEL_NAME` | `default`              | The model name for the chat request. |
+| `VRTTI_MODEL_KEY` | none                    | A bearer key for the model API, if it needs one. |
 
 Generate a token with `openssl rand -hex 32`. One static token serves the single user.
 
@@ -109,6 +118,8 @@ limited to 10 MB.
 | `GET`    | `/api/docs/{id}/revisions`        | History, newest first, without content.               |
 | `GET`    | `/api/docs/{id}/revisions/{rev}`  | One revision, or 404.                                 |
 | `DELETE` | `/api/docs/{id}/revisions?below=` | `{ purged }`. Removes revisions below `below`. The newest one always stays. |
+| `GET`    | `/api/model`                      | `{ diacritics: true }` when `VRTTI_MODEL_URL` is set, else `false`. |
+| `POST`   | `/api/model/diacritics`           | Body `{ text }`, one paragraph of at most 20,000 characters. 200 `{ text }` with the answer of the model. 404 without a model, 413 above the limit, 502 when the model fails or takes more than 30 seconds. |
 
 Push body:
 
@@ -125,6 +136,17 @@ Push body:
 ```
 
 `space` is optional. A missing or null `space` means `personal`.
+
+## Language model
+
+With `VRTTI_MODEL_URL` set, the server offers "Add diacritics (vllm)" to the app. For
+each paragraph it makes one chat request with temperature 0 and a fixed Czech
+instruction: add the missing diacritics and change nothing else. The instruction is in
+`Vrtti.Server/Model.cs`; a caller can not send another one, so the endpoint can not be used
+as a general door to the model. The app sends up to 16 paragraphs at the same time, and
+vLLM batches them. The app checks each answer again and keeps only words that differ by
+diacritics alone. Thinking output (`<think>…</think>`) is removed, and the request asks
+Qwen-style templates not to think (`chat_template_kwargs`).
 
 `kind` is `text`, `deleted` or `detached`. `baseRev: null` means "attach without a
 claim" and always appends. `deleted` tells other devices to remove their copy;

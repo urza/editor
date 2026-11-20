@@ -39,7 +39,7 @@ import { run } from "../commands/registry.js";
 import { multipleCursors, selectAllOccurrences, splitSelectionIntoLines } from "./cursors.js";
 import { twemoji } from "./emoji.js";
 import { marks } from "./markdown.js";
-import { spellcheck } from "./spellcheck.js";
+import { noteSpellOff, relintAll, spellcheck } from "./spellcheck.js";
 import { joinLines, lowerCase, upperCase } from "./transform.js";
 import {
   extensionForLang,
@@ -48,6 +48,12 @@ import {
   pasteDominates,
   sniff,
 } from "./lang.js";
+
+// "update" on every change of the text or the selection in a note, for the
+// status bar's position and word count. An event and not a callback in each
+// state: every state gets the same listener from baseExtensions, and the bar
+// reads the view, which holds whichever state is on screen.
+export const editorEvents = new EventTarget();
 
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
@@ -221,9 +227,13 @@ const wrapExtension = () => (wordWrap ? EditorView.lineWrapping : []);
  * @param {(content: string) => void} [onDocChanged]
  * @param {(content: string) => void} [onDominantPaste] Called after a paste
  *   large enough to redefine what the buffer is. See pasteDominates.
+ * @param {() => readonly string[] | undefined} [spellOff] See createEditorState.
  */
-function baseExtensions(lang, onDocChanged, onDominantPaste) {
+function baseExtensions(lang, onDocChanged, onDominantPaste, spellOff) {
   return [
+    // The spellcheck languages of this note (spellcheck.js). Absent for a
+    // state that belongs to no note: both languages are then on.
+    ...(spellOff ? [noteSpellOff.of(spellOff)] : []),
     lineNumbers(),
     highlightActiveLineGutter(),
     // highlightActiveLine() is deliberately absent: Sublime's `highlight_line`
@@ -253,6 +263,12 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       // into "move focus" would look like the old Tab bug coming back.
       { key: "Ctrl-m", run: cursorMatchingBracket, shift: selectMatchingBracket },
       { key: "Mod-k Mod-d", run: formatDocument },
+      // Add diacritics (.work/mixed-spellcheck/plan.md). Two different
+      // letters on purpose: the second command sends text to a model, and a
+      // slip of the Shift key must not start it. Not Mod-k Mod-h: on a Mac
+      // that is Cmd+H, and macOS hides the app before the page sees the key.
+      { key: "Mod-k Mod-a", run: () => (run("diacritics.local"), true) },
+      { key: "Mod-k Mod-g", run: () => (run("diacritics.model"), true) },
       // Sublime's case chords and its Ctrl+J. The desktop shell's Edit menu
       // reaches the same commands by id (editor/transform.js); the keys
       // live here alone, where they act only while the editor has focus.
@@ -305,6 +321,7 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
       if (update.docChanged && onDocChanged) {
         onDocChanged(update.state.doc.toString());
       }
+      if (update.docChanged || update.selectionSet) editorEvents.dispatchEvent(new Event("update"));
     }),
     // Language re-detection after a paste, and only after a paste: sniffing on
     // every keystroke would recolor a note the moment its first line happens
@@ -337,11 +354,13 @@ function baseExtensions(lang, onDocChanged, onDominantPaste) {
  * @param {string} lang Language id (editor/lang.js).
  * @param {(content: string) => void} [onDocChanged]
  * @param {(content: string) => void} [onDominantPaste]
+ * @param {() => readonly string[] | undefined} [spellOff] Reads the note's
+ *   switched-off spellcheck languages when a pass runs.
  */
-export function createEditorState(content, lang, onDocChanged, onDominantPaste) {
+export function createEditorState(content, lang, onDocChanged, onDominantPaste, spellOff) {
   return EditorState.create({
     doc: content || "",
-    extensions: baseExtensions(lang, onDocChanged, onDominantPaste),
+    extensions: baseExtensions(lang, onDocChanged, onDominantPaste, spellOff),
   });
 }
 
@@ -480,7 +499,9 @@ export function mountEditor(host, store) {
       text,
       langForRecord(forLang),
       (content) => store.updateContent(id, content),
-      (content) => detectAfterPaste(id, content)
+      (content) => detectAfterPaste(id, content),
+      // Read by id, as detectAfterPaste does, never through store.activeId.
+      () => store.get(id)?.spellOff
     );
   }
 
@@ -688,6 +709,10 @@ export function mountEditor(host, store) {
     // make the next "active" skip parking a state that is a real document.
     if (placeholderId === id) placeholderId = null;
   });
+
+  // A note's spellcheck languages changed (a click, another window, a pull).
+  // That changes no text, so the lint would not run on its own.
+  store.events.addEventListener("spell", () => relintAll());
 
   // The buffer's language changed (a paste, or the syntax command). The mode
   // swaps through the compartment, so the text, the selection and the undo

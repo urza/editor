@@ -39,6 +39,9 @@ const string badSpace = "space must be 1-32 letters, digits, - or _";
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxBodyBytes);
 builder.Services.AddSingleton(new Db(dbPath));
+// The user's language model for "Add diacritics (vllm)", if VRTTI_MODEL_URL is set.
+builder.Services.AddSingleton(ModelSettings.FromEnvironment());
+builder.Services.AddHttpClient<DiacriticsModel>();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
     .WithOrigins(origins)
     .WithHeaders("Authorization", "Content-Type")
@@ -80,6 +83,34 @@ var build = long.Parse(typeof(Program).Assembly
     .GetCustomAttributes<AssemblyMetadataAttribute>()
     .First(attribute => attribute.Key == "BuildStamp").Value!);
 api.MapGet("/version", () => Results.Ok(new { build }));
+
+// Behind the token, unlike /version: whether a model exists is nobody else's business.
+api.MapGet("/model", (DiacriticsModel model) => Results.Ok(new { diacritics = model.Available }));
+
+// One paragraph in, the same paragraph with diacritics out (.work/mixed-spellcheck/plan.md).
+// The client sends many of these at once; the model batches them.
+api.MapPost("/model/diacritics", async (DiacriticsModel model, DiacriticsRequest request, HttpContext context) =>
+{
+    if (!model.Available)
+    {
+        return Results.NotFound(new ErrorResponse("no model"));
+    }
+
+    if (request.Text is null)
+    {
+        return Results.BadRequest(new ErrorResponse("text is required"));
+    }
+
+    if (request.Text.Length > DiacriticsModel.MaxChars)
+    {
+        return Results.Json(new ErrorResponse("text too long"), statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+
+    var answer = await model.AddDiacritics(request.Text, context.RequestAborted);
+    return answer is null
+        ? Results.Json(new ErrorResponse("the model did not answer"), statusCode: StatusCodes.Status502BadGateway)
+        : Results.Ok(new DiacriticsResponse(answer));
+});
 
 api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
 {
