@@ -70,8 +70,13 @@ self.addEventListener("fetch", (event) => {
       // A navigation that missed the cache (e.g. a deep link) still gets the
       // app shell, so the installed app opens with no network. The crypto
       // prototype is deployed under our scope but is its own page: handing it
-      // the app shell would make its URL silently open the editor.
-      if (req.mode === "navigate" && !url.pathname.includes("/crypto-proto")) {
+      // the app shell would make its URL silently open the editor. The same
+      // holds for the test pages in /tools/ (tools/keytest.html).
+      if (
+        req.mode === "navigate" &&
+        !url.pathname.includes("/crypto-proto") &&
+        !url.pathname.includes("/tools/")
+      ) {
         return caches.match("./index.html").then((shell) => shell || fetch(req));
       }
       return fetch(req);

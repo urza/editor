@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Lets iOS "Add to Home Screen" open this page standalone. The test must
+     run inside an installed web app too, because iOS gives an installed app
+     its own storage, and that storage is the one the keys must survive in. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="keytest.webmanifest">
+<title>vrtti key test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 640px; }
+  button { font: inherit; padding: 8px 14px; margin: 4px 8px 4px 0; }
+  ol { padding-left: 1.4em; }
+  li { margin: 6px 0; }
+  .ok { color: #2e8b57; }
+  .fail { color: #d03040; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+</style>
+</head>
+<body>
+<!-- Plan "spaces-membership", step 1. Not linked from the app on purpose:
+     it is a one-time check on the user's iPhone that non-extractable
+     WebCrypto keys survive a restart in IndexedDB. The plan stops after this
+     step until the result is in. -->
+<h1>vrtti key test</h1>
+<p>1. Tap "Make keys". 2. Close the app fully (swipe it away). 3. Open it again. The results below show what survived.</p>
+<p>
+  <button id="make">Make keys</button>
+  <button id="clear">Delete keys</button>
+</p>
+<ol id="out"></ol>
+<pre id="env"></pre>
+<script type="module">
+import { Encrypter, Decrypter, identityToRecipient, armor } from "../vendor/age-encryption/index.js";
+import { ed25519 } from "../vendor/@noble/curves/ed25519.js";
+
+const DB = "vrtti-keytest";
+const STORE = "keys";
+const MESSAGE = new TextEncoder().encode("vrtti key test message");
+const PLAINTEXT = "the age file opened with a key read back from IndexedDB";
+
+// PKCS#8 headers for a raw 32-byte private key. WebCrypto imports X25519 and
+// Ed25519 private keys only as PKCS#8 or JWK; the app upgrade path imports
+// the passphrase-wrapped keys this way.
+const X25519_PKCS8 = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20];
+const ED25519_PKCS8 = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
+
+const out = document.getElementById("out");
+function report(ok, text) {
+  const li = document.createElement("li");
+  li.className = ok ? "ok" : "fail";
+  li.textContent = (ok ? "OK  " : "FAIL  ") + text;
+  out.append(li);
+}
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function dbDo(mode, fn) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, mode);
+    const req = fn(tx.objectStore(STORE));
+    tx.oncomplete = () => resolve(req && req.result);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+const get = () => dbDo("readonly", (s) => s.get("state"));
+const put = (v) => dbDo("readwrite", (s) => s.put(v, "state"));
+const del = () => dbDo("readwrite", (s) => s.delete("state"));
+
+async function encryptTo(recipient) {
+  const e = new Encrypter();
+  e.addRecipient(recipient);
+  return armor.encode(await e.encrypt(PLAINTEXT));
+}
+
+async function make() {
+  out.textContent = "";
+  try {
+    // Non-extractable: the point of the test. A script cannot copy such a
+    // key off the device, and the device still needs no passphrase.
+    const x = await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+    const ed = await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]);
+    const edPublic = new Uint8Array(await crypto.subtle.exportKey("raw", ed.publicKey));
+    const recipient = await identityToRecipient(x.privateKey);
+
+    // The upgrade path: raw keys (as unwrapped from the passphrase today)
+    // imported as non-extractable PKCS#8 keys.
+    const xRaw = crypto.getRandomValues(new Uint8Array(32));
+    const edRaw = ed25519.utils.randomSecretKey();
+    const xImported = await crypto.subtle.importKey("pkcs8", new Uint8Array([...X25519_PKCS8, ...xRaw]), { name: "X25519" }, false, ["deriveBits"]);
+    const edImported = await crypto.subtle.importKey("pkcs8", new Uint8Array([...ED25519_PKCS8, ...edRaw]), { name: "Ed25519" }, false, ["sign"]);
+    const importedRecipient = await identityToRecipient(xImported);
+
+    await put({
+      created: new Date().toISOString(),
+      opens: 0,
+      x: x.privateKey,
+      ed: ed.privateKey,
+      edPublic,
+      file: await encryptTo(recipient),
+      xImported,
+      edImported,
+      edImportedPublic: ed25519.getPublicKey(edRaw),
+      importedFile: await encryptTo(importedRecipient),
+    });
+    report(true, "keys made and stored. Now close the app fully and open it again.");
+  } catch (e) {
+    report(false, "make keys: " + (e && e.message ? e.message : e));
+  }
+}
+
+async function check(label, fn) {
+  try {
+    const detail = await fn();
+    report(true, label + (detail ? ": " + detail : ""));
+  } catch (e) {
+    report(false, label + ": " + (e && e.message ? e.message : e));
+  }
+}
+
+async function decryptWith(key, file) {
+  const d = new Decrypter();
+  d.addIdentity(key);
+  const text = await d.decrypt(armor.decode(file), "text");
+  if (text !== PLAINTEXT) throw new Error("wrong plaintext");
+}
+
+async function signWith(key, publicKey) {
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, MESSAGE));
+  // noble verifies, as the app will: the signature must be standard Ed25519.
+  if (!ed25519.verify(sig, MESSAGE, publicKey)) throw new Error("noble rejects the signature");
+}
+
+async function run() {
+  out.textContent = "";
+  let state;
+  try {
+    state = await get();
+  } catch (e) {
+    report(false, "read IndexedDB: " + e.message);
+    return;
+  }
+  if (!state) {
+    report(false, 'no stored keys. Tap "Make keys" first.');
+    return;
+  }
+  state.opens += 1;
+  await put(state);
+  report(true, `stored keys found (made ${state.created}, page opened ${state.opens} times since)`);
+  await check("stored keys are CryptoKeys", async () => {
+    for (const k of [state.x, state.ed, state.xImported, state.edImported]) {
+      if (!(k instanceof CryptoKey)) throw new Error("a key came back as " + typeof k);
+      if (k.extractable) throw new Error("a key is extractable");
+    }
+  });
+  await check("age decrypt with the stored X25519 key", () => decryptWith(state.x, state.file));
+  await check("Ed25519 sign with the stored key, noble verify", () => signWith(state.ed, state.edPublic));
+  await check("age decrypt with the imported PKCS#8 X25519 key", () => decryptWith(state.xImported, state.importedFile));
+  await check("Ed25519 sign with the imported PKCS#8 key, noble verify", () => signWith(state.edImported, state.edImportedPublic));
+  await check("storage persisted", async () => {
+    if (!navigator.storage?.persisted) return "API missing";
+    return (await navigator.storage.persisted()) ? "yes" : "no (the browser may evict it)";
+  });
+}
+
+document.getElementById("make").onclick = make;
+document.getElementById("clear").onclick = async () => {
+  await del();
+  out.textContent = "";
+  report(true, "keys deleted");
+};
+
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+document.getElementById("env").textContent =
+  `user agent: ${navigator.userAgent}\ninstalled app: ${standalone ? "yes" : "no"}`;
+run();
+</script>
+</body>
+</html>

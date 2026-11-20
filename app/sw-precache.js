@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "72694dcf51f3",
+  "version": "3ed37c8b3455",
   "files": [
     "./",
     "./app.css",
