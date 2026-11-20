@@ -9,15 +9,52 @@
 // switch, and CodeMirror is never reconfigured, so the text, the selection and
 // the undo history survive a zoom the same way they survive the Settings size.
 //
-// In memory only, like the editor's scroll snapshots: a factor lives as long
-// as its note is open, and a reload starts every note at 100 %. Nothing in
-// localStorage, nothing in the store, nothing that syncs. A zoom is a glance
-// at one note on one screen, not a setting.
+// Device-local in localStorage, like the text sizes (ui/textsize.js): a note
+// keeps its zoom across a close, a reload and a restart. Never in the store
+// and never synced: a phone and a 27" monitor want different factors for the
+// same note (user decision, 2026-11-20).
+//
+// localStorage is the only copy, read on each use and changed one entry at a
+// time. Two windows of the app share it, and a copy in memory here would
+// write back a stale map over the other window's zooms.
+//
+// A deleted note's entry goes at the next start (prune() below), not at the
+// delete: the store's "evict" fires for a close and a delete alike.
 
 import { register } from "../commands/registry.js";
 
 /** Percent of the Settings size. Stepped in tens, like browser zoom. */
 export const ZOOM = { min: 50, max: 300, step: 10, default: 100 };
+
+const KEY = "vrtti.noteZoom";
+
+/** @returns {Map<string, number>} note id -> percent, valid entries only */
+function load() {
+  const zooms = new Map();
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? "{}");
+    for (const [id, value] of Object.entries(saved)) {
+      // Skip what is out of range rather than clamp it: a clamped value is a
+      // zoom nobody chose (same rule as ui/textsize.js).
+      if (Number.isInteger(value) && value >= ZOOM.min && value <= ZOOM.max) {
+        zooms.set(id, value);
+      }
+    }
+  } catch {
+    // Private mode can throw on access, and a damaged value fails to parse.
+    // Every note then starts at 100 %.
+  }
+  return zooms;
+}
+
+/** @param {Map<string, number>} zooms */
+function save(zooms) {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(zooms)));
+  } catch {
+    // Nothing to do: the zoom still applies until the app closes.
+  }
+}
 
 /**
  * @param {HTMLElement} host The editor host, which carries --note-zoom.
@@ -26,13 +63,19 @@ export const ZOOM = { min: 50, max: 300, step: 10, default: 100 };
  *   whenever the factor on screen may have changed (a step, a note switch).
  */
 export function mountZoom(host, store) {
-  /** @type {Map<string, number>} note id -> percent; absent means 100 */
-  const zooms = new Map();
   const events = new EventTarget();
 
-  /** The open note's percent. */
+  // Once at start, so the saved map cannot grow with every deleted note.
+  // Safe only because main.js mounts this after store.load(), which reads
+  // every record, closed, trashed and locked ones too: an entry the store
+  // does not know belongs to a note that is gone for good.
+  const zooms = load();
+  for (const id of zooms.keys()) if (!store.get(id)) zooms.delete(id);
+  save(zooms);
+
+  /** The open note's percent. Absent from the saved map means 100. */
   function percent() {
-    return (store.activeId && zooms.get(store.activeId)) || ZOOM.default;
+    return (store.activeId && load().get(store.activeId)) || ZOOM.default;
   }
 
   /** Put the open note's factor on the host. */
@@ -50,8 +93,11 @@ export function mountZoom(host, store) {
     const id = store.activeId;
     if (!id) return;
     const next = Math.min(ZOOM.max, Math.max(ZOOM.min, value));
+    const zooms = load();
+    // At 100 the entry goes: only zoomed notes take space in the saved map.
     if (next === ZOOM.default) zooms.delete(id);
     else zooms.set(id, next);
+    save(zooms);
     apply();
   }
 
@@ -80,15 +126,10 @@ export function mountZoom(host, store) {
   );
 
   // The note on screen changed, so its own factor goes on the host. Also
-  // fired at boot for the restored note, when every factor is still 100.
+  // fired at boot for the restored note, which gets its saved factor here.
+  // No "evict" listener: a closed note keeps its factor for when it opens
+  // again, and "evict" cannot tell a close from a delete.
   store.events.addEventListener("active", apply);
-  // A closed note takes its factor with it. apply() too, and not only when
-  // the closed note was the open one: it is cheap, and it keeps this module
-  // free of any guess about the order of the store's "evict" and "active".
-  store.events.addEventListener("evict", (event) => {
-    zooms.delete(/** @type {CustomEvent} */ (event).detail.id);
-    apply();
-  });
 
   return { events, percent };
 }
