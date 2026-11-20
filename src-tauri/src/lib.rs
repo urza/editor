@@ -330,6 +330,16 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("vrtti")
         .inner_size(1100.0, 760.0)
+        // Dark always, whatever the system says: the page has one look, the
+        // dark Mariana one. Without a theme, on Windows in dark mode, the
+        // dropdowns were dark but the menu bar strip stayed white (user
+        // report, 2026-11-20). Tauri hands this theme to muda
+        // (init_for_hwnd_with_theme). With Auto, muda paints the strip dark
+        // only when Windows also allows dark mode for this window
+        // (is_dark_mode_allowed_for_window), which failed; with Dark it
+        // always does. On Linux GTK takes its dark variant. macOS has no
+        // menu bar in the window.
+        .theme(Some(tauri::Theme::Dark))
         .initialization_script(marker)
         // A new page load means a page without listeners until it says so,
         // or until the fallback decides it is an old page that never will.

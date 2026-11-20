@@ -42,7 +42,7 @@
   /* Glyphs: drawn rather than read, so they keep their own larger steps. */
   --ui-icon:    calc(15px * var(--ui-scale));  /* the hamburgers, the status bar */
   --ui-icon-sm: calc(14px * var(--ui-scale));  /* the action row (search, file, ...) */
-  --ui-icon-lg: calc(18px * var(--ui-scale));  /* the settings close button */
+  --ui-icon-lg: calc(18px * var(--ui-scale));  /* the search close button */
   --ui-plus:    calc(22px * var(--ui-scale));  /* the new-buffer "+" */
 
   /* Boxes that hold the type above. A fixed height would clip its own label
@@ -58,6 +58,38 @@
 }
 
 * { box-sizing: border-box; }
+
+/* Scrollbars in the colors of the chrome (user request, 2026-11-20): the
+   desktop shell drew the system's light bars over the dark panels. One rule
+   for every scroll box: the note list, Recent, settings, the editor.
+   The thumb is white at low strength, so it reads on the sidebar and the
+   editor alike; the track is the panel itself.
+   Only for a mouse: a touch screen draws thin overlay bars that fade out, and
+   a styled bar there would take space from the text and stay on screen. */
+@media (pointer: fine) {
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    /* The transparent border with padding-box clip draws a slim bar inside a
+       full-width target: easy to grab, quiet to look at. */
+    border: 3px solid transparent;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.16) padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.28); }
+  ::-webkit-scrollbar-thumb:active { background-color: rgba(255, 255, 255, 0.4); }
+
+  /* Firefox has no ::-webkit-scrollbar. The standard properties are only for
+     it: in Chromium (the Windows shell) a scrollbar-color turns the rules
+     above off. */
+  @supports not selector(::-webkit-scrollbar) {
+    * { scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
+  }
+}
 
 html, body {
   height: 100%;
@@ -175,6 +207,21 @@ body {
   min-height: 0;
   overflow-y: auto;
 }
+
+/* The two disclosure headings as full-width bars (user choice, 2026-11-20).
+   With Open scrolled to its end and Recent expanded, the rows of the two
+   lists met with only a small heading between them, and the eye read one
+   long list. The bar marks the edge and also looks like the toggle it is.
+   margin 0: the bar must reach both sides of the sidebar. */
+#recent-heading,
+#fromserver-heading {
+  margin: 0;
+  padding: 7px 10px 6px;
+  background: var(--st-ui-bg);
+  border-top: 1px solid #3A4048;
+}
+#recent-list,
+#fromserver-list { padding-top: 2px; }
 
 /* The name of a space over its rows in From server, when more than one space
    lists there. A label, not a row: no pointer, no hover, nothing to click. */
@@ -635,18 +682,11 @@ body {
   display: none;
 }
 
-.search-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* The heading brings the margins of every other sidebar heading with it. */
-.search-head .sidebar-heading { flex: 1; }
-
+/* At the end of the field's row (user request, 2026-11-20): the way out sits
+   next to the field the user just typed in, not in the heading's corner. */
 #search-close {
   flex: 0 0 auto;
-  margin-right: 8px;
+  height: calc(22px * var(--ui-scale));
   border: 0;
   padding: 0 4px;
   background: transparent;
@@ -668,7 +708,7 @@ body {
 
 #search-query {
   flex: 1;
-  /* Without it the field refuses to shrink and pushes the two buttons out of
+  /* Without it the field refuses to shrink and pushes the buttons out of
      a 320px drawer. */
   min-width: 0;
   height: calc(22px * var(--ui-scale));
@@ -683,8 +723,7 @@ body {
 
 /* The same quiet look as the #open-actions row above: both are secondary
    controls in the same column. */
-#search-case,
-#search-go {
+#search-case {
   flex: 0 0 auto;
   height: calc(22px * var(--ui-scale));
   padding: 0 8px;
@@ -699,8 +738,7 @@ body {
   opacity: 0.85;
 }
 
-#search-case:hover,
-#search-go:hover {
+#search-case:hover {
   background: var(--st-sidebar-selected);
   color: var(--st-sidebar-heading);
   opacity: 1;
@@ -1037,7 +1075,21 @@ body {
   color: var(--st-sidebar-heading);
 }
 
-#settings-close { font-size: var(--ui-icon-lg); }
+/* The phone size on desktop too (user request, 2026-11-20): at --ui-icon-lg
+   the × was hard to find there as well. It follows --ui-scale like the rest
+   of the desktop chrome, so the 44px box stays inside the 48px head at every
+   scale. The phone rule below swaps in --tap and --thumb-scale, which never
+   go under 44px. */
+#settings-close {
+  width: calc(44px * var(--ui-scale));
+  height: calc(44px * var(--ui-scale));
+  padding: 0;
+  font-size: calc(32px * var(--ui-scale));
+  /* The box is much wider than the cross in it. Pulled into the panel's
+     padding, the cross stays near the right edge of the content, where the
+     rows end. */
+  margin-right: -10px;
+}
 
 .settings-body {
   display: flex;
@@ -1861,8 +1913,7 @@ html.phone #search-query {
   font-size: max(16px, var(--ui-base));
 }
 
-html.phone #search-case,
-html.phone #search-go {
+html.phone #search-case {
   height: var(--tap);
   min-width: var(--tap);
   font-size: var(--ui-sm);
@@ -1939,12 +1990,7 @@ html.phone #search-close::after {
 html.phone #settings-close {
   width: var(--tap);
   height: var(--tap);
-  padding: 0;
   font-size: calc(32px * var(--thumb-scale));
-  /* The box is much wider than the cross in it. Pulled into the panel's 16px
-     padding, the cross stays near the right edge of the content, where the
-     rows end. */
-  margin-right: -10px;
 }
 
 /* The head must hold that target. --ui-top-h follows --ui-scale down to
