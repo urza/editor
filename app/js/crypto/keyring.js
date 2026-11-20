@@ -34,6 +34,17 @@ const STORE_KEY = "keyring";
 // keyring row's "setting" message drops the keys of a window with a
 // passphrase, and this one is written once per round of re-encryption.
 const REKEY_KEY = "keyring.rekey";
+// A throwaway row for supportsStoredKeys: can IndexedDB keep a CryptoKey here?
+const PROBE_KEY = "keyring.probe";
+
+/** The passphrase did not open the stored keys. Any other unlock error is not this. */
+export class WrongPassphraseError extends Error {
+  /** @param {unknown} cause */
+  constructor(cause) {
+    super("wrong passphrase", { cause });
+    this.name = "WrongPassphraseError";
+  }
+}
 
 // Instances that already follow the other windows' setting writes (§14.2).
 const watching = new WeakSet();
@@ -97,16 +108,29 @@ let storedKeysSupport = null;
 
 /**
  * Both keys of a device without a passphrase need WebCrypto X25519 and
- * Ed25519. A browser that lacks one keeps the passphrase (§27).
+ * Ed25519, the import of an Ed25519 secret (the upgrade of a passphrase
+ * device), and IndexedDB that stores a CryptoKey and gives it back. A
+ * browser that lacks one keeps the passphrase (§27). The last two are
+ * tested for real: a browser can know an algorithm and still refuse one of
+ * these steps (iOS Safari is the one to watch), and a refusal half way
+ * through the upgrade would leave the device locked.
  * @returns {Promise<boolean>}
  */
 export function supportsStoredKeys() {
   storedKeysSupport ??= (async () => {
     try {
-      await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"]);
+      const pair = /** @type {CryptoKeyPair} */ (
+        await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"])
+      );
       await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]);
-      return true;
-    } catch {
+      const signer = await sign.importSigningSecret(sign.generateSigningKey().secret);
+      await sign.sign("vrtti-probe", signer);
+      await putSetting(PROBE_KEY, { identity: pair.privateKey, signer });
+      const back = await getSetting(PROBE_KEY);
+      await deleteSetting(PROBE_KEY);
+      return back?.identity instanceof CryptoKey && back?.signer instanceof CryptoKey;
+    } catch (err) {
+      console.log("[vrtti] stored keys not possible here, the passphrase stays", err);
       return false;
     }
   })();
@@ -348,22 +372,37 @@ export class KeyRing extends EventTarget {
   async unlock(passphrase) {
     const stored = this.stored;
     if (!stored) throw new Error("keyring: not set up");
-    const secret = await unwrapInWorker(stored.wrappedIdentity, passphrase);
-    // A device set up before §21 has no signing key; it gets one now.
-    const signing =
-      stored.wrappedSigning && stored.signKey
-        ? { secret: await unwrapInWorker(stored.wrappedSigning, passphrase), public: stored.signKey }
-        : sign.generateSigningKey();
+    /** @type {string} */
+    let secret;
+    /** @type {{secret: string, public: string}} */
+    let signing;
+    try {
+      secret = await unwrapInWorker(stored.wrappedIdentity, passphrase);
+      // A device set up before §21 has no signing key; it gets one now.
+      signing =
+        stored.wrappedSigning && stored.signKey
+          ? { secret: await unwrapInWorker(stored.wrappedSigning, passphrase), public: stored.signKey }
+          : sign.generateSigningKey();
+    } catch (err) {
+      throw new WrongPassphraseError(err);
+    }
 
     if (stored.v !== 2) {
-      const identityKey = await toNonExtractableKey(secret);
-      if (identityKey && (await supportsStoredKeys())) {
-        const signingKey = await sign.importSigningSecret(signing.secret);
-        await this.save(this.upgraded(stored, { askPassphrase: false, signKey: signing.public, identityKey, signingKey }));
-        this.identity = identityKey;
-        this.signer = signingKey;
-        this.emit("change");
-        return;
+      // The passphrase was right from here on. A step below that this
+      // browser refuses must not read as a wrong passphrase: the device then
+      // keeps its passphrase instead of stored keys.
+      try {
+        const identityKey = await toNonExtractableKey(secret);
+        if (identityKey && (await supportsStoredKeys())) {
+          const signingKey = await sign.importSigningSecret(signing.secret);
+          await this.save(this.upgraded(stored, { askPassphrase: false, signKey: signing.public, identityKey, signingKey }));
+          this.identity = identityKey;
+          this.signer = signingKey;
+          this.emit("change");
+          return;
+        }
+      } catch (err) {
+        console.log("[vrtti] stored keys failed in the upgrade, the passphrase stays", err);
       }
       const wrappedSigning = stored.wrappedSigning ?? (await wrapInWorker(signing.secret, passphrase));
       await this.save(this.upgraded(stored, { askPassphrase: true, signKey: signing.public, wrappedIdentity: stored.wrappedIdentity, wrappedSigning }));
