@@ -76,6 +76,10 @@ const PKCS8_X25519_PREFIX = new Uint8Array([
  * @property {CryptoKey} [signingKey]  Switch off: the Ed25519 key.
  * @property {string} [wrappedIdentity]  Switch on: the age identity, wrapped.
  * @property {string} [wrappedSigning]  Switch on: the Ed25519 secret, wrapped.
+ * @property {string} [readableIdentity]  Switch off on a browser that cannot
+ *   keep a CryptoKey (iOS Safari): the age identity, readable. The user's
+ *   choice, see storeReadable.
+ * @property {string} [readableSigning]  The same for the Ed25519 secret, hex.
  * @property {string[]} recoveryRecipients  The recovery keys this device
  *   encrypts to: the one it made as the first device, or the ones its join
  *   reply carried (architecture.md §27). Never read from the server alone.
@@ -297,6 +301,10 @@ export class KeyRing extends EventTarget {
     if (stored && stored.v === 2 && !stored.askPassphrase && stored.identityKey && stored.signingKey) {
       this.identity = stored.identityKey;
       this.signer = stored.signingKey;
+    } else if (stored && stored.v === 2 && !stored.askPassphrase && stored.readableIdentity && stored.readableSigning) {
+      // age and sign.js take the strings as they are.
+      this.identity = stored.readableIdentity;
+      this.signer = stored.readableSigning;
     }
   }
 
@@ -514,6 +522,56 @@ export class KeyRing extends EventTarget {
       passphrase: opts.passphrase,
       recoveryRecipients: stored.recoveryRecipients,
     });
+  }
+
+  /**
+   * Switch off where the browser cannot keep a CryptoKey (iOS Safari gives
+   * a stored one back unusable): the user chose to keep the SAME keys,
+   * readable, and the wrapped copies go, so the passphrase opens nothing any
+   * more. The same keys: this device stays this device, with no successor,
+   * no change of a space log and no re-encryption. A successor is only for
+   * stored CryptoKeys, which cannot be wrapped or exported.
+   * @param {string} passphrase
+   */
+  async storeReadable(passphrase) {
+    const stored = /** @type {StoredKeyring} */ (this.stored);
+    if (!stored.askPassphrase || !stored.wrappedIdentity || !stored.wrappedSigning) {
+      throw new Error("keyring: this device has no passphrase");
+    }
+    let identity;
+    let signing;
+    try {
+      identity = await unwrapInWorker(stored.wrappedIdentity, passphrase);
+      signing = await unwrapInWorker(stored.wrappedSigning, passphrase);
+    } catch (err) {
+      throw new WrongPassphraseError(err);
+    }
+    const { wrappedIdentity, wrappedSigning, ...rest } = stored;
+    await this.save({ ...rest, askPassphrase: false, readableIdentity: identity, readableSigning: signing });
+    this.identity = identity;
+    this.signer = signing;
+    this.emit("change");
+  }
+
+  /**
+   * The way back from storeReadable: the same keys, wrapped with a new
+   * passphrase, and the readable copies go.
+   * @param {string} passphrase
+   */
+  async protectReadable(passphrase) {
+    const stored = /** @type {StoredKeyring} */ (this.stored);
+    if (!stored.readableIdentity || !stored.readableSigning) throw new Error("keyring: no readable keys");
+    const wrappedIdentity = await wrapInWorker(stored.readableIdentity, passphrase);
+    const wrappedSigning = await wrapInWorker(stored.readableSigning, passphrase);
+    const { readableIdentity, readableSigning, ...rest } = stored;
+    await this.save({ ...rest, askPassphrase: true, wrappedIdentity, wrappedSigning });
+    this.emit("change");
+    this.share();
+  }
+
+  /** Does this device keep its keys readable (storeReadable)? */
+  get hasReadableKeys() {
+    return Boolean(this.stored?.readableIdentity);
   }
 
   /**

@@ -771,10 +771,58 @@ async function start() {
     run: async () => {
       if (!keyring.isSetUp || !keyring.isUnlocked) return false;
       const to = !keyring.askPassphrase;
+      // Readable keys back under a passphrase: the same keys, wrapped. Same
+      // device, nothing to encrypt again (keyring.protectReadable).
+      if (to && keyring.hasReadableKeys) {
+        const typed = await askPassphrase({ title: "Choose a passphrase", confirm: true });
+        if (typed === null) return false;
+        const busy = showBusy("Protecting the key…");
+        try {
+          await keyring.protectReadable(typed);
+          return true;
+        } finally {
+          busy.close();
+        }
+      }
       const problem = to ? null : await storedKeysProblem();
       if (problem) {
-        // The step, so a refusal on a phone says what to look at next.
-        await showNote({ title: "Not possible here", text: "This browser cannot keep a key without a passphrase: " + problem + "." });
+        // A browser that cannot keep a protected key (an iPhone): the user
+        // may keep the same key readable instead (keyring.storeReadable).
+        const choice = await choose({
+          title: "Store the key readable?",
+          options: [
+            {
+              id: "readable",
+              label: "Store it readable",
+              hint:
+                "This browser cannot keep a protected key (" + problem + "). " +
+                "This device keeps its key in its storage, readable, and the passphrase is gone. " +
+                "The phone's own encryption protects the storage while it is locked. " +
+                "Any code that runs on " + location.origin + " can read the key, and a backup of the device holds it.",
+            },
+          ],
+        });
+        if (choice !== "readable") return false;
+        let message = "Type your passphrase one last time.";
+        for (let attempt = 0; attempt < UNLOCK_ATTEMPTS; attempt++) {
+          const typed = await askPassphrase({ title: "Passphrase", message });
+          if (typed === null) return false;
+          const busy = showBusy("Storing the key…");
+          try {
+            await keyring.storeReadable(typed);
+            return true;
+          } catch (err) {
+            console.log("[vrtti] readable keys failed", err);
+            if (/** @type {any} */ (err)?.name !== "WrongPassphraseError") {
+              busy.close();
+              await showNote({ title: "Not changed", text: String(/** @type {any} */ (err)?.message ?? err) });
+              return false;
+            }
+            message = "Wrong passphrase. Try again.";
+          } finally {
+            busy.close();
+          }
+        }
         return false;
       }
       const answer = await choose({
