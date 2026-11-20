@@ -499,9 +499,11 @@ export function mountSidebar(store, folders, sync) {
 
     // The start of the text, the second line of a phone row. loadedText, not
     // textOf: this runs for every row on every keystroke, and textOf would
-    // read every file and decrypt every note to draw a list. So a locked
-    // note and an unread file have no preview, and neither has a note that
-    // is only its title; those rows stay one line. Last in the row: app.css
+    // read every file and decrypt every note to draw a list. The store
+    // decodes encrypted notes in the background (warmPreviews in
+    // model/docs.js) and sends "change" when they are ready. A locked note
+    // and an unread file have no preview, and neither has a note that is
+    // only its title; those rows stay one line. Last in the row: app.css
     // wraps it onto a line of its own.
     const text = store.loadedText(record.id);
     const preview = text === undefined ? "" : previewOf(text, titleText);

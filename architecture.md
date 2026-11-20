@@ -800,8 +800,13 @@ puts every control at the bottom right and makes the list full screen.
 - **A row is two lines.** `makeRow` adds a preview and a time to every row
   in every layout; `app.css` shows them in phone mode only, so a turn of
   the phone redraws nothing. The preview comes from `store.loadedText`,
-  which never reads a file and never decrypts: a locked note, an unread
-  file and a From server stub show the title alone. The store event
+  which never reads a file and never decrypts. Because every note is
+  encrypted, the store decodes the notes of Open and Recent in the
+  background (`warmPreviews` in `model/docs.js`): at load, after an unlock
+  and after each change, one note at a time, and only what is missing.
+  Then it sends one "change" and the list draws the previews. A locked
+  keyring, a note behind the PIN, an unread file and a From server stub
+  show the title alone. The store event
   `lock` removes the previews at once. `model/preview.js` holds the two
   pure functions, with Node tests.
 - **The thumb button is `#new-fab`.** In phone mode a tap runs
