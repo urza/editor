@@ -29,6 +29,11 @@ import * as sign from "./sign.js";
 import { unwrapInWorker, wrapInWorker } from "./unlock.js";
 
 const STORE_KEY = "keyring";
+// The keys of this device before a change of the passphrase switch, and the
+// notes still encrypted for them (architecture.md §27). A row of its own: the
+// keyring row's "setting" message drops the keys of a window with a
+// passphrase, and this one is written once per round of re-encryption.
+const REKEY_KEY = "keyring.rekey";
 
 // Instances that already follow the other windows' setting writes (§14.2).
 const watching = new WeakSet();
@@ -169,6 +174,13 @@ export class KeyRing extends EventTarget {
      * @type {(string | CryptoKey)[]}
      */
     this.previous = [];
+    /**
+     * The ids of the notes and "Titles only" stubs still encrypted for
+     * `previous`. Stored with those keys (REKEY_KEY): an app closed before
+     * the re-encryption ends must still open them at the next start.
+     * @type {Set<string>}
+     */
+    this.rekeyIds = new Set();
     /** @type {KeyringContent | null} The keyring record, for device names. */
     this.content = null;
   }
@@ -204,10 +216,17 @@ export class KeyRing extends EventTarget {
   async load() {
     this.stored = (await getSetting(STORE_KEY)) ?? null;
     this.takeStoredKeys();
+    await this.loadRekey();
     if (!watching.has(this)) {
       watching.add(this);
       // Setup, an upgrade or a successor ran in another window: follow it.
       on("setting", ({ key }) => {
+        if (key === REKEY_KEY) {
+          // A change of the switch in another window: this window's tabs
+          // are its own to encrypt again, and "change" runs that.
+          this.loadRekey().then(() => this.emit("change"));
+          return;
+        }
         if (key !== STORE_KEY) return;
         this.identity = null;
         this.signer = null;
@@ -266,11 +285,14 @@ export class KeyRing extends EventTarget {
     return own ? entryKey(own) : "";
   }
 
-  /** The keyring record, for names only. @param {KeyringContent | null} content */
+  /**
+   * The keyring record, for names only (sync's deviceName reads it). No
+   * "change" event: that event runs the re-encryption of every note, and a
+   * list of names changes nothing about who reads a note.
+   * @param {KeyringContent | null} content
+   */
   setContent(content) {
-    if (JSON.stringify(content) === JSON.stringify(this.content)) return;
     this.content = content;
-    this.emit("change");
   }
 
   /**
@@ -391,6 +413,9 @@ export class KeyRing extends EventTarget {
   async forget() {
     await deleteSetting(STORE_KEY);
     post("setting", { key: STORE_KEY });
+    this.previous = [];
+    this.rekeyIds.clear();
+    await this.saveRekey();
     this.stored = null;
     this.content = null;
     this.identity = null;
@@ -431,18 +456,102 @@ export class KeyRing extends EventTarget {
   }
 
   /**
+   * The successor from its stored row, for a change of the switch that
+   * stopped after the server registered it. A row with a passphrase needs
+   * the one chosen at that first try; a wrong one rejects.
+   * @param {StoredKeyring} stored @param {string} [passphrase]
+   * @returns {Promise<{stored: StoredKeyring, identity: string | CryptoKey, signer: sign.Signer}>}
+   */
+  async restoreSuccessor(stored, passphrase) {
+    if (!stored.askPassphrase) {
+      return {
+        stored,
+        identity: /** @type {CryptoKey} */ (stored.identityKey),
+        signer: /** @type {CryptoKey} */ (stored.signingKey),
+      };
+    }
+    if (!passphrase) throw new Error("keyring: a passphrase is required");
+    const secret = await unwrapInWorker(/** @type {string} */ (stored.wrappedIdentity), passphrase);
+    const signing = await unwrapInWorker(/** @type {string} */ (stored.wrappedSigning), passphrase);
+    return {
+      stored,
+      identity: (await toNonExtractableKey(secret)) ?? secret,
+      signer: (await sign.importSigningSecret(signing).catch(() => null)) ?? signing,
+    };
+  }
+
+  /**
    * Become the successor. The old identity stays in `previous`, so the notes
    * still encrypted for it open until each is encrypted again.
    * @param {{stored: StoredKeyring, identity: string | CryptoKey, signer: sign.Signer}} next
+   * @param {string[]} rekeyIds The notes and stubs encrypted for the old keys.
    */
-  async adopt(next) {
+  async adopt(next, rekeyIds) {
     if (this.identity) this.previous.push(this.identity);
+    for (const id of rekeyIds) this.rekeyIds.add(id);
+    // Before the new row: a start between the two writes then still has
+    // the old key for every note.
+    await this.saveRekey();
     await setDeviceId(next.stored.deviceId);
     await this.save(next.stored);
     this.identity = next.identity;
     this.signer = next.signer;
     this.emit("change");
     if (next.stored.askPassphrase) this.share();
+  }
+
+  /** Is this note or stub still encrypted for the keys before a switch change? @param {string} id */
+  needsRekey(id) {
+    return this.rekeyIds.has(id);
+  }
+
+  /**
+   * These notes are encrypted for the new keys now. `live` is every note
+   * and stub that still exists: an id outside it has nothing left to
+   * encrypt. With no id left, the old keys go.
+   * @param {Iterable<string>} done @param {Set<string>} [live]
+   */
+  async rekeyDone(done, live) {
+    if (!this.rekeyIds.size) return;
+    const before = this.rekeyIds.size;
+    for (const id of done) this.rekeyIds.delete(id);
+    if (live) for (const id of [...this.rekeyIds]) if (!live.has(id)) this.rekeyIds.delete(id);
+    if (this.rekeyIds.size === before) return;
+    if (!this.rekeyIds.size) this.previous = [];
+    await this.saveRekey();
+  }
+
+  async loadRekey() {
+    const row = await getSetting(REKEY_KEY);
+    const ids = Array.isArray(row?.ids) ? row.ids.filter((/** @type {unknown} */ id) => typeof id === "string") : [];
+    this.rekeyIds = new Set(ids);
+    if (!this.rekeyIds.size) {
+      this.previous = [];
+      return;
+    }
+    const stored = Array.isArray(row?.identities) ? row.identities.filter((/** @type {unknown} */ k) => k instanceof CryptoKey) : [];
+    // A string identity (a browser without X25519 in WebCrypto) is never
+    // stored in the clear; it lives in the memory of this window only.
+    const inMemory = this.previous.filter((k) => typeof k === "string");
+    this.previous = [...stored, ...inMemory];
+  }
+
+  /**
+   * The old keys are stored as they are, non-extractable CryptoKeys. After
+   * a change to "ask for a passphrase", this keeps an old key without one
+   * until the last note is encrypted again, because a non-extractable key
+   * cannot be wrapped (architecture.md §27).
+   */
+  async saveRekey() {
+    if (this.rekeyIds.size) {
+      await putSetting(REKEY_KEY, {
+        identities: this.previous.filter((k) => typeof k !== "string"),
+        ids: [...this.rekeyIds],
+      });
+    } else {
+      await deleteSetting(REKEY_KEY);
+    }
+    post("setting", { key: REKEY_KEY });
   }
 
   /** Every identity that may decrypt: this device's, then the ones before a switch change. */

@@ -196,6 +196,16 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
+   * Behind the PIN the row says "Locked note" (§27): the rename box would
+   * start with that, and a blur would save it as the title. So the PIN first.
+   * @param {BufferRecord} record
+   */
+  async function renameAfterPin(record) {
+    if (store.isPinLocked(record.id) && !(await run("pin.unlock"))) return;
+    startRename(store.get(record.id) ?? record);
+  }
+
+  /**
    * The row menu (architecture.md §9). Sync is a per-document server target
    * (§3); with no server configured the item is disabled and says where to set
    * one, rather than claiming to sync into nothing. Encrypt is for a file on
@@ -213,7 +223,7 @@ export function mountSidebar(store, folders, sync) {
       // No item at all where the browser cannot rename a file in place: an
       // entry that silently does nothing is worse than a missing one.
       if (store.canRenameFile(record)) {
-        items.push({ label: "Rename file…", act: () => startRename(record) });
+        items.push({ label: "Rename file…", act: () => renameAfterPin(record) });
       }
       // The inverse of Save to disk (architecture.md §23), and the way out of
       // a file that is gone for good.
@@ -223,7 +233,7 @@ export function mountSidebar(store, folders, sync) {
         act: () => run("file.unlink", record.id),
       });
     } else {
-      items.push({ label: "Rename…", act: () => startRename(record) });
+      items.push({ label: "Rename…", act: () => renameAfterPin(record) });
       if (record.title) {
         items.push({
           label: "Use first line",

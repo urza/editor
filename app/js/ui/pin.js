@@ -139,16 +139,17 @@ export function mountPin({ store, notice }) {
   post("pin-who-is-open", {});
 
   function beat() {
+    // First, before the stamp moves: a phone in the background and a
+    // sleeping laptop stop the timer below, so the five minutes can pass
+    // with no tick at all, and the wake is the first moment to see it.
+    if (Date.now() - lastVisibleAt > HIDDEN_LOCK) lock(true);
     if (document.visibilityState !== "visible") return;
     lastVisibleAt = Date.now();
     post("pin-visible", { at: lastVisibleAt });
   }
   document.addEventListener("visibilitychange", beat);
-  setInterval(() => {
-    beat();
-    // Hidden here, and no window said it was visible for five minutes.
-    if (document.visibilityState !== "visible" && Date.now() - lastVisibleAt > HIDDEN_LOCK) lock(true);
-  }, HEARTBEAT / 2);
+  // beat() locks when no window said it was visible for five minutes.
+  setInterval(beat, HEARTBEAT / 2);
   beat();
 
   /** @returns {Promise<{count: number, until: number}>} */
@@ -162,7 +163,10 @@ export function mountPin({ store, notice }) {
    */
   async function check(title) {
     const stored = await getSetting(HASH_KEY);
-    if (!stored) return true;
+    // The mark syncs and the PIN does not: a note locked on another device
+    // arrives here locked. A device without a PIN gets one first, or the
+    // note would open with no question at all.
+    if (!stored) return choose("A note is locked with a PIN. Choose a PIN for this device");
     let message = "";
     for (;;) {
       const state = await fails();
@@ -184,9 +188,9 @@ export function mountPin({ store, notice }) {
   }
 
   /** A new PIN, typed twice. False when the user walks away. */
-  async function choose() {
+  async function choose(title = "Choose a PIN for this device") {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const first = await askDigits({ title: "Choose a PIN for this device" });
+      const first = await askDigits({ title });
       if (first === null) return false;
       const second = await askDigits({ title: "Type the PIN again" });
       if (second === null) return false;

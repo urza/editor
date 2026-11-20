@@ -747,7 +747,9 @@ async function start() {
         return true;
       } catch (err) {
         console.log("[vrtti] passphrase switch failed", err);
-        statusbar.notice("change failed");
+        busy.close();
+        // The change goes on from where it stopped at the next try.
+        await showNote({ title: "Not changed", text: String(/** @type {any} */ (err)?.message ?? err) });
         return false;
       } finally {
         busy.close();
@@ -1083,9 +1085,14 @@ async function start() {
       const busy = showBusy("Backing up " + space + "…");
       try {
         const notes = [];
-        for (const change of await sync.allNotes(space)) {
-          const read = await store.readForBackup(change);
-          if (read) notes.push({ id: change.docId, ...read });
+        /** @type {{docId: string}[]} */
+        const rows = await sync.allNotes(space);
+        // A note made here and not pushed yet has no server row.
+        const onServer = new Set(rows.map((row) => row.docId));
+        for (const id of store.idsInSpace(space)) if (!onServer.has(id)) rows.push({ docId: id });
+        for (const row of rows) {
+          const read = await store.readForBackup(row);
+          if (read) notes.push({ id: row.docId, ...read });
         }
         const names = fileNames(notes, kind === "age" ? ".md.age" : ".md");
         const files = [];
@@ -1325,7 +1332,13 @@ async function start() {
     folders,
     isBlankBuffer: (id) => {
       const record = store.get(id);
-      return !record || (record.kind !== "file" && !record.enc && !(record.content ?? "").trim());
+      if (!record) return true;
+      if (record.kind === "file") return false;
+      // A synced note is encrypted from its first moment, also when empty
+      // (§27), so its text is the decoded one; undefined (locked, or behind
+      // the PIN) is never blank.
+      const text = store.loadedText(id);
+      return text !== undefined && !text.trim();
     },
   });
   mountResizer();

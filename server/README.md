@@ -200,16 +200,21 @@ A device reads and writes the spaces of which it is a member, and the `keyring` 
   which the caller is not a member.
 - A push, a tombstone and a purge need a membership of the current space of the note
   (else 404). A push to a space of which the caller is not a member is a 403, so a move
-  needs both spaces. A note cannot move into or out of `keyring`.
+  needs both spaces.
+- `keyring` holds one document, `keyring`, and that document lives nowhere else (else
+  400). It has no tombstone. Every device writes this space, a removed one too, and the
+  plain-text check skips it, so any other document there would reach each device as a
+  readable note.
 
 ## Changes
 
-`/api/changes` returns the newest revision of each document with `seq > since`.
+`/api/changes` returns the newest revision of each document whose key is above `since`.
 `since` defaults to 0, `limit` to 200, capped at 500. A document is in the result when
-its newest row is in one of the asked spaces, or when a row after `since` moved it out
-of one of them. In the second case the caller learns where the note went; when it is
-not a member of the new space, the row comes without `content` and without
-`meta.sealed`.
+its newest row is in one of the asked spaces (key: the `seq` of that row), or when a row
+moved it out of one of them (key: the `seq` of the last such move). In the second case
+the caller learns where the note went; when it is not a member of the new space, the
+row comes without `content` and without `meta.sealed`. The `seq` of a returned row is
+its key.
 
 ## Space log
 
@@ -254,7 +259,7 @@ The server migrates the database at start, with no manual step.
 1. A database from before spaces gets the `space` column: existing rows become
    `personal`, and rows whose meta has `"kind": "keyring"` become `keyring`.
 2. A database from before device spaces gets the `prev_space` column, and the old
-   readable fields `title`, `lang` and `langSource` leave the `meta` of each row. The rows
+   readable fields `title`, `lang`, `langSource` and `spellOff` leave the `meta` of each row. The rows
    and their history stay.
 3. The tables `devices`, `members`, `space_log` and `joins`, and the indexes, are created
    when they are missing.
@@ -266,6 +271,7 @@ member: the first device registers with the server token and claims the old spac
 
 `next` is the largest `seq` in the page, or the `since` you sent when the page is empty.
 Call again with `since = next` while `more` is true. The cursor never skips a document:
-every returned row is a document's newest row, so a document left out of the page has
-its newest `seq` above the cursor and appears in a later page. The `spaces` filter
-keeps this true, because it drops whole documents and never an older row.
+the rows are ordered by key, keys are distinct and only grow, so a document left out of
+the page has its key above the cursor and appears in a later page. A document that moved
+away keeps the `seq` of the move as its key: later rows in its new space must not put it
+behind a page of other rows, past the cursor of the next call.

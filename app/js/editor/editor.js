@@ -711,6 +711,16 @@ export function mountEditor(host, store) {
     view.setState(createLockedState(store.isPinLocked(active) ? PIN_TEXT : undefined));
   });
 
+  // The placeholder says "Click to…": a click asks again. The first ask
+  // comes on activation; after a cancel, this is the way back, and on a
+  // phone (the drawer closed) the only one.
+  view.dom.addEventListener("click", () => {
+    const active = store.activeId;
+    if (!active || placeholderId !== active) return;
+    if (store.isPinLocked(active)) askPin(active);
+    else if (store.get(active)?.enc) askUnlock(active);
+  });
+
   // The identity is back. Only a document that is showing the placeholder has
   // anything to do; every other state is still valid.
   store.events.addEventListener("unlock", () => {

@@ -57,6 +57,11 @@ const LOGS_KEY = "sync.logs";
 const INVITES_KEY = "sync.invites";
 // The join this device made with a typed code and waits to hear back on.
 const JOINING_KEY = "sync.joining";
+// A change of the passphrase switch that has not ended (§27): the new keys
+// and token, stored before the server registers them, and the old entry key
+// that leaves the spaces at the end. The server takes one successor per
+// device, so a try that stopped half way must go on with the same keys.
+const SUCCESSOR_KEY = "sync.successor";
 
 // How long an invite is kept: the code lives ten minutes on the server, but a
 // used one waits for this device's next sync, which can be days on a phone.
@@ -328,6 +333,17 @@ export function createSyncClient({ store, keyring }) {
       // up to there.
       if (!listed.has(space) || !isMine(space)) await lose(space);
     }
+    // Notes and stubs from before §27 sit in spaces with no log here: a dev
+    // machine that joined only dev-work still holds its `personal` notes.
+    // Those spaces are lost too. Not while a join waits for its reply, which
+    // can bring them, and not while the space has no member at all: the
+    // first device after the upgrade may still take it over (the question
+    // at start, then one claim after the other).
+    const orphans = joining ? [] : [...store.heldSpaces()].filter((s) => !logs[s] && !known.includes(s));
+    if (orphans.length) {
+      const unclaimed = await listUnclaimed();
+      for (const space of orphans) if (!unclaimed.includes(space)) await lose(space);
+    }
     events.dispatchEvent(new CustomEvent("spaces"));
   }
 
@@ -448,10 +464,15 @@ export function createSyncClient({ store, keyring }) {
     /** @type {Map<string, {key: string, id: string, name: string, me: boolean}>} */
     const devices = new Map();
     const me = keyring.ownKey();
+    const replaced = replacedKeys(spaces);
     for (const space of spaces) {
       for (const key of states[space].known) {
         const parsed = parseEntryKey(key);
-        if (parsed && !devices.has(key)) devices.set(key, { key, id: parsed.id, name: parsed.name, me: key === me });
+        if (!parsed || devices.has(key)) continue;
+        // The keys of a device before a change of its passphrase switch:
+        // the same device under its new key is a row of its own already.
+        if (replaced.has(key) && !spaces.some((s) => states[s].members.includes(key))) continue;
+        devices.set(key, { key, id: parsed.id, name: parsed.name, me: key === me });
       }
     }
     const rows = [...devices.values()].sort((a, b) => Number(b.me) - Number(a.me) || a.name.localeCompare(b.name));
@@ -463,7 +484,37 @@ export function createSyncClient({ store, keyring }) {
     };
   }
 
-  /** The device name for a device id, from the logs. @param {string} id */
+  /**
+   * Entry keys a change of the passphrase switch replaced (§27). The change
+   * leaves one shape in a log: the old key adds the new one, and the new
+   * one later removes the old key. Read from the replayed part of the logs
+   * only, so each entry of the shape is signed.
+   * @param {string[]} spaces @returns {Set<string>}
+   */
+  function replacedKeys(spaces) {
+    const replaced = new Set();
+    for (const space of spaces) {
+      /** @type {Set<string>} "by|device" of each add */
+      const adds = new Set();
+      for (const text of logs[space].log.slice(0, states[space].seq)) {
+        let entry;
+        try {
+          entry = JSON.parse(text);
+        } catch {
+          continue;
+        }
+        if (entry.op === "add") adds.add(entry.by + "|" + entry.device);
+        if (entry.op === "remove" && adds.has(entry.device + "|" + entry.by)) replaced.add(entry.device);
+      }
+    }
+    return replaced;
+  }
+
+  /**
+   * The device name for a device id: from the logs, which are signed, else
+   * from the keyring record (names only, §27), for a device of a space this
+   * device is not in. @param {string} id
+   */
   function deviceName(id) {
     for (const state of Object.values(states)) {
       for (const key of state.known) {
@@ -471,7 +522,7 @@ export function createSyncClient({ store, keyring }) {
         if (parsed?.id === id) return parsed.name;
       }
     }
-    return "";
+    return keyring.content?.devices.find((d) => d.id === id)?.name ?? "";
   }
 
   // ---- Joins (architecture.md §27) ----------------------------------------
@@ -637,35 +688,95 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
+   * @typedef {Object} Successor  A change of the switch that has not ended.
+   * @property {string} from  The device id before the change.
+   * @property {string} oldKey  Its entry key, removed from the spaces at the end.
+   * @property {import("../crypto/keyring.js").StoredKeyring} stored  The new keys.
+   * @property {string} token  The new device token.
+   */
+
+  /**
    * A change of the passphrase switch (§27): new keys under a new device id.
    * While this device holds both, it adds the new device to each of its
-   * spaces, encrypts its notes again, and then removes the old device.
+   * spaces, takes the new keys, encrypts its notes again (keyring.rekeyIds),
+   * and then removes the old device.
+   *
+   * Any step can stop: no network, a closed app. So the new keys and token
+   * are stored before the server hears of them (SUCCESSOR_KEY), and every
+   * step is safe to run twice. Before the new keys take over, the next try
+   * of the switch goes on with them; after, each sync round does
+   * (finishSuccessor).
    * @param {{askPassphrase: boolean, passphrase?: string}} opts
    */
   async function changePassphraseSwitch(opts) {
-    const next = await keyring.makeSuccessor(opts);
+    /** @type {Successor | null} */
+    let pending = (await getSetting(SUCCESSOR_KEY)) ?? null;
+    if (pending && pending.stored.deviceId === keyring.deviceId) {
+      // The change before this one did not end; it ends first.
+      await finishSuccessor();
+      pending = null;
+    }
+    if (pending && pending.from !== keyring.deviceId) pending = null;
+    const resumed = pending !== null;
+    let next;
+    if (pending) {
+      try {
+        next = await keyring.restoreSuccessor(pending.stored, opts.passphrase);
+      } catch {
+        throw new SyncError("a try before this one stopped half way: type the passphrase you chose then");
+      }
+    } else {
+      next = await keyring.makeSuccessor(opts);
+      pending = { from: /** @type {string} */ (keyring.deviceId), oldKey: keyring.ownKey(), stored: next.stored, token: newToken() };
+      await putSetting(SUCCESSOR_KEY, pending);
+    }
     if (isConfigured()) {
-      const token = newToken();
       const res = await request("/api/devices/successor", {
         method: "POST",
-        body: { id: next.stored.deviceId, tokenHash: sha256Hex(token) },
+        body: { id: next.stored.deviceId, tokenHash: sha256Hex(pending.token) },
       });
-      if (!res.ok) throw httpError(res);
-      const own = /** @type {any} */ (next.stored);
+      // 409: the server has a successor of this device. After a try that
+      // stopped, it is this one: the keys were stored before the request.
+      if (!res.ok && !(res.status === 409 && resumed)) throw httpError(res);
+      const own = next.stored;
       const newKey = entryKey({ id: own.deviceId, name: own.deviceName, recipient: own.deviceRecipient, signKey: own.signKey, addedAt: own.createdAt });
-      const oldKey = keyring.ownKey();
-      const spaces = mySpaces();
-      for (const space of spaces) await append(space, { op: "add", device: newKey });
-      await saveConfig({ ...(/** @type {Config} */ (config)), token });
-      await keyring.adopt(next);
-      rebuild();
-      await store.reencryptAll();
-      for (const space of spaces) await append(space, { op: "remove", device: oldKey });
-      void syncNow();
+      for (const space of mySpaces()) {
+        if (!states[space].members.includes(newKey)) await append(space, { op: "add", device: newKey });
+      }
+    }
+    // Every note encrypted now is encrypted for the old keys.
+    await keyring.adopt(next, [...store.encryptedIds()]);
+    rebuild();
+    if (!isConfigured()) {
+      await deleteSetting(SUCCESSOR_KEY);
+      await store.reencryptStale();
       return;
     }
-    await keyring.adopt(next);
-    await store.reencryptAll();
+    await saveConfig({ ...(/** @type {Config} */ (config)), token: pending.token });
+    await store.reencryptStale();
+    // Awaited, so the caller's busy dialog stays until the notes are pushed.
+    // Nothing is lost if the app closes earlier: the next round goes on.
+    await syncNow();
+  }
+
+  /**
+   * The end of a change of the switch, once the new keys took over: the new
+   * token, then the old device leaves each space. Runs in each sync round
+   * until it is done. A change that stopped before the new keys took over
+   * waits for the next try of the switch, which has the passphrase.
+   */
+  async function finishSuccessor() {
+    /** @type {Successor | undefined} */
+    const pending = await getSetting(SUCCESSOR_KEY);
+    if (!pending || pending.stored.deviceId !== keyring.deviceId) return;
+    // The app can close between the new keys and the new token.
+    if (config && config.token !== pending.token) await saveConfig({ ...config, token: pending.token });
+    if (isConfigured()) {
+      for (const space of mySpaces()) {
+        if (states[space].members.includes(pending.oldKey)) await append(space, { op: "remove", device: pending.oldKey });
+      }
+    }
+    await deleteSetting(SUCCESSOR_KEY);
   }
 
   // ---- Pull and push --------------------------------------------------------
@@ -730,9 +841,15 @@ export function createSyncClient({ store, keyring }) {
    * here, so the record pass of the store cannot reach it.
    */
   async function rewrapStubs() {
+    // Stubs of keyring.rekeyIds that need the old keys no more.
+    /** @type {string[]} */
+    const rekeyed = [];
     for (const stub of store.remotes()) {
       if (!stub.enc || !isMine(stub.space)) continue;
-      if ((stub.spaceSeq ?? 0) >= logSeq(stub.space)) continue;
+      // After a change of the switch, every stub: in a space with no other
+      // member, nobody else encrypts it for the new keys.
+      const rekey = keyring.needsRekey(stub.id);
+      if (!rekey && (stub.spaceSeq ?? 0) >= logSeq(stub.space)) continue;
       const res = await request("/api/docs/" + encodeURIComponent(stub.id));
       if (!res.ok) continue;
       const change = await res.json();
@@ -745,7 +862,11 @@ export function createSyncClient({ store, keyring }) {
       });
       // 409: another member was faster, and its row arrives with the pull.
       if (!pushed.ok && pushed.status !== 409) throw httpError(pushed);
+      // Not after a 409: that row may be from before the new device was a
+      // member, and the next round tries again with the old keys still here.
+      if (rekey && pushed.ok) rekeyed.push(stub.id);
     }
+    await keyring.rekeyDone(rekeyed, store.encryptedIds());
   }
 
   /**
@@ -879,6 +1000,7 @@ export function createSyncClient({ store, keyring }) {
         await ensureKeyringSynced();
         await pullLogs();
         await completeJoins();
+        await finishSuccessor();
         for (const space of receivedSpaces()) await pullSpace(space);
         // Recent file notes changed on disk become dirty here, so this
         // round's push carries them (§23). After the pull: a pull writes
