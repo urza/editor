@@ -18,6 +18,12 @@ public static partial class SpaceLog
     /// <summary>The space of the keyring record. Each registered device reads and writes it.</summary>
     public const string Keyring = "keyring";
 
+    /// <summary>
+    /// The one document of the keyring space. Same name as the space, as in the client
+    /// (KEYRING_ID in app/js/model/docs.js).
+    /// </summary>
+    public const string KeyringDoc = "keyring";
+
     public const string BadSpaceName = "space must be 1-32 letters, digits, - or _";
 
     // A space name goes into URLs, settings keys and the sidebar, so it stays a plain

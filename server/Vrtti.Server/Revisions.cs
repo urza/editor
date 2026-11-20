@@ -11,24 +11,26 @@ public static class Revisions
 
     /// <summary>The newest revision of each document of <paramref name="spaces"/> with a row after <paramref name="since"/>.</summary>
     /// <remarks>
-    /// Paging: the caller asks for one row more than the page size to learn whether more
-    /// rows wait, and the next cursor is the largest seq in the page.
     /// <para>
-    /// That cursor never skips a document. The rows are ordered by seq and every returned
-    /// row is a document's newest row, so a document left out of the page has its newest
-    /// row at a seq above every seq in the page, therefore above the cursor. The next call
-    /// with <c>since = next</c> finds it again. A document inside the page cannot come back
-    /// unless it gets a new row, and that row has a seq above the cursor as well.
+    /// A document is in the result when its newest row is in one of the spaces, or when a
+    /// row moved it out of one of them (<c>prev_space</c>). The second case tells a device of
+    /// the old space that the document left; without it the device never hears of the move
+    /// (architecture.md section 27). The caller hides the content of a row whose space it
+    /// may not read.
     /// </para>
     /// <para>
-    /// A document is in the result when its newest row is in one of the spaces, or when it
-    /// has a row after <c>since</c> that moved it out of one of them (<c>prev_space</c>).
-    /// The second case tells a device of the old space that the document left; without it
-    /// the device never hears of the move (architecture.md section 27). The test is on any
-    /// row after <c>since</c> and not on the newest row, so a document that moved twice
-    /// still reaches its first space. The paging argument above still holds, because the
-    /// filter only drops whole documents and every row it keeps is still a newest row.
-    /// The caller hides the content of a row whose space it may not read.
+    /// Each document has a key: the seq of its newest row when that row is in the spaces,
+    /// else the seq of its last row that moved it out of them. The rows are filtered and
+    /// ordered by the key, and the key is the <c>Seq</c> the caller gets.
+    /// </para>
+    /// <para>
+    /// Paging: the caller asks for one row more than the page size to learn whether more
+    /// rows wait, and the next cursor is the largest key in the page. That cursor never
+    /// skips a document. Keys are distinct (each is the seq of a row of its own document)
+    /// and only grow, so a document left out of the page has a key above the cursor, and
+    /// the next call finds it again. The newest row's seq is no key for a document that
+    /// moved away: later rows in its new space would put it after a page of other rows,
+    /// and the next page would then test the move against a cursor that is past it.
     /// </para>
     /// </remarks>
     public static List<Change> Changes(
@@ -46,15 +48,18 @@ public static class Revisions
         using var cmd = Db.Command(
             conn,
             $"""
-             SELECT {Columns}
-             FROM revisions r
-             WHERE r.seq > $since
-               AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id)
-               AND (r.space IN ({list})
-                    OR EXISTS (SELECT 1 FROM revisions r3
-                               WHERE r3.doc_id = r.doc_id AND r3.seq > $since
-                                 AND r3.prev_space IN ({list})))
-             ORDER BY r.seq
+             SELECT doc_id, rev, k AS seq, kind, content, meta, device_id, client_time, server_time, space
+             FROM (SELECT r.*,
+                          CASE WHEN r.space IN ({list}) THEN r.seq
+                               ELSE (SELECT MAX(r3.seq) FROM revisions r3
+                                     WHERE r3.doc_id = r.doc_id AND r3.prev_space IN ({list}))
+                          END AS k
+                   FROM revisions r
+                   -- A key is never above the newest seq, so this narrows on the index first.
+                   WHERE r.seq > $since
+                     AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id))
+             WHERE k > $since
+             ORDER BY k
              LIMIT $limit
              """,
             [.. args]);

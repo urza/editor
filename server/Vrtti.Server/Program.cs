@@ -204,6 +204,19 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
         return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
     }
 
+    // The keyring space skips the plain-text check and every registered device writes it,
+    // removed devices too. So it holds exactly one document, the keyring record, and never
+    // a tombstone: any other document there would reach each device as a readable note.
+    if ((id == SpaceLog.KeyringDoc) != (space == SpaceLog.Keyring))
+    {
+        return Results.BadRequest(new ErrorResponse("only the keyring document lives in keyring"));
+    }
+
+    if (space == SpaceLog.Keyring && request.Kind != "text")
+    {
+        return Results.BadRequest(new ErrorResponse("the keyring document cannot be removed"));
+    }
+
     if (space != SpaceLog.Keyring && Sealed.Check(request.Kind, request.Content, request.Meta) is { } refused)
     {
         return Results.BadRequest(new ErrorResponse(refused));
@@ -232,13 +245,6 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
     if (!readable.Contains(space))
     {
         return Results.Json(new ErrorResponse($"not a member of {space}"), statusCode: 403);
-    }
-
-    // The keyring space skips the plain-text check and every device reads it, so a note
-    // that moved in would be open to all devices.
-    if (current is not null && (current.Space == SpaceLog.Keyring) != (space == SpaceLog.Keyring))
-    {
-        return Results.BadRequest(new ErrorResponse("a document cannot move into or out of keyring"));
     }
 
     var currentRev = current?.Rev ?? 0;

@@ -2320,6 +2320,11 @@ export function createDocStore({
     // device list. No device writes one; it is dropped, not opened as a note.
     const isKeyring = id === KEYRING_ID;
     if (!isKeyring && meta.kind === "keyring") return;
+    // The same rule for the space. Every device writes `keyring`, a removed
+    // one too, and the server skips its plain-text check there (§27), so a
+    // note in it would open as a readable tab on each device. The server
+    // refuses such a row; this drops one from a server that did not.
+    if ((space === KEYRING_SPACE) !== isKeyring) return;
 
     // An unknown document outside an Open as tab space never becomes a
     // record (§25). Decided here, before routing: the stubs belong to the

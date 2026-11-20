@@ -60,9 +60,9 @@ public class AccessTests
         var (app, phone, dev) = await Start();
         using var _ = app;
 
-        using var push = await Push(phone.Http, "keys", "keyring", content: "{\"v\":1}", meta: new { kind = "keyring" });
+        using var push = await Push(phone.Http, "keyring", "keyring", content: "{\"v\":1}", meta: new { kind = "keyring" });
         Assert.Equal(HttpStatusCode.Created, push.StatusCode);
-        using var devPush = await Push(dev.Http, "keys", "keyring", content: "{\"v\":2}", meta: new { kind = "keyring" });
+        using var devPush = await Push(dev.Http, "keyring", "keyring", content: "{\"v\":2}", meta: new { kind = "keyring" });
         Assert.Equal(HttpStatusCode.Created, devPush.StatusCode);
 
         var changes = await dev.Http.GetFromJsonAsync<ChangesResponse>("/api/changes");
@@ -72,6 +72,16 @@ public class AccessTests
         await Push(phone.Http, "note", "personal");
         using var intoKeyring = await Push(phone.Http, "note", "keyring", content: "plain");
         Assert.Equal(HttpStatusCode.BadRequest, intoKeyring.StatusCode);
+
+        // Nor can a new document: a dev device would put a plain note on each device.
+        using var injected = await Push(dev.Http, "fake", "keyring", content: "plain", meta: new { kind = "scratch" });
+        Assert.Equal(HttpStatusCode.BadRequest, injected.StatusCode);
+
+        // The keyring record stays in keyring, and no device removes it.
+        using var outOfKeyring = await Push(phone.Http, "keyring", "personal");
+        Assert.Equal(HttpStatusCode.BadRequest, outOfKeyring.StatusCode);
+        using var tombstone = await Push(dev.Http, "keyring", "keyring", kind: "deleted", content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, tombstone.StatusCode);
     }
 
     [Theory]
@@ -149,6 +159,44 @@ public class AccessTests
         // A later pull from dev does not see the note again.
         var later = await dev.Http.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={after.Next}");
         Assert.Empty(later!.Changes);
+    }
+
+    [Fact]
+    public async Task A_move_is_not_lost_across_pages_when_the_note_changes_later()
+    {
+        var (app, phone, dev) = await Start();
+        using var _ = app;
+        await Push(dev.Http, "lent", "dev-work", baseRev: 0, meta: new { @sealed = Age });
+        var start = await dev.Http.GetFromJsonAsync<ChangesResponse>("/api/changes");
+
+        // The move, then a page of other rows in dev-work, then an edit in personal.
+        using var moved = await Push(phone.Http, "lent", "personal", baseRev: 1, meta: new { @sealed = Age });
+        var moveSeq = (await moved.Content.ReadFromJsonAsync<PushResponse>())!.Seq;
+        for (var i = 0; i < 3; i++)
+        {
+            await Push(phone.Http, $"n{i}", "dev-work", baseRev: 0, meta: new { @sealed = Age });
+        }
+
+        await Push(phone.Http, "lent", "personal", baseRev: 2, meta: new { @sealed = Age });
+
+        var seen = new List<Change>();
+        var since = start!.Next;
+        while (true)
+        {
+            var page = await dev.Http.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={since}&limit=2");
+            seen.AddRange(page!.Changes);
+            since = page.Next;
+            if (!page.More)
+            {
+                break;
+            }
+        }
+
+        // The move comes first, at the seq of the move, and only once.
+        Assert.Equal(["lent", "n0", "n1", "n2"], seen.Select(c => c.DocId));
+        Assert.Equal(moveSeq, seen[0].Seq);
+        Assert.Equal("personal", seen[0].Space);
+        Assert.Null(seen[0].Content);
     }
 
     [Fact]
