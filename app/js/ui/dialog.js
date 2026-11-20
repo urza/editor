@@ -312,72 +312,6 @@ export function choose(opts) {
 }
 
 /**
- * Tick any of a list: the spaces a new device gets (architecture.md §27).
- * @param {{title?: string, hint?: string,
- *          options: {id: string, label: string, checked?: boolean}[]}} opts
- * @returns {Promise<string[] | null>} The ticked ids, or null when cancelled.
- */
-export function chooseMany(opts) {
-  const { dialog, form, body, actions } = shell(opts.title ?? "Choose");
-  /** @type {HTMLInputElement[]} */
-  const boxes = [];
-  for (const option of opts.options) {
-    const wrap = document.createElement("label");
-    wrap.className = "dialog-check";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = option.id;
-    box.checked = Boolean(option.checked);
-    const text = document.createElement("span");
-    text.textContent = option.label;
-    wrap.append(box, text);
-    body.appendChild(wrap);
-    boxes.push(box);
-  }
-  if (opts.hint) {
-    const hint = document.createElement("p");
-    hint.className = "settings-hint";
-    hint.textContent = opts.hint;
-    body.appendChild(hint);
-  }
-  const error = errorLine(body);
-  actions.append(cancelButton(dialog), button("OK", "ok", true));
-  form.addEventListener("submit", (event) => {
-    if (!boxes.some((b) => b.checked)) {
-      event.preventDefault();
-      error.textContent = "Tick at least one.";
-      error.hidden = false;
-    }
-  });
-  const read = () => boxes.filter((b) => b.checked).map((b) => b.value);
-  return openModal(dialog, (value) => (value === "ok" ? read() : null));
-}
-
-/**
- * A join code, large, for the user to type on the other device. Unlike
- * showSecret it closes on Escape: the code is worth nothing once this
- * device has answered the join, and a new one is one click away.
- * @param {{title: string, code: string, note?: string}} opts
- * @returns {Promise<void>}
- */
-export function showCode(opts) {
-  const { dialog, body, actions } = shell(opts.title);
-  const code = document.createElement("pre");
-  code.className = "dialog-secret dialog-code";
-  code.tabIndex = 0;
-  code.textContent = opts.code;
-  body.appendChild(code);
-  if (opts.note) {
-    const note = document.createElement("p");
-    note.className = "settings-hint";
-    note.textContent = opts.note;
-    body.appendChild(note);
-  }
-  actions.append(button("Done", "ok", true));
-  return openModal(dialog, () => undefined);
-}
-
-/**
  * One paragraph and an OK button: for a step that ends on another device,
  * where nothing else on this screen would say that it is done.
  * @param {{title: string, text: string}} opts
@@ -421,4 +355,186 @@ export function showBusy(message) {
       if (returnFocus instanceof HTMLElement) returnFocus.focus();
     },
   };
+}
+
+const SPACE_MODES = [
+  { value: "list", label: "Titles only" },
+  { value: "tab", label: "Open as tabs" },
+];
+
+/**
+ * The spaces of an invite, each with its mode (§27), and the name of the new
+ * device. One form for both ends: the device that invites ticks the spaces
+ * (`tickable`), the new device only sees them and may change a mode, because
+ * the membership is the inviting device's choice and the mode is its own.
+ *
+ * @param {{title: string, hint?: string, confirm: string,
+ *          facts?: {label: string, value: string}[],
+ *          name?: {value: string, placeholder?: string, hint?: string} | null,
+ *          tickable?: boolean,
+ *          spaces: {id: string, mode: "tab" | "list", checked?: boolean}[]}} opts
+ *   `facts` are read-only lines above the form (the server). `name` null
+ *   hides the name field: a device that is set up has its name already.
+ * @returns {Promise<{name: string, spaces: Record<string, "tab" | "list">} | null>}
+ */
+export function askInvite(opts) {
+  const { dialog, form, body, actions } = shell(opts.title);
+  for (const fact of opts.facts ?? []) {
+    const line = document.createElement("p");
+    line.className = "settings-hint";
+    line.textContent = fact.label + ": " + fact.value;
+    body.appendChild(line);
+  }
+  /** @type {HTMLInputElement | null} */
+  let nameInput = null;
+  if (opts.name) {
+    nameInput = field(body, "Name of the new device", "text", opts.name.value);
+    if (opts.name.placeholder) nameInput.placeholder = opts.name.placeholder;
+    if (opts.name.hint) {
+      const hint = document.createElement("p");
+      hint.className = "settings-hint";
+      hint.textContent = opts.name.hint;
+      body.appendChild(hint);
+    }
+  }
+  /** @type {{id: string, box: HTMLInputElement | null, select: HTMLSelectElement}[]} */
+  const rows = [];
+  for (const space of opts.spaces) {
+    const row = document.createElement("div");
+    row.className = "dialog-space";
+    const label = document.createElement("label");
+    label.className = "dialog-check";
+    /** @type {HTMLInputElement | null} */
+    let box = null;
+    if (opts.tickable) {
+      box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = Boolean(space.checked);
+      label.appendChild(box);
+    }
+    const text = document.createElement("span");
+    text.textContent = space.id;
+    label.appendChild(text);
+    const select = document.createElement("select");
+    select.className = "settings-select";
+    select.setAttribute("aria-label", "Mode of " + space.id);
+    for (const mode of SPACE_MODES) {
+      const el = document.createElement("option");
+      el.value = mode.value;
+      el.textContent = mode.label;
+      select.appendChild(el);
+    }
+    select.value = space.mode;
+    if (box) {
+      const follow = () => (select.disabled = !(/** @type {HTMLInputElement} */ (box).checked));
+      box.addEventListener("change", follow);
+      follow();
+    }
+    row.append(label, select);
+    body.appendChild(row);
+    rows.push({ id: space.id, box, select });
+  }
+  if (opts.hint) {
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = opts.hint;
+    body.appendChild(hint);
+  }
+  const error = errorLine(body);
+  actions.append(cancelButton(dialog), button(opts.confirm, "ok", true));
+  const picked = () => rows.filter((r) => !r.box || r.box.checked);
+  form.addEventListener("submit", (event) => {
+    if (opts.tickable && !picked().length) {
+      event.preventDefault();
+      error.textContent = "Tick at least one space.";
+      error.hidden = false;
+    }
+  });
+  const read = () => ({
+    name: nameInput ? nameInput.value.trim() : "",
+    spaces: Object.fromEntries(picked().map((r) => [r.id, /** @type {"tab" | "list"} */ (r.select.value)])),
+  });
+  return openModal(dialog, (value) => (value === "ok" ? read() : null));
+}
+
+/**
+ * The invite for a new device, with Copy, its time left, and a live line that
+ * says when the new device joined. While the dialog is open it calls `check`
+ * every few seconds: the inviting device finishes the join at a sync, and the
+ * user waits here for exactly that. Escape closes it; the invite stays valid,
+ * and the next regular sync still finishes the join.
+ *
+ * @param {{title: string, text: string, note?: string, expiresAt: number,
+ *          check: () => Promise<boolean>, joined: string}} opts
+ *   `check` resolves true once the new device is in.
+ * @returns {Promise<void>}
+ */
+export function showInvite(opts) {
+  const { dialog, body, actions } = shell(opts.title);
+  const text = document.createElement("pre");
+  text.className = "dialog-secret";
+  text.tabIndex = 0;
+  text.textContent = opts.text;
+  body.appendChild(text);
+  if (opts.note) {
+    const note = document.createElement("p");
+    note.className = "settings-hint";
+    note.textContent = opts.note;
+    body.appendChild(note);
+  }
+  const status = document.createElement("p");
+  status.className = "settings-hint";
+  status.setAttribute("aria-live", "polite");
+  body.appendChild(status);
+
+  const copy = document.createElement("button");
+  copy.type = "button"; // not a submit: copying must not close the dialog
+  copy.className = "settings-button";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(opts.text);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select and copy";
+    }
+  });
+  actions.append(copy, button("Done", "ok", true));
+
+  let done = false;
+  let checking = false;
+  const tick = () => {
+    if (done) return;
+    const left = Math.max(0, Math.round((opts.expiresAt - Date.now()) / 1000));
+    status.textContent = left
+      ? "Waiting for the new device. Works once, for " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") + " more."
+      : "The invite expired. Make a new one.";
+  };
+  const poll = async () => {
+    // A minute past the code's end the regular sync takes over: a join that
+    // started just in time still finishes, without a sync every 3 seconds
+    // for a dialog left open.
+    if (Date.now() > opts.expiresAt + 60 * 1000) clearInterval(poller);
+    if (done || checking) return;
+    checking = true;
+    try {
+      if (await opts.check()) {
+        done = true;
+        status.textContent = opts.joined;
+        status.classList.add("dialog-ok");
+      }
+    } catch (err) {
+      console.log("[vrtti] invite check failed", err);
+    } finally {
+      checking = false;
+    }
+  };
+  tick();
+  const clock = setInterval(tick, 1000);
+  const poller = setInterval(poll, 3000);
+  dialog.addEventListener("close", () => {
+    clearInterval(clock);
+    clearInterval(poller);
+  });
+  return openModal(dialog, () => undefined);
 }

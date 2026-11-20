@@ -192,3 +192,22 @@ test("an entry key parses, and a bad one does not", () => {
   assert.equal(spaces.parseEntryKey("vrtti-device\nx"), null);
   assert.equal(spaces.parseEntryKey(dev.key.replace("age1", "xyz1")), null);
 });
+
+test("an invite survives the round trip, and a bad one is null", () => {
+  const invite = { url: "https://sync.example.com", code: "K7MQ2XWD4P", name: "Phone", spaces: { personal: "list", work: "tab" } };
+  const text = spaces.encodeInvite(invite);
+  assert.match(text, /^vrtti-invite:[A-Za-z0-9_-]+$/);
+  assert.deepEqual(spaces.decodeInvite(text), invite);
+  // A chat wraps it in quotes and breaks the line.
+  assert.deepEqual(spaces.decodeInvite('"' + text.slice(0, 30) + "\n  " + text.slice(30) + '"'), invite);
+  // A name with a line break would split the entry key: it becomes one line.
+  const multi = spaces.decodeInvite(spaces.encodeInvite({ ...invite, name: "My\nPhone" }));
+  assert.equal(multi?.name, "My Phone");
+  // An unknown mode drops that space only.
+  const odd = spaces.decodeInvite(spaces.encodeInvite({ ...invite, spaces: { personal: "list", work: /** @type {any} */ ("all") } }));
+  assert.deepEqual(odd?.spaces, { personal: "list" });
+  assert.equal(spaces.decodeInvite("K7MQ2-XWD4P"), null);
+  assert.equal(spaces.decodeInvite("vrtti-invite:!!!"), null);
+  assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, url: "javascript:alert(1)" })), null);
+  assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, code: "short" })), null);
+});

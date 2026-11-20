@@ -244,6 +244,60 @@ export function normalizeCode(typed) {
   return code.length === CODE_LENGTH && [...code].every((c) => CROCKFORD.includes(c)) ? code : "";
 }
 
+const INVITE_PREFIX = "vrtti-invite:";
+
+/**
+ * @typedef {{url: string, code: string, name: string, spaces: Record<string, "tab" | "list">}} Invite
+ *   One paste for a new device (§27): the server, the join code, the name the
+ *   new device starts with, and the mode each space opens in there.
+ */
+
+/**
+ * The invite as one line: a prefix and base64url JSON. base64url, so the line
+ * survives chats, mail and a URL hash without escapes. It holds the join
+ * code, so it is a secret as long as the code is.
+ * @param {Invite} invite
+ */
+export function encodeInvite(invite) {
+  const json = JSON.stringify({ v: 1, u: invite.url, c: invite.code, n: invite.name, s: invite.spaces });
+  const bytes = encoder.encode(json);
+  const b64 = btoa(String.fromCharCode(...bytes));
+  return INVITE_PREFIX + b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * The invite in a pasted text, or null when the text holds none. Lenient
+ * about what surrounds it (a chat adds quotes, spaces and line breaks), strict
+ * about the content: a bad URL or code makes the whole invite null, and a
+ * space with an unknown mode is dropped. The space names are checked where
+ * they are used, against the spaces the join reply gives.
+ * @param {string} text
+ * @returns {Invite | null}
+ */
+export function decodeInvite(text) {
+  const match = /vrtti-invite:([A-Za-z0-9_-]+)/.exec(String(text || "").replace(/\s+/g, ""));
+  if (!match) return null;
+  let data;
+  try {
+    const b64 = match[1].replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    data = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+  if (!data || data.v !== 1 || typeof data.u !== "string" || !/^https?:\/\/\S+$/.test(data.u)) return null;
+  const code = normalizeCode(data.c);
+  if (!code) return null;
+  /** @type {Record<string, "tab" | "list">} */
+  const spaces = {};
+  for (const [space, mode] of Object.entries(data.s && typeof data.s === "object" ? data.s : {})) {
+    if (mode === "tab" || mode === "list") spaces[space] = mode;
+  }
+  // One line: the name becomes a line of the device's entry key (keyring.js).
+  const name = typeof data.n === "string" ? data.n.replace(/\s+/g, " ").trim().slice(0, 64) : "";
+  return { url: data.u, code, name, spaces };
+}
+
 /** The public part. @param {string} code */
 export function slotOf(code) {
   return code.slice(0, 3);

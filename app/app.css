@@ -1585,11 +1585,7 @@ body {
 
 .dialog-busy { margin: 0; color: var(--st-sidebar-label); }
 
-/* A join code (architecture.md §27): typed by hand on another device, so it
-   is large and spaced. */
-.dialog-code { font-size: 1.6em; letter-spacing: 0.12em; text-align: center; }
-
-/* One checkbox per space in "Add a device". */
+/* One checkbox per space in "Invite a device" (dialog.js askInvite). */
 .dialog-check {
   display: flex;
   align-items: center;
@@ -2176,3 +2172,15 @@ html.phone .settings-row[data-key="list-rows"] { display: flex; }
 html.phone .settings-row[data-key="spell-cs"],
 html.phone .settings-row[data-key="spell-en"] { display: flex; }
 html.phone .settings-row[data-key="sidebar-new"] { display: none; }
+
+/* One row per space in an invite (dialog.js askInvite): the name and its
+   tick on the left, the mode on the right. Wraps on a narrow phone. */
+.dialog-space {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.dialog-ok { color: #99C794; }

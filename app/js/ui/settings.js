@@ -394,10 +394,13 @@ const SECTIONS = [
         key: "sync-connect",
         label: "Sync with a server",
         hint:
-          "The first device types the server URL and the VRTTI_TOKEN. Every other device joins with a code " +
-          "from “Add a device” in Settings › Devices on a device that syncs.",
+          "The first device types the server URL and the VRTTI_TOKEN. Every other device pastes an invite " +
+          "from “Invite a device” in Settings › Devices on a device that syncs.",
         button: "connect",
-        visible: () => Boolean(keyring?.isSetUp && !sync?.isConfigured),
+        // Shown before device setup too: a new device looks for sync here, not
+        // in Settings › Devices. The connect flow makes the keys when the
+        // device has none (main.js connectDevice).
+        visible: () => !sync?.isConfigured,
         act: () => run("device.connect"),
       },
       {
@@ -552,9 +555,11 @@ const SECTIONS = [
       {
         type: "action",
         key: "device-invite",
-        label: "Add a device",
-        hint: "You tick the spaces it gets, and this device shows a code. The new device types the server URL and the code.",
-        button: "add",
+        label: "Invite a device",
+        hint:
+          "You tick the spaces it gets and how it opens them. This device shows an invite, and the new device " +
+          "pastes it in Settings › Sync.",
+        button: "invite",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("device.invite"),
       },
