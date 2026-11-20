@@ -3355,6 +3355,19 @@ recovery recipients, under `HMAC(scrypt(code, "vrtti-join-reply"), reply)`.
 The new device checks the MAC with the typed code and only then pins the
 creators. The member keeps the code in `sync.invites` until it answered.
 
+**Invite (2026-11-20).** "Invite a device" wraps the code in one line to
+paste: `vrtti-invite:` and base64url JSON `{v: 1, u: url, c: code, n: name,
+s: {space: "tab" | "list"}}` (`encodeInvite`, `decodeInvite`). The protocol
+above does not change; the invite only saves typing. The name pre-fills the
+new device's setup, and it can still change it there, because a name cannot
+change after setup (it is a line of the entry key). The modes default to
+Titles only, and the new device can change them. They wait in `sync.joining`
+and go into `sync.spaces` when the reply arrives, before the first pull, so a
+Titles only space never opens its notes as tabs. While the invite dialog is
+open, the member syncs every 3 seconds, so the join ends while the user
+watches. The invite holds the code, so it is a secret for the code's ten
+minutes. The URL and the code still work typed by hand.
+
 ### Notes (`model/docs.js`)
 
 - `enc.preset` is `space` for every synced note, with `spaceSeq`, the log

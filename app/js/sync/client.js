@@ -160,7 +160,7 @@ export function createSyncClient({ store, keyring }) {
   let serverSpaces = [];
   /** @type {Invite[]} */
   let invites = [];
-  /** @type {{slot: string, code: string} | null} */
+  /** @type {{slot: string, code: string, modes?: Record<string, "tab" | "list">} | null} */
   let joining = null;
   /** @type {boolean | undefined} An explicit choice; undefined means "platform". */
   let defaultOn;
@@ -547,9 +547,25 @@ export function createSyncClient({ store, keyring }) {
       if (!res.ok) throw httpError(res);
       invites = [...invites.filter((i) => Date.now() - i.at < INVITE_KEEP), { slot, code, spaces, at: Date.now() }];
       await putSetting(INVITES_KEY, invites);
+      // The leader answers the join, and it may be another window: it has to
+      // re-read the invites, or it never knows this code.
+      post("setting", { key: INVITES_KEY });
       return formatCode(code);
     }
     throw new SyncError("no free code, try again");
+  }
+
+  /**
+   * Whether a code from invite() still waits for its device. Read from the
+   * stored setting, not from memory: the leader that answers the join can be
+   * another window.
+   * @param {string} formatted The code as invite() returned it.
+   */
+  async function inviteOpen(formatted) {
+    const slot = slotOf(normalizeCode(formatted));
+    /** @type {{slot: string}[]} */
+    const stored = (await getSetting(INVITES_KEY)) ?? [];
+    return stored.some((i) => i.slot === slot);
   }
 
   /**
@@ -596,9 +612,12 @@ export function createSyncClient({ store, keyring }) {
   /**
    * The new device's half: type the server URL and the code. The device
    * registers with its own token; its memberships arrive with the reply.
+   * `spaceModes` comes from an invite: the mode each space opens in here. It
+   * waits in the joining record, because a mode needs the membership first.
    * @param {string} url @param {string} typed
+   * @param {Record<string, "tab" | "list">} [spaceModes]
    */
-  async function redeem(url, typed) {
+  async function redeem(url, typed, spaceModes = {}) {
     const code = normalizeCode(typed);
     if (!code) throw new SyncError("that is not a code: ten letters and digits");
     const entry = keyring.ownKey();
@@ -627,7 +646,7 @@ export function createSyncClient({ store, keyring }) {
     if (res.status === 404) throw new SyncError("the code is unknown or expired", 404);
     if (res.status === 409) throw new SyncError("this device is registered already", 409);
     if (!res.ok) throw httpError(res);
-    joining = { slot: slotOf(code), code };
+    joining = { slot: slotOf(code), code, modes: spaceModes };
     await putSetting(JOINING_KEY, joining);
     await saveConfig({ url: base, token, v: 2 });
     void syncNow();
@@ -655,6 +674,15 @@ export function createSyncClient({ store, keyring }) {
       }
     }
     await putSetting(CURSORS_KEY, { ...cursors });
+    // The invite's modes, before the first pull of these spaces: a space set
+    // to Titles only must never open its notes as tabs first.
+    const suggested = joining.modes ?? {};
+    const given = Object.keys(parsed.creators ?? {}).filter((space) => isValidSpace(space) && Object.hasOwn(suggested, space));
+    if (given.length) {
+      for (const space of given) modes[space] = suggested[space];
+      await putSetting(SPACES_KEY, { ...modes });
+      post("setting", { key: SPACES_KEY });
+    }
     await keyring.addRecovery(Array.isArray(parsed.recovery) ? parsed.recovery : []);
     joining = null;
     await deleteSetting(JOINING_KEY);
@@ -1328,7 +1356,7 @@ export function createSyncClient({ store, keyring }) {
   // picks up a new server, default, mode or log without a reload, and a window
   // that does not run the schedule still answers modeOf() and defaultSpace().
   on("setting", ({ key }) => {
-    if (![CONFIG_KEY, DEFAULT_ON_KEY, SPACES_KEY, DEFAULT_SPACE_KEY, LOGS_KEY].includes(key)) return;
+    if (![CONFIG_KEY, DEFAULT_ON_KEY, SPACES_KEY, DEFAULT_SPACE_KEY, LOGS_KEY, INVITES_KEY].includes(key)) return;
     reloadSettings().catch((err) => console.log("[vrtti] sync settings reload failed", err));
   });
 
@@ -1398,6 +1426,7 @@ export function createSyncClient({ store, keyring }) {
     deviceName,
     // Joins and registration (§27).
     invite,
+    inviteOpen,
     redeem,
     registerFirst,
     changePassphraseSwitch,

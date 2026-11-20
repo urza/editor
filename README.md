@@ -135,7 +135,7 @@ The text in the note keeps the normal emoji characters.
 - Each synced note is encrypted for the devices of its space and for your recovery key. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage). The server refuses plain text and holds no readable title.
 - Each device has its own key. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
 - The first device shows a recovery key one time. Keep it offline, on paper or in a password manager.
-- A new device joins with a code: **Add a device** on a device you use shows it, and the new device types the server URL and the code. The server cannot add a reader: the member list of a space is a log of entries that your devices sign.
+- A new device joins with an invite: **Invite a device** on a device you use shows it, and the new device pastes it in Settings › Sync. The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The URL and the code also work typed by hand. The server cannot add a reader: the member list of a space is a log of entries that your devices sign.
 - A file on disk can become `name.age`, and the `age` command line tool can decrypt it. The app is never the only way to read your notes.
 - **Lock with PIN** in a note's menu keeps a note off the screen until the 4-digit PIN of the device. It is a guard for the screen, not encryption.
 
@@ -205,7 +205,7 @@ docker run -d --name vrtti --restart unless-stopped \
 
 Put a reverse proxy with HTTPS in front of it. On your first device, use
 **Settings › Sync › Sync with a server**, choose "First device", and type the
-URL and the token. Every other device joins with a code from **Add a device**
+URL and the token. Every other device pastes an invite from **Invite a device**
 on the first one. [server/README.md](server/README.md) lists the API and all
 options.
 
@@ -218,8 +218,8 @@ devices do not work together; update all of them.
    choose "First device on this server" and type the new token. The phone
    takes over the spaces that exist on the server, encrypts their notes and
    removes the readable old versions.
-3. On the phone, use **Add a device** for each other device, with its spaces.
-   Each one joins with its code.
+3. On the phone, use **Invite a device** for each other device, with its
+   spaces. Each one joins with its invite.
 
 What the server still sees: note ids, space names, sizes, times, which device
 made each change, and the device names and member lists. A device that someone

@@ -41,7 +41,7 @@ import {
   storedKeysProblem,
   supportsStoredKeys,
 } from "./crypto/keyring.js";
-import { PALETTE } from "./crypto/spaces.js";
+import { decodeInvite, encodeInvite, normalizeCode, PALETTE } from "./crypto/spaces.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
@@ -50,12 +50,12 @@ import { activeLangs, switchLang } from "./editor/mixed.js";
 import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import {
+  askInvite,
   askPassphrase,
   askText,
   choose,
-  chooseMany,
   showBusy,
-  showCode,
+  showInvite,
   showNote,
   showSecret,
 } from "./ui/dialog.js";
@@ -462,9 +462,14 @@ async function start() {
       title: "Sync with a server",
       options: [
         {
+          id: "invite",
+          label: "Join with an invite",
+          hint: "Another device of yours already syncs. In Settings › Devices there, use “Invite a device” and paste its invite here.",
+        },
+        {
           id: "join",
           label: "Join with a code",
-          hint: "Another device of yours already syncs. In Settings › Devices there, use “Add a device”, then type the server URL and the code here.",
+          hint: "The same, typed by hand: the server URL and the code that “Invite a device” shows.",
         },
         {
           id: "first",
@@ -474,6 +479,10 @@ async function start() {
       ],
     });
     if (!how) return false;
+    if (how === "invite") return joinWithInvite();
+    // From Settings › Sync a device can come here before it has keys: it
+    // gets them now, and the answer above already says first or join.
+    if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: how === "first" }))) return false;
     const url = await askText({
       title: "Server",
       label: "Server URL",
@@ -533,82 +542,159 @@ async function start() {
     }
   }
 
-  register({
-    id: "device.setup",
-    title: "Set up this device",
-    run: async () => {
-      if (keyring.isSetUp) return connectDevice();
-      const deviceName = await askText({
+  /**
+   * Keys for this device: its name, the passphrase choice, the keys, and for
+   * a first device the recovery key, shown once. Shared by the setup command,
+   * the connect flow and the invite, which already knows the name.
+   * @param {{firstDevice: boolean, deviceName?: string}} opts
+   * @returns {Promise<boolean>} false when the user walks away.
+   */
+  async function setUpDevice(opts) {
+    let deviceName = opts.deviceName;
+    if (deviceName === undefined) {
+      const typed = await askText({
         title: "Set up this device",
         label: "Device name",
         value: defaultDeviceName(),
         hint: "Your other devices show this name. It cannot change later.",
       });
-      if (deviceName === null) return false;
-      const canStore = await supportsStoredKeys();
-      const mode = canStore
-        ? await choose({
-            title: "Passphrase",
-            options: [
-              {
-                id: "none",
-                label: "No passphrase",
-                hint: "This device keeps its key and opens your notes at once. The key cannot be copied off the device.",
-              },
-              {
-                id: "ask",
-                label: "Ask for a passphrase at start",
-                hint: "For a device that can get stolen. Each start asks for it.",
-              },
-            ],
-          })
-        : "ask";
-      if (!mode) return false;
-      /** @type {string | undefined} */
-      let passphrase;
-      if (mode === "ask") {
-        const typed = await askPassphrase({
-          title: "Choose a passphrase",
-          confirm: true,
-          hint:
-            (canStore ? "" : "This browser cannot keep a key without one. ") +
-            "There is no reset. If you forget it, this device cannot read your notes again.",
-        });
-        if (typed === null) return false;
-        passphrase = typed;
-      }
-      const first = await choose({
+      if (typed === null) return false;
+      deviceName = typed;
+    }
+    const canStore = await supportsStoredKeys();
+    const mode = canStore
+      ? await choose({
+          title: "Passphrase",
+          options: [
+            {
+              id: "none",
+              label: "No passphrase",
+              hint: "This device keeps its key and opens your notes at once. The key cannot be copied off the device.",
+            },
+            {
+              id: "ask",
+              label: "Ask for a passphrase at start",
+              hint: "For a device that can get stolen. Each start asks for it.",
+            },
+          ],
+        })
+      : "ask";
+    if (!mode) return false;
+    /** @type {string | undefined} */
+    let passphrase;
+    if (mode === "ask") {
+      const typed = await askPassphrase({
+        title: "Choose a passphrase",
+        confirm: true,
+        hint:
+          (canStore ? "" : "This browser cannot keep a key without one. ") +
+          "There is no reset. If you forget it, this device cannot read your notes again.",
+      });
+      if (typed === null) return false;
+      passphrase = typed;
+    }
+    const busy = showBusy("Generating keys…");
+    /** @type {string | null} */
+    let recoveryIdentity;
+    try {
+      ({ recoveryIdentity } = await keyring.setup({
+        deviceName,
+        askPassphrase: mode === "ask",
+        passphrase,
+        firstDevice: opts.firstDevice,
+      }));
+    } finally {
+      busy.close();
+    }
+    if (recoveryIdentity) {
+      await showSecret({
+        title: "Recovery key",
+        text: recoveryIdentity,
+        note:
+          "Shown once, never stored. Keep it on paper or in a password " +
+          "manager. If you lose every device, this key still opens your " +
+          "synced notes with the age command line tool.",
+      });
+    }
+    return true;
+  }
+
+  /**
+   * The new device's half of an invite (§27): paste it, check the name and
+   * the modes, get keys if needed, and redeem the code in it. The server URL,
+   * the code and the spaces come from the invite, so nothing is typed.
+   * @returns {Promise<boolean>}
+   */
+  async function joinWithInvite() {
+    let message = "";
+    /** @type {import("./crypto/spaces.js").Invite | null} */
+    let invite = null;
+    while (!invite) {
+      const text = await askText({
+        title: "Join with an invite",
+        label: "Invite",
+        placeholder: "vrtti-invite:…",
+        hint:
+          (message ? message + " " : "") +
+          "On a device of yours that syncs, use “Invite a device” in Settings › Devices, and paste its invite here.",
+      });
+      if (text === null) return false;
+      invite = decodeInvite(text);
+      if (!invite) message = "That is not an invite.";
+    }
+    const answer = await askInvite({
+      title: "Join with an invite",
+      confirm: "Join",
+      facts: [{ label: "Server", value: invite.url }],
+      name: keyring.isSetUp
+        ? null
+        : { value: invite.name || defaultDeviceName(), hint: "Your other devices show this name. It cannot change later." },
+      spaces: Object.entries(invite.spaces).map(([id, mode]) => ({ id, mode })),
+      hint: "Titles only lists the notes of a space under From server in the sidebar. Open as tabs opens every note.",
+    });
+    if (!answer) return false;
+    if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: false, deviceName: answer.name || defaultDeviceName() }))) {
+      return false;
+    }
+    const busy = showBusy("Joining…");
+    try {
+      await sync.redeem(invite.url, invite.code, answer.spaces);
+    } catch (err) {
+      busy.close();
+      await showNote({ title: "Not joined", text: String(/** @type {any} */ (err)?.message ?? err) + "." });
+      return false;
+    }
+    busy.close();
+    await showNote({
+      title: "Joined",
+      text:
+        "This device joined the server. Your other device adds it to the spaces in a few seconds " +
+        "while its invite is open, or else at its next sync.",
+    });
+    return true;
+  }
+
+  register({
+    id: "device.setup",
+    title: "Set up this device",
+    run: async () => {
+      if (keyring.isSetUp) return connectDevice();
+      const how = await choose({
         title: "Other devices",
         options: [
           { id: "first", label: "This is my first device", hint: "It makes your recovery key." },
-          { id: "join", label: "Another device of mine syncs already", hint: "This device joins it with a code." },
+          {
+            id: "invite",
+            label: "Join with an invite",
+            hint: "Another device of mine syncs already. I paste the invite it made.",
+          },
+          { id: "join", label: "Join with a code", hint: "Another device of mine syncs already. I type its code." },
         ],
       });
-      if (!first) return false;
-      const busy = showBusy("Generating keys…");
-      /** @type {string | null} */
-      let recoveryIdentity;
-      try {
-        ({ recoveryIdentity } = await keyring.setup({
-          deviceName,
-          askPassphrase: mode === "ask",
-          passphrase,
-          firstDevice: first === "first",
-        }));
-      } finally {
-        busy.close();
-      }
-      if (recoveryIdentity) {
-        await showSecret({
-          title: "Recovery key",
-          text: recoveryIdentity,
-          note:
-            "Shown once, never stored. Keep it on paper or in a password " +
-            "manager. If you lose every device, this key still opens your " +
-            "synced notes with the age command line tool.",
-        });
-      }
-      if (first === "join") {
+      if (!how) return false;
+      if (how === "invite") return joinWithInvite();
+      if (!(await setUpDevice({ firstDevice: how === "first" }))) return false;
+      if (how === "join") {
         const url = await askText({ title: "Server", label: "Server URL", placeholder: "https://sync.example.com" });
         if (url === null) return true;
         await run("device.join", url);
@@ -638,7 +724,7 @@ async function start() {
           placeholder: "K7MQ2-XWD4P",
           hint:
             (message ? message + " " : "") +
-            "In Settings › Devices on a device of yours, use “Add a device” and tick the spaces this device gets. The code works once, for ten minutes.",
+            "In Settings › Devices on a device of yours, use “Invite a device” and tick the spaces this device gets. The code works once, for ten minutes.",
         });
         if (code === null) return false;
         const busy = showBusy("Joining…");
@@ -669,34 +755,55 @@ async function start() {
   });
   register({
     id: "device.invite",
-    title: "Add a device",
+    title: "Invite a device",
     run: async () => {
       const spaces = sync.mySpaces();
       if (!spaces.length) return false;
-      const picked = await chooseMany({
-        title: "Add a device",
-        hint: "The new device gets the spaces you tick. You can change this later in the grid.",
-        options: spaces.map((space) => ({ id: space, label: space, checked: false })),
+      // Titles only by default: an invite with every space as tabs would open
+      // every note on the new device at its first sync.
+      const answer = await askInvite({
+        title: "Invite a device",
+        confirm: "Make invite",
+        name: {
+          value: "",
+          placeholder: "Phone",
+          hint: "The new device starts with this name and can change it before it joins.",
+        },
+        tickable: true,
+        spaces: spaces.map((id) => ({ id, mode: "list", checked: true })),
+        hint:
+          "The new device gets the spaces you tick. Titles only lists their notes under From server " +
+          "in its sidebar; Open as tabs opens every note. The new device can change the modes.",
       });
-      if (!picked || !picked.length) return false;
-      const busy = showBusy("Making a code…");
+      if (!answer) return false;
+      const busy = showBusy("Making an invite…");
       let code;
       try {
-        code = await sync.invite(picked);
+        code = await sync.invite(Object.keys(answer.spaces));
       } catch (err) {
         busy.close();
-        await showNote({ title: "No code", text: String(/** @type {any} */ (err)?.message ?? err) });
+        await showNote({ title: "No invite", text: String(/** @type {any} */ (err)?.message ?? err) });
         return false;
       } finally {
         busy.close();
       }
-      await showCode({
-        title: "Code for the new device",
-        code,
+      const url = sync.config.url;
+      await showInvite({
+        title: answer.name ? "Invite for " + answer.name : "Invite",
+        text: encodeInvite({ url, code: normalizeCode(code), name: answer.name, spaces: answer.spaces }),
         note:
-          "On the new device, choose “Join with a code” and type the server URL " +
-          sync.config.url + " and this code. It works once, for ten minutes. " +
-          "Keep this device open: it adds the new device at its next sync.",
+          "Paste it on the new device, in Settings › Sync. Anyone with this text can join your spaces, " +
+          "so send it only to yourself. To type it by hand: the server URL " + url + " and the code " + code + ".",
+        // The server's lifetime of a code (DeviceApi.cs, JoinLifetime); this
+        // device cannot ask it.
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        // A sync round is what answers the join. The setting tells when it
+        // happened, also when the leader is another window.
+        check: async () => {
+          await sync.syncNow();
+          return !(await sync.inviteOpen(code));
+        },
+        joined: (answer.name || "The new device") + " joined.",
       });
       void sync.syncNow();
       return true;
