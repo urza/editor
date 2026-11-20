@@ -878,6 +878,35 @@ const phoneBox = [
       return false;
     },
   }),
+  // Place the box again when the visible part of the page changes while it
+  // is open: the keyboard opens, or the browser pans to the cursor after the
+  // tap. CodeMirror places a tooltip again on a window resize only, and the
+  // keyboard changes only the visual viewport, so without this the box stayed
+  // under the word, behind the keyboard (phone test, 2026-11-20). A new box
+  // object is a new tooltip, which CodeMirror measures and places from scratch.
+  ViewPlugin.define((view) => {
+    const vv = window.visualViewport;
+    let pending = 0;
+    const replace = () => {
+      if (pending) return;
+      // One placement per frame: the viewport sends many events while the
+      // keyboard slides in.
+      pending = requestAnimationFrame(() => {
+        pending = 0;
+        const box = view.state.field(boxField, false);
+        if (box) view.dispatch({ effects: setBox.of({ ...box }) });
+      });
+    };
+    vv?.addEventListener("resize", replace);
+    vv?.addEventListener("scroll", replace);
+    return {
+      destroy() {
+        cancelAnimationFrame(pending);
+        vv?.removeEventListener("resize", replace);
+        vv?.removeEventListener("scroll", replace);
+      },
+    };
+  }),
   // The free space for every tooltip is the visible part of the page. The
   // default is the window, and on iOS and current Android the keyboard
   // shrinks only the visual viewport: a box under a word near the bottom
