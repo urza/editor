@@ -682,18 +682,11 @@ body {
   display: none;
 }
 
-.search-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* The heading brings the margins of every other sidebar heading with it. */
-.search-head .sidebar-heading { flex: 1; }
-
+/* At the end of the field's row (user request, 2026-11-20): the way out sits
+   next to the field the user just typed in, not in the heading's corner. */
 #search-close {
   flex: 0 0 auto;
-  margin-right: 8px;
+  height: calc(22px * var(--ui-scale));
   border: 0;
   padding: 0 4px;
   background: transparent;
@@ -715,7 +708,7 @@ body {
 
 #search-query {
   flex: 1;
-  /* Without it the field refuses to shrink and pushes the two buttons out of
+  /* Without it the field refuses to shrink and pushes the buttons out of
      a 320px drawer. */
   min-width: 0;
   height: calc(22px * var(--ui-scale));
@@ -730,8 +723,7 @@ body {
 
 /* The same quiet look as the #open-actions row above: both are secondary
    controls in the same column. */
-#search-case,
-#search-go {
+#search-case {
   flex: 0 0 auto;
   height: calc(22px * var(--ui-scale));
   padding: 0 8px;
@@ -746,8 +738,7 @@ body {
   opacity: 0.85;
 }
 
-#search-case:hover,
-#search-go:hover {
+#search-case:hover {
   background: var(--st-sidebar-selected);
   color: var(--st-sidebar-heading);
   opacity: 1;
@@ -1922,8 +1913,7 @@ html.phone #search-query {
   font-size: max(16px, var(--ui-base));
 }
 
-html.phone #search-case,
-html.phone #search-go {
+html.phone #search-case {
   height: var(--tap);
   min-width: var(--tap);
   font-size: var(--ui-sm);

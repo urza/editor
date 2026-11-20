@@ -4,9 +4,11 @@
 // Owns #search-view and the `searching` class on #sidebar; app.css hides the
 // lists under that class, and ui/sidebar.js does not know this module exists.
 //
-// Enter searches, typing does not. The tabs are in memory, but the folders are
-// disk reads through the File System Access API, and a live search would walk
-// the tree on every keystroke.
+// The search runs as the user types, after a pause of TYPE_DELAY (user
+// request, 2026-11-20); Enter runs it at once. The folders are disk reads
+// through the File System Access API, so a scan per keystroke would walk the
+// tree over and over: the pause lets a word finish first, and each new run
+// ends the one before it through `generation`.
 //
 // All user-derived text goes through textContent and append(), never innerHTML:
 // a file line is arbitrary text and a <mark> is the only markup a row gets.
@@ -43,6 +45,8 @@ const PREVIEW = 160;
 // Characters of the line kept in front of the match when the preview is cut,
 // so the row still shows what the match sits in.
 const HEAD = 40;
+// Milliseconds after the last keystroke before the search runs.
+const TYPE_DELAY = 250;
 
 /** @param {string} text */
 function escapeRegExp(text) {
@@ -358,8 +362,16 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
   async function search() {
     const text = query.value;
-    // Whitespace alone would match every line of every file on disk.
-    if (!text.trim()) return;
+    // Whitespace alone would match every line of every file on disk. An
+    // emptied field also clears the list: with search as you type, rows for
+    // a query the user deleted would read as hits for nothing.
+    if (!text.trim()) {
+      generation++;
+      handles.clear();
+      results.replaceChildren();
+      status.replaceChildren();
+      return;
+    }
 
     /** @type {Run} */
     const run = {
@@ -388,8 +400,14 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     paintStatus(run, false);
   }
 
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let typeTimer;
+
   /** Nothing awaits a search, so a failure must not become an unhandled rejection. */
   function startSearch() {
+    // A run from Enter, the case toggle or a reconnect replaces the one
+    // still waiting for the pause; that one would only repeat it.
+    clearTimeout(typeTimer);
     search().catch((err) => console.log("[vrtti] search failed", err));
   }
 
@@ -442,7 +460,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   }
 
   // One delegated listener, not one per row: a run can put a thousand rows on
-  // screen and replace them all on the next Enter.
+  // screen and replace them all on the next run.
   results.addEventListener("click", (event) => {
     const target = event.target;
     const row = target instanceof Element ? target.closest(".search-hit") : null;
@@ -489,8 +507,10 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
   function close() {
     if (view.hidden) return;
-    // Stops a scan that is still reading disk. The rows and the query stay,
-    // so the next open shows what was found.
+    // Stops a scan that is still reading disk, and one still waiting for the
+    // typing pause. The rows and the query stay, so the next open shows what
+    // was found.
+    clearTimeout(typeTimer);
     generation++;
     view.hidden = true;
     sidebar.classList.remove("searching");
@@ -515,13 +535,17 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     startSearch();
   });
 
+  query.addEventListener("input", () => {
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(startSearch, TYPE_DELAY);
+  });
+
   caseButton.addEventListener("click", () => {
     const on = caseButton.getAttribute("aria-pressed") === "true";
     caseButton.setAttribute("aria-pressed", String(!on));
-    // Re-run only after a search has run: the toggle must not start a walk
-    // over every folder because the user pressed it before typing. "No hits"
-    // counts as run, since the other case may well have them.
-    if (query.value.trim() && status.childElementCount) startSearch();
+    // The field searches as it changes, so the toggle does the same. An
+    // empty field has nothing to re-run.
+    if (query.value.trim()) startSearch();
   });
 
   const closeButton = /** @type {HTMLElement} */ (document.getElementById("search-close"));

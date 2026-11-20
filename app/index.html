@@ -123,16 +123,15 @@
              class `searching` on #sidebar hides everything below while it is
              open. Hidden here, because the sidebar opens on the lists. -->
         <section id="search-view" hidden aria-label="Search in files">
-          <div class="search-head">
-            <h2 class="sidebar-heading">Search</h2>
-            <button id="search-close" type="button" title="Close search (Esc)">×</button>
-          </div>
-          <!-- A form, so Enter in the field and the Go button are one path
-               (architecture.md §16: typing does not search, Enter does). -->
+          <h2 class="sidebar-heading">Search</h2>
+          <!-- A form, so Enter in the field searches at once, without the
+               pause of the search as you type (architecture.md §16).
+               The × sits at the end of the field's row on a PC; on a phone
+               app.css moves it to the bottom of the list. -->
           <form id="search-form" class="search-form">
             <input id="search-query" type="text" placeholder="Find in files" autocomplete="off" spellcheck="false">
             <button id="search-case" type="button" title="Match case" aria-pressed="false">Aa</button>
-            <button id="search-go" type="submit" title="Search (Enter)">Go</button>
+            <button id="search-close" type="button" title="Close search (Esc)">×</button>
           </form>
           <div id="search-status" class="search-status" aria-live="polite"></div>
           <ul id="search-results" class="search-results"></ul>

@@ -1869,10 +1869,11 @@ whole folder.
 - **Plain text, case-insensitive by default**, one toggle for case. No
   regular expressions and no replace in this unit; both are cheap to add
   later and expensive to get wrong now.
-- **Enter runs the search**, typing does not. The buffers are in memory,
-  but the folders are disk reads through the File System Access API, and
-  a live search would scan the tree on every keystroke. A new Enter
-  cancels the running scan.
+- **The search runs as the user types**, 250 ms after the last keystroke
+  (changed 2026-11-20; it was Enter only). Enter runs it at once. The
+  folders are disk reads through the File System Access API, so the pause
+  lets a word finish before a scan starts, and every new run cancels the
+  running scan. An emptied field clears the list.
 - **Locked documents stay out** (§5: search and spellcheck only see
   unlocked docs). An encrypted buffer is searched only while the store is
   unlocked. A LockedError on the way is the courier case: skip the
@@ -1934,7 +1935,8 @@ whole folder.
 
 ### View
 
-Query field, an "Aa" toggle (`aria-pressed`), a Go button for touch, a
+Query field, an "Aa" toggle (`aria-pressed`), the × that closes the view
+(at the end of the field's row; on a phone, at the bottom of the list), a
 status line, then the list: one heading per file (the buffer title or the
 folder path), one row per matching line with the line number and the
 trimmed line, the first match wrapped in `<mark>`. Groups append as each
