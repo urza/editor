@@ -169,12 +169,15 @@
 import { reviveHandle } from "./native.js";
 
 const DB_NAME = "vrtti";
-const DB_VERSION = 7;
+// v8 adds KEYS, nothing else: no record changes.
+const DB_VERSION = 8;
 const STORE = "buffers";
 const HANDLES = "handles";
 const SETTINGS = "settings";
 const WORKSPACES = "workspaces";
 const REMOTE = "remote";
+// Settings that hold a CryptoKey (see getSetting). No key path, on purpose.
+const KEYS = "keys";
 export const MAIN_WORKSPACE = "main";
 // Where v3 kept the active buffer. v4 moves it into the main workspace
 // record; the migration reads the key once and deletes it.
@@ -216,6 +219,11 @@ export function openDb() {
         }
         if (!db.objectStoreNames.contains(REMOTE)) {
           db.createObjectStore(REMOTE, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(KEYS)) {
+          // No keyPath: the one thing that makes a CryptoKey storable in
+          // WebKit (see getSetting). Do not "align" it with the others.
+          db.createObjectStore(KEYS);
         }
         const tx = req.transaction;
         const old = event.oldVersion;
@@ -546,20 +554,46 @@ export async function deleteHandle(id) {
 // not a document: the wrapped device keyring today, the sync server config and
 // cursor later. One row per key, and the owning module defines the value shape.
 
+//
+// A setting whose value holds a CryptoKey lives in KEYS instead, a store
+// with no key path: the key goes beside the value (put(value, key)). WebKit
+// (iOS Safari) evaluates a key path on a copy of the record in which a
+// CryptoKey cannot be read back, and refuses the put with "Evaluating the
+// object store's key path did not yield a value". A store without a key
+// path evaluates nothing. putSetting picks the store, and a write removes
+// the key from the other one in the same transaction, so a key is in one
+// store only and getSetting can look in both.
+
+/**
+ * Does this value hold a CryptoKey anywhere? Settings are small, plain data.
+ * @param {unknown} value @param {number} [depth]
+ */
+function holdsCryptoKey(value, depth = 0) {
+  if (typeof CryptoKey !== "undefined" && value instanceof CryptoKey) return true;
+  if (!value || typeof value !== "object" || depth > 4) return false;
+  return Object.values(value).some((v) => holdsCryptoKey(v, depth + 1));
+}
+
 /** @param {string} key @returns {Promise<any>} */
 export async function getSetting(key) {
   const db = await openDb();
-  const row = await request(
-    db.transaction(SETTINGS, "readonly").objectStore(SETTINGS).get(key)
-  );
-  return row ? row.value : undefined;
+  const tx = db.transaction([SETTINGS, KEYS], "readonly");
+  const row = await request(tx.objectStore(SETTINGS).get(key));
+  if (row) return row.value;
+  return request(tx.objectStore(KEYS).get(key));
 }
 
 /** @param {string} key @param {any} value */
 export async function putSetting(key, value) {
   const db = await openDb();
-  const tx = db.transaction(SETTINGS, "readwrite");
-  tx.objectStore(SETTINGS).put({ key, value });
+  const tx = db.transaction([SETTINGS, KEYS], "readwrite");
+  if (holdsCryptoKey(value)) {
+    tx.objectStore(KEYS).put(value, key);
+    tx.objectStore(SETTINGS).delete(key);
+  } else {
+    tx.objectStore(SETTINGS).put({ key, value });
+    tx.objectStore(KEYS).delete(key);
+  }
   // Resolve on transaction completion, not on the put request, for the same
   // durability reason as putBuffer: only oncomplete means the write survives a
   // crash. The keyring is the first caller, and a wrapped identity that was
@@ -574,8 +608,9 @@ export async function putSetting(key, value) {
 /** @param {string} key */
 export async function deleteSetting(key) {
   const db = await openDb();
-  const tx = db.transaction(SETTINGS, "readwrite");
+  const tx = db.transaction([SETTINGS, KEYS], "readwrite");
   tx.objectStore(SETTINGS).delete(key);
+  tx.objectStore(KEYS).delete(key);
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve(undefined);
     tx.onerror = () => reject(tx.error);
