@@ -117,9 +117,10 @@ Open the site in Safari or Chrome and add it to the home screen. The app works
 with one thumb there. The round button at the bottom right shows three more
 buttons: a new note, the note list, and the settings. The note list fills the
 screen, and each row shows the start of the note and the date of its last
-change. A swipe to the left on a row closes that note. The note goes to Recent, and a tap there opens it again. Start
-the swipe on the row and not at the screen edge, because Android takes a swipe
-from the edge as Back. On Android, Back closes the top open part (a menu, the
+change. The note you changed last is at the bottom, next to the round button.
+A swipe to the left on a row closes that note. The note goes to Recent, and a
+tap there opens it again. Start the swipe on the row and not at the screen
+edge, because Android takes a swipe from the edge as Back. On Android, Back closes the top open part (a menu, the
 round buttons, the settings, or the list). A phone shows no status bar.
 **Settings › Update** shows the build and looks for a newer one.
 

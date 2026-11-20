@@ -820,6 +820,13 @@ puts every control at the bottom right and makes the list full screen.
   the weekday for the six days before, the day and month for older notes
   (`shortTime` in `model/preview.js`). For a row of Recent it is the time
   of the close, because `close` in `model/docs.js` writes `updatedAt`.
+- **The order of Open.** Sorted by the time of the last change, oldest
+  at the top and newest at the bottom, as in a chat with yourself (user
+  decision, 2026-11-19). An edit, a sync that brings a change and a
+  reopen from Recent move a note to the bottom. Phone mode only
+  (`openOrder` in `ui/sidebar.js`): the tab order in the workspace stays
+  as it is, and a PC shows it and changes it by drag. Recent keeps its
+  own order, newest at the top.
 - **Setting**: "Longer rows in the note list" (`vrtti.listRows` in
   `localStorage`, device-local) adds a second preview line.
 - **Swipe to close.** A swipe to the left on a row of Open closes the note
