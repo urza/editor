@@ -16,6 +16,7 @@ Run from anywhere; paths are anchored to this file's location.
 import hashlib
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +99,22 @@ def main():
         {"version": version, "files": urls}, indent=2
     ) + ";\n"
     (APP / "sw-precache.js").write_text(body)
+
+    # The version goes into sw.js itself, so its bytes change with every
+    # build. The spec says a change of an imported script (sw-precache.js)
+    # starts an update too, but an iPhone stayed on an old build for good
+    # while only sw-precache.js changed. A changed sw.js updates everywhere.
+    sw = APP / "sw.js"
+    text = sw.read_text()
+    stamped, count = re.subn(
+        r'importScripts\("\./sw-precache\.js(\?v=[0-9a-f]+)?"\);',
+        f'importScripts("./sw-precache.js?v={version}");',
+        text,
+    )
+    if count != 1:
+        raise SystemExit("sw.js: the importScripts line of sw-precache.js is missing")
+    sw.write_text(stamped)
+
     print(f"version.js: {stamp['commit']} {stamp['builtAt']}")
     print(f"sw-precache.js: {len(urls)} URLs, version {version}")
 
