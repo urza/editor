@@ -1,12 +1,23 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using static Vrtti.Server.Tests.TestApp;
 
 namespace Vrtti.Server.Tests;
 
+/// <summary>Pushes, pulls, history and purge, by one device in its own space.</summary>
 public class SyncApiTests
 {
-    const long ClientTime = 1_700_000_000_000;
+    /// <summary>Two different age texts, so a test can tell revisions apart.</summary>
+    static string AgeText(string marker) => Age + marker;
+
+    static async Task<(TestApp App, HttpClient Client)> Start()
+    {
+        var app = new TestApp();
+        var phone = await app.Register("phone");
+        await app.Space("personal", phone);
+        return (app, phone.Http);
+    }
 
     [Fact]
     public async Task Health_needs_no_token()
@@ -45,13 +56,13 @@ public class SyncApiTests
     [Fact]
     public async Task Push_then_get_returns_the_document_with_its_meta()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        using var push = await Push(client, "doc-1", baseRev: null, content: "hello",
-            meta: new { title = "Notes", lang = "markdown" });
-        Assert.Equal(HttpStatusCode.Created, push.StatusCode);
-        var created = await push.Content.ReadFromJsonAsync<PushResponse>();
+        using var good = await Push(client, "doc-1", "personal", content: AgeText("hello"),
+            meta: new { enc = new { preset = "space", spaceSeq = 1 }, @sealed = Age });
+        Assert.Equal(HttpStatusCode.Created, good.StatusCode);
+        var created = await good.Content.ReadFromJsonAsync<PushResponse>();
         Assert.Equal(1, created!.Rev);
         Assert.True(created.Seq > 0);
 
@@ -59,13 +70,15 @@ public class SyncApiTests
         Assert.Equal("doc-1", change!.DocId);
         Assert.Equal(1, change.Rev);
         Assert.Equal("text", change.Kind);
-        Assert.Equal("hello", change.Content);
-        Assert.Equal("device-a", change.DeviceId);
+        Assert.Equal(AgeText("hello"), change.Content);
+        // The device id comes from the token, never from the body.
+        Assert.Equal("phone", change.DeviceId);
         Assert.Equal(ClientTime, change.ClientTime);
         Assert.True(change.ServerTime > 0);
+        Assert.Equal("personal", change.Space);
         // The server hands meta back as a JSON object, unchanged.
-        Assert.Equal("Notes", change.Meta!.Value.GetProperty("title").GetString());
-        Assert.Equal("markdown", change.Meta!.Value.GetProperty("lang").GetString());
+        Assert.Equal("space", change.Meta!.Value.GetProperty("enc").GetProperty("preset").GetString());
+        Assert.Equal(Age, change.Meta!.Value.GetProperty("sealed").GetString());
 
         using var missing = await client.GetAsync("/api/docs/no-such-doc");
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
@@ -74,37 +87,37 @@ public class SyncApiTests
     [Fact]
     public async Task Push_with_the_current_base_rev_increments_the_rev()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        using var first = await Push(client, "doc-2", baseRev: 0, content: "one");
-        using var second = await Push(client, "doc-2", baseRev: 1, content: "two");
+        using var first = await Push(client, "doc-2", "personal", baseRev: 0, content: AgeText("one"));
+        using var second = await Push(client, "doc-2", "personal", baseRev: 1, content: AgeText("two"));
 
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
         var pushed = await second.Content.ReadFromJsonAsync<PushResponse>();
         Assert.Equal(2, pushed!.Rev);
 
         var change = await client.GetFromJsonAsync<Change>("/api/docs/doc-2");
-        Assert.Equal("two", change!.Content);
+        Assert.Equal(AgeText("two"), change!.Content);
     }
 
     [Fact]
     public async Task Push_with_a_stale_base_rev_returns_409_with_the_current_revision()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        using var _ = await Push(client, "doc-3", baseRev: 0, content: "one");
-        using var __ = await Push(client, "doc-3", baseRev: 1, content: "two");
-        using var stale = await Push(client, "doc-3", baseRev: 1, content: "conflicting");
+        await Push(client, "doc-3", "personal", baseRev: 0, content: AgeText("one"));
+        await Push(client, "doc-3", "personal", baseRev: 1, content: AgeText("two"));
+        using var stale = await Push(client, "doc-3", "personal", baseRev: 1, content: AgeText("conflicting"));
 
         Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
         var conflict = await stale.Content.ReadFromJsonAsync<ConflictResponse>();
         Assert.Equal(2, conflict!.Current!.Rev);
-        Assert.Equal("two", conflict.Current.Content);
+        Assert.Equal(AgeText("two"), conflict.Current.Content);
 
         // A claim about an unknown document reports no current revision.
-        using var unknown = await Push(client, "doc-never-seen", baseRev: 7);
+        using var unknown = await Push(client, "doc-never-seen", "personal", baseRev: 7);
         Assert.Equal(HttpStatusCode.Conflict, unknown.StatusCode);
         var empty = await unknown.Content.ReadFromJsonAsync<ConflictResponse>();
         Assert.Null(empty!.Current);
@@ -113,12 +126,12 @@ public class SyncApiTests
     [Fact]
     public async Task Push_with_a_null_base_rev_always_appends()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        using var first = await Push(client, "doc-4", baseRev: null, content: "one");
-        using var second = await Push(client, "doc-4", baseRev: null, content: "two");
-        using var third = await Push(client, "doc-4", baseRev: null, content: "three");
+        await Push(client, "doc-4", "personal");
+        await Push(client, "doc-4", "personal");
+        using var third = await Push(client, "doc-4", "personal");
 
         Assert.Equal(HttpStatusCode.Created, third.StatusCode);
         var pushed = await third.Content.ReadFromJsonAsync<PushResponse>();
@@ -128,22 +141,22 @@ public class SyncApiTests
     [Fact]
     public async Task Changes_returns_the_newest_revision_per_document_and_pages()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
         // Order of the pushes decides the seq order: a=1,2  b=3  c=4,5,6.
-        await Push(client, "a", 0, content: "a1");
-        await Push(client, "a", 1, content: "a2");
-        await Push(client, "b", 0, content: "b1");
-        await Push(client, "c", 0, content: "c1");
-        await Push(client, "c", 1, content: "c2");
-        await Push(client, "c", 2, content: "c3");
+        await Push(client, "a", "personal", 0, content: AgeText("a1"));
+        await Push(client, "a", "personal", 1, content: AgeText("a2"));
+        await Push(client, "b", "personal", 0, content: AgeText("b1"));
+        await Push(client, "c", "personal", 0, content: AgeText("c1"));
+        await Push(client, "c", "personal", 1, content: AgeText("c2"));
+        await Push(client, "c", "personal", 2, content: AgeText("c3"));
 
         var page1 = await client.GetFromJsonAsync<ChangesResponse>("/api/changes?limit=2");
         Assert.True(page1!.More);
         Assert.Equal(["a", "b"], page1.Changes.Select(c => c.DocId));
         Assert.Equal([2L, 1L], page1.Changes.Select(c => c.Rev));
-        Assert.Equal(["a2", "b1"], page1.Changes.Select(c => c.Content));
+        Assert.Equal([AgeText("a2"), AgeText("b1")], page1.Changes.Select(c => c.Content));
         Assert.Equal(page1.Changes[^1].Seq, page1.Next);
 
         var page2 = await client.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={page1.Next}&limit=2");
@@ -151,7 +164,7 @@ public class SyncApiTests
         var only = Assert.Single(page2.Changes);
         Assert.Equal("c", only.DocId);
         Assert.Equal(3, only.Rev);
-        Assert.Equal("c3", only.Content);
+        Assert.Equal(AgeText("c3"), only.Content);
 
         // An empty page keeps the cursor where it was.
         var page3 = await client.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={page2.Next}&limit=2");
@@ -163,39 +176,38 @@ public class SyncApiTests
     [Fact]
     public async Task Tombstone_kinds_are_accepted_and_returned()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        await Push(client, "gone", 0, content: "text");
-        using var deleted = await Push(client, "gone", 1, kind: "deleted", content: null);
+        await Push(client, "gone", "personal", 0);
+        using var deleted = await Push(client, "gone", "personal", 1, kind: "deleted", content: null);
         Assert.Equal(HttpStatusCode.Created, deleted.StatusCode);
 
-        await Push(client, "kept", 0, content: "text");
-        using var detached = await Push(client, "kept", 1, kind: "detached", content: null);
+        await Push(client, "kept", "personal", 0);
+        using var detached = await Push(client, "kept", "personal", 1, kind: "detached", content: null);
         Assert.Equal(HttpStatusCode.Created, detached.StatusCode);
 
         var changes = await client.GetFromJsonAsync<ChangesResponse>("/api/changes");
         Assert.Equal(["deleted", "detached"], changes!.Changes.Select(c => c.Kind));
         Assert.All(changes.Changes, c => Assert.Null(c.Content));
 
-        using var bad = await Push(client, "gone", null, kind: "nonsense");
+        using var bad = await Push(client, "gone", "personal", kind: "nonsense");
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
-        using var noDevice = await client.PostAsJsonAsync(
-            "/api/docs/gone/revisions",
-            new { baseRev = (long?)null, kind = "text", content = "x", deviceId = "", clientTime = ClientTime });
-        Assert.Equal(HttpStatusCode.BadRequest, noDevice.StatusCode);
+        // A space is required now; there is no default any more.
+        using var noSpace = await Push(client, "gone", space: null);
+        Assert.Equal(HttpStatusCode.BadRequest, noSpace.StatusCode);
     }
 
     [Fact]
     public async Task Purge_removes_only_the_revisions_below_the_bound()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        await Push(client, "doc-5", 0, content: "one");
-        await Push(client, "doc-5", 1, content: "two");
-        await Push(client, "doc-5", 2, content: "three");
+        await Push(client, "doc-5", "personal", 0, content: AgeText("one"));
+        await Push(client, "doc-5", "personal", 1, content: AgeText("two"));
+        await Push(client, "doc-5", "personal", 2, content: AgeText("three"));
 
         using var noBound = await client.DeleteAsync("/api/docs/doc-5/revisions");
         Assert.Equal(HttpStatusCode.BadRequest, noBound.StatusCode);
@@ -207,13 +219,13 @@ public class SyncApiTests
         var history = await client.GetFromJsonAsync<List<RevisionInfo>>("/api/docs/doc-5/revisions");
         var kept = Assert.Single(history!);
         Assert.Equal(3, kept.Rev);
-        Assert.Equal(5, kept.Size);
+        Assert.Equal(AgeText("three").Length, kept.Size);
 
         using var old = await client.GetAsync("/api/docs/doc-5/revisions/1");
         Assert.Equal(HttpStatusCode.NotFound, old.StatusCode);
 
         var still = await client.GetFromJsonAsync<Change>("/api/docs/doc-5/revisions/3");
-        Assert.Equal("three", still!.Content);
+        Assert.Equal(AgeText("three"), still!.Content);
 
         // A bound above the current revision never removes the newest row.
         using var greedy = await client.DeleteAsync("/api/docs/doc-5/revisions?below=99");
@@ -225,18 +237,18 @@ public class SyncApiTests
     [Fact]
     public async Task History_lists_revisions_newest_first_without_content()
     {
-        using var app = new TestApp();
-        var client = app.Client();
+        var (app, client) = await Start();
+        using var _ = app;
 
-        await Push(client, "doc-6", 0, content: "one");
-        await Push(client, "doc-6", 1, kind: "deleted", content: null);
+        await Push(client, "doc-6", "personal", 0);
+        await Push(client, "doc-6", "personal", 1, kind: "deleted", content: null);
 
         var history = await client.GetFromJsonAsync<List<RevisionInfo>>("/api/docs/doc-6/revisions") ?? [];
 
         Assert.Equal([2L, 1L], history.Select(r => r.Rev));
         Assert.Equal(["deleted", "text"], history.Select(r => r.Kind));
-        Assert.Equal([0, 3], history.Select(r => r.Size));
-        Assert.All(history, r => Assert.Equal("device-a", r.DeviceId));
+        Assert.Equal([0, Age.Length], history.Select(r => r.Size));
+        Assert.All(history, r => Assert.Equal("phone", r.DeviceId));
     }
 
     [Fact]
@@ -269,18 +281,6 @@ public class SyncApiTests
 
         Assert.False(response.Headers.Contains("Access-Control-Allow-Origin"));
     }
-
-    static Task<HttpResponseMessage> Push(
-        HttpClient client,
-        string docId,
-        long? baseRev,
-        string kind = "text",
-        string? content = "text",
-        object? meta = null,
-        string deviceId = "device-a")
-        => client.PostAsJsonAsync(
-            $"/api/docs/{docId}/revisions",
-            new { baseRev, kind, content, meta, deviceId, clientTime = ClientTime });
 
     static string Header(HttpResponseMessage response, string name) =>
         string.Join(",", response.Headers.GetValues(name));

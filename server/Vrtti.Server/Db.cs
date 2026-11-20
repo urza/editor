@@ -80,9 +80,74 @@ public sealed class Db
             transaction.Commit();
         }
 
-        // Outside the step on purpose: IF NOT EXISTS makes it free on every start, and a
-        // database migrated by a build that lacked the index still gets it.
-        Execute(conn, "CREATE INDEX IF NOT EXISTS revisions_space ON revisions(space, seq);");
+        // Spaces as groups of devices (architecture.md section 27). prev_space marks a row
+        // that moved a document, so the old space still learns that the document left.
+        if (!HasColumn(conn, "revisions", "prev_space"))
+        {
+            // One transaction, for the reason of the step above. The json_remove belongs
+            // to this step and runs once: notes encrypted before the upgrade carried a
+            // readable title in meta, and the new server holds no readable title. It keeps
+            // the rows, so the history of those notes stays. json_remove ignores a path
+            // that is not there, so rows without these fields are unchanged.
+            using var transaction = conn.BeginTransaction();
+            Execute(conn, "ALTER TABLE revisions ADD COLUMN prev_space TEXT;");
+            Execute(conn, """
+                UPDATE revisions SET meta = json_remove(meta, '$.title', '$.lang', '$.langSource')
+                WHERE meta IS NOT NULL AND json_valid(meta);
+                """);
+            transaction.Commit();
+        }
+
+        // Outside the steps on purpose: IF NOT EXISTS makes it free on every start, and a
+        // database migrated by a build that lacked an index or a table still gets it.
+        Execute(conn, """
+            CREATE INDEX IF NOT EXISTS revisions_space ON revisions(space, seq);
+            CREATE INDEX IF NOT EXISTS revisions_prev_space ON revisions(prev_space, seq)
+              WHERE prev_space IS NOT NULL;
+
+            -- One row for each registered device. The server stores only the SHA-256 of
+            -- the device token. predecessor is UNIQUE: one device has at most one
+            -- successor (a change of the passphrase switch makes a new device).
+            CREATE TABLE IF NOT EXISTS devices (
+              id               TEXT    PRIMARY KEY,
+              token_hash       TEXT    NOT NULL UNIQUE,
+              via_server_token INTEGER NOT NULL,
+              predecessor      TEXT    UNIQUE,
+              created          INTEGER NOT NULL
+            );
+
+            -- Who may read a space. Written only together with space_log, in one
+            -- transaction, so the two never disagree.
+            CREATE TABLE IF NOT EXISTS members (
+              space     TEXT NOT NULL,
+              device_id TEXT NOT NULL,
+              PRIMARY KEY (space, device_id)
+            );
+
+            -- The signed log of each space, stored as the exact text the client sent: the
+            -- next entry's prev is the SHA-256 of these bytes.
+            CREATE TABLE IF NOT EXISTS space_log (
+              space TEXT    NOT NULL,
+              seq   INTEGER NOT NULL,
+              entry TEXT    NOT NULL,
+              PRIMARY KEY (space, seq)
+            );
+
+            -- Join codes. The server knows the slot and the verifier, never the code.
+            CREATE TABLE IF NOT EXISTS joins (
+              slot      TEXT    PRIMARY KEY,
+              verifier  TEXT    NOT NULL,
+              spaces    TEXT    NOT NULL,
+              by_device TEXT    NOT NULL,
+              expires   INTEGER NOT NULL,
+              tries     INTEGER NOT NULL DEFAULT 0,
+              device_id TEXT,
+              entry     TEXT,
+              proof     TEXT,
+              reply     TEXT,
+              mac       TEXT
+            );
+            """);
     }
 
     static bool HasColumn(SqliteConnection conn, string table, string column)

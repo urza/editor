@@ -2,18 +2,18 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Primitives;
 using Vrtti.Server;
 
 // Configuration comes from the environment only. The server is one process with one
-// user and one token; a settings file would add a second place to look.
+// user; a settings file would add a second place to look.
 var token = Environment.GetEnvironmentVariable("VRTTI_TOKEN");
 if (string.IsNullOrWhiteSpace(token))
 {
     Console.Error.WriteLine(
         "VRTTI_TOKEN is not set. The server refuses to start without it, because an "
-        + "empty token would leave every document open to the internet.");
+        + "empty token would let anyone register a device.");
     Console.Error.WriteLine("Generate one with: openssl rand -hex 32");
     return 1;
 }
@@ -31,14 +31,11 @@ var origins = (Environment.GetEnvironmentVariable("VRTTI_ORIGINS") is { Length: 
 // edits by hand, and it stops a single request from filling the disk.
 const long maxBodyBytes = 10L * 1024 * 1024;
 
-// A push without a space comes from a client older than spaces (architecture.md section
-// 25). Its notes belong where the migration put every old row.
-const string defaultSpace = "personal";
-const string badSpace = "space must be 1-32 letters, digits, - or _";
-
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxBodyBytes);
 builder.Services.AddSingleton(new Db(dbPath));
+// TryAdd: the tests register a clock of their own first, to expire a join code.
+builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
     .WithOrigins(origins)
     .WithHeaders("Authorization", "Content-Type")
@@ -52,18 +49,60 @@ var app = builder.Build();
 // hides the status from the client.
 app.UseCors();
 
-var expectedToken = Encoding.UTF8.GetBytes(token);
+// Two kinds of bearer token (architecture.md section 27). The server token only
+// registers the first device: with it, POST /api/devices and nothing else. Every other
+// request carries a device token, and the server knows the device from its hash.
+var serverToken = Encoding.UTF8.GetBytes(token);
 app.Use(async (context, next) =>
 {
-    var path = context.Request.Path;
-    var guarded = path.StartsWithSegments("/api")
-        && !path.StartsWithSegments("/api/health")
-        && !path.StartsWithSegments("/api/version");
-    if (guarded && !IsAuthorized(context.Request.Headers.Authorization, expectedToken))
+    var request = context.Request;
+    var path = request.Path;
+    var open = !path.StartsWithSegments("/api")
+        || path.StartsWithSegments("/api/health")
+        || path.StartsWithSegments("/api/version")
+        // The new device has no token yet; the join code is its proof.
+        || (HttpMethods.IsPost(request.Method) && IsExactly(path, "/api/joins/redeem"));
+    if (open)
     {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsJsonAsync(new ErrorResponse("unauthorized"));
+        await next(context);
         return;
+    }
+
+    var bearer = BearerOf(request.Headers.Authorization);
+    if (bearer is null)
+    {
+        await Unauthorized(context, "unauthorized");
+        return;
+    }
+
+    // Constant-time compare. A normal comparison stops at the first wrong byte, so the
+    // response time tells an attacker how many leading bytes are right, and the token
+    // falls byte by byte. FixedTimeEquals always reads both buffers.
+    if (CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(bearer), serverToken))
+    {
+        if (HttpMethods.IsPost(request.Method) && IsExactly(path, "/api/devices"))
+        {
+            context.Items[Auth.ServerTokenKey] = true;
+            await next(context);
+            return;
+        }
+
+        // The upgrade relies on this answer: a device that still holds the server token
+        // learns that it must register or join (architecture.md section 27).
+        await Unauthorized(context, "a device token is required");
+        return;
+    }
+
+    var db = context.RequestServices.GetRequiredService<Db>();
+    using (var conn = db.Open())
+    {
+        if (Devices.ByTokenHash(conn, Devices.HashToken(bearer)) is not { } caller)
+        {
+            await Unauthorized(context, "unauthorized");
+            return;
+        }
+
+        context.Items[typeof(Caller)] = caller;
     }
 
     await next(context);
@@ -81,23 +120,32 @@ var build = long.Parse(typeof(Program).Assembly
     .First(attribute => attribute.Key == "BuildStamp").Value!);
 api.MapGet("/version", () => Results.Ok(new { build }));
 
-api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
+DeviceApi.Map(api);
+SpaceApi.Map(api);
+
+api.MapGet("/changes", (HttpContext context, Db db, long? since, int? limit, string? spaces) =>
 {
+    var caller = context.Caller();
     var from = since is > 0 ? since.Value : 0;
     var take = Math.Clamp(limit ?? 200, 1, 500);
-
-    // "spaces=a,b" is a subscription, not a grant: one token sees every space, and the
-    // filter only keeps a device from storing what it does not want. Absent or empty
-    // means every space, so a client from before spaces still gets all documents.
     var names = (spaces ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    if (!names.All(IsSpaceName))
+    if (!names.All(SpaceLog.IsSpaceName))
     {
-        return Results.BadRequest(new ErrorResponse(badSpace));
+        return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
     }
 
     using var conn = db.Open();
+    var readable = SpaceLog.Readable(conn, caller.Id);
+    // "spaces=a,b" narrows the caller's spaces; it never widens them. Absent or empty
+    // means all of them.
+    if (names.FirstOrDefault(name => !readable.Contains(name)) is { } foreign)
+    {
+        return Results.Json(new ErrorResponse($"not a member of {foreign}"), statusCode: 403);
+    }
+
+    IReadOnlyCollection<string> wanted = names.Length > 0 ? names.ToHashSet() : readable;
     // One row over the page size answers "is there more?" without a second count query.
-    var changes = Revisions.Changes(conn, from, take + 1, names);
+    var changes = Revisions.Changes(conn, from, take + 1, wanted);
     var more = changes.Count > take;
     if (more)
     {
@@ -106,35 +154,35 @@ api.MapGet("/changes", (Db db, long? since, int? limit, string? spaces) =>
 
     // An empty page must not move the cursor backward, so it keeps the old value.
     var next = changes.Count > 0 ? changes[^1].Seq : from;
-    return Results.Ok(new ChangesResponse(changes, next, more));
+    // A row that moved the document into a space the caller cannot read only says that
+    // the document left.
+    var visible = changes.Select(c => readable.Contains(c.Space) ? c : Revisions.WithoutSecrets(c)).ToList();
+    return Results.Ok(new ChangesResponse(visible, next, more));
 });
 
-api.MapPost("/docs/{id}/revisions", (Db db, string id, PushRequest request) =>
+api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider clock, string id, PushRequest request) =>
 {
+    var caller = context.Caller();
     if (request.Kind is not ("text" or "deleted" or "detached"))
     {
         return Results.BadRequest(new ErrorResponse("kind must be text, deleted or detached"));
     }
 
-    if (string.IsNullOrWhiteSpace(request.DeviceId))
+    if (request.Space is not { } space || !SpaceLog.IsSpaceName(space))
     {
-        return Results.BadRequest(new ErrorResponse("deviceId is required"));
+        return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
     }
 
-    // The name is the only thing the server checks about a space. A new name makes a new
-    // space; there is no list of spaces to register in.
-    var space = request.Space ?? defaultSpace;
-    if (!IsSpaceName(space))
+    if (space != SpaceLog.Keyring && Sealed.Check(request.Kind, request.Content, request.Meta) is { } refused)
     {
-        return Results.BadRequest(new ErrorResponse(badSpace));
+        return Results.BadRequest(new ErrorResponse(refused));
     }
 
-    // The meta object is stored as the exact JSON text the client sent. The server never
-    // reads inside it (architecture.md section 7).
+    // The meta object is stored as the exact JSON text the client sent.
     var meta = request.Meta is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } value
         ? value.GetRawText()
         : null;
-    var serverTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var serverTime = clock.GetUtcNow().ToUnixTimeMilliseconds();
 
     using var conn = db.Open();
     // BEGIN IMMEDIATE (deferred: false) takes the write lock before the first read. With a
@@ -142,56 +190,75 @@ api.MapPost("/docs/{id}/revisions", (Db db, string id, PushRequest request) =>
     // and then race for rev + 1; one would fail on the UNIQUE(doc_id, rev) constraint.
     using var transaction = conn.BeginTransaction(deferred: false);
 
-    var current = Revisions.CurrentRev(conn, id);
-    if (request.BaseRev is { } claimed && claimed != current)
+    var readable = SpaceLog.Readable(conn, caller.Id);
+    var current = Revisions.Current(conn, id);
+    // 404 and not 403: a device outside the space must not learn that the note exists.
+    if (current is not null && !readable.Contains(current.Space))
+    {
+        return Results.NotFound(new ErrorResponse("unknown document"));
+    }
+
+    if (!readable.Contains(space))
+    {
+        return Results.Json(new ErrorResponse($"not a member of {space}"), statusCode: 403);
+    }
+
+    // The keyring space skips the plain-text check and every device reads it, so a note
+    // that moved in would be open to all devices.
+    if (current is not null && (current.Space == SpaceLog.Keyring) != (space == SpaceLog.Keyring))
+    {
+        return Results.BadRequest(new ErrorResponse("a document cannot move into or out of keyring"));
+    }
+
+    var currentRev = current?.Rev ?? 0;
+    if (request.BaseRev is { } claimed && claimed != currentRev)
     {
         // The client pushed against a revision that is no longer current. It gets the
         // current one back and resolves the conflict locally (architecture.md section 3).
-        return Results.Json(new ConflictResponse(Revisions.Current(conn, id)), statusCode: 409);
+        return Results.Json(new ConflictResponse(current), statusCode: 409);
     }
 
-    var rev = current + 1;
+    var rev = currentRev + 1;
+    var prevSpace = current is not null && current.Space != space ? current.Space : null;
     var seq = Revisions.Insert(
         conn, id, rev, request.Kind, request.Content, meta,
-        request.DeviceId, request.ClientTime, serverTime, space);
+        caller.Id, request.ClientTime, serverTime, space, prevSpace);
     transaction.Commit();
 
     return Results.Created($"/api/docs/{id}/revisions/{rev}", new PushResponse(rev, seq));
 });
 
-// The settings panel lists the spaces a device can subscribe to. Counts, not documents:
-// a device must not need to pull a space to learn that it exists.
-api.MapGet("/spaces", (Db db) =>
-{
-    using var conn = db.Open();
-    return Results.Ok(Revisions.Spaces(conn));
-});
-
-api.MapGet("/docs/{id}", (Db db, string id) =>
+api.MapGet("/docs/{id}", (HttpContext context, Db db, string id) =>
 {
     using var conn = db.Open();
     var change = Revisions.Current(conn, id);
-    return change is null
+    return change is null || !SpaceLog.Readable(conn, context.Caller().Id).Contains(change.Space)
         ? Results.NotFound(new ErrorResponse("unknown document"))
         : Results.Ok(change);
 });
 
-api.MapGet("/docs/{id}/revisions", (Db db, string id) =>
+api.MapGet("/docs/{id}/revisions", (HttpContext context, Db db, string id) =>
 {
     using var conn = db.Open();
-    return Results.Ok(Revisions.History(conn, id));
+    var readable = SpaceLog.Readable(conn, context.Caller().Id);
+    var current = Revisions.Current(conn, id);
+    return current is null || !readable.Contains(current.Space)
+        ? Results.NotFound(new ErrorResponse("unknown document"))
+        : Results.Ok(Revisions.History(conn, id, readable));
 });
 
-api.MapGet("/docs/{id}/revisions/{rev:long}", (Db db, string id, long rev) =>
+api.MapGet("/docs/{id}/revisions/{rev:long}", (HttpContext context, Db db, string id, long rev) =>
 {
     using var conn = db.Open();
-    var change = Revisions.One(conn, id, rev);
-    return change is null
+    var readable = SpaceLog.Readable(conn, context.Caller().Id);
+    var current = Revisions.Current(conn, id);
+    var change = current is not null && readable.Contains(current.Space) ? Revisions.One(conn, id, rev) : null;
+    return change is null || !readable.Contains(change.Space)
         ? Results.NotFound(new ErrorResponse("unknown revision"))
         : Results.Ok(change);
 });
 
-api.MapDelete("/docs/{id}/revisions", (Db db, string id, long? below) =>
+api.MapDelete("/docs/{id}/revisions", (HttpContext context, Db db, string id, long? below) =>
 {
     // "below" is required on purpose: a purge without a bound would be "delete the
     // history", and a typo in a query string should not do that.
@@ -201,36 +268,34 @@ api.MapDelete("/docs/{id}/revisions", (Db db, string id, long? below) =>
     }
 
     using var conn = db.Open();
+    var current = Revisions.Current(conn, id);
+    if (current is not null && !SpaceLog.Readable(conn, context.Caller().Id).Contains(current.Space))
+    {
+        return Results.NotFound(new ErrorResponse("unknown document"));
+    }
+
     return Results.Ok(new PurgeResponse(Revisions.Purge(conn, id, below.Value)));
 });
 
 app.Run();
 return 0;
 
-static bool IsAuthorized(StringValues header, byte[] expected)
+static string? BearerOf(StringValues header)
 {
     var value = header.Count == 1 ? header[0] : null;
-    if (value is null || !value.StartsWith("Bearer ", StringComparison.Ordinal))
-    {
-        return false;
-    }
+    return value is not null && value.StartsWith("Bearer ", StringComparison.Ordinal)
+        ? value["Bearer ".Length..]
+        : null;
+}
 
-    var given = Encoding.UTF8.GetBytes(value["Bearer ".Length..]);
-    // Constant-time compare. A normal comparison stops at the first wrong byte, so the
-    // response time tells an attacker how many leading bytes are right, and the token
-    // falls byte by byte. FixedTimeEquals always reads both buffers.
-    // It does return false at once for a length mismatch; the token length is not secret.
-    return CryptographicOperations.FixedTimeEquals(given, expected);
+static bool IsExactly(PathString path, string expected) =>
+    path.StartsWithSegments(expected, out var rest) && !rest.HasValue;
+
+static Task Unauthorized(HttpContext context, string error)
+{
+    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+    return context.Response.WriteAsJsonAsync(new ErrorResponse(error));
 }
 
 // WebApplicationFactory<Program> in the test project needs a public Program type.
-public partial class Program
-{
-    // A space name goes into URLs, settings keys and the sidebar, so it stays a plain
-    // token. \z and not $: $ also matches before a trailing newline, and "work\n" would
-    // pass as a name.
-    [GeneratedRegex(@"^[A-Za-z0-9_-]{1,32}\z")]
-    private static partial Regex SpaceNameRule();
-
-    static bool IsSpaceName(string name) => SpaceNameRule().IsMatch(name);
-}
+public partial class Program;

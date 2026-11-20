@@ -1,35 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.Data.Sqlite;
+using static Vrtti.Server.Tests.TestApp;
 
 namespace Vrtti.Server.Tests;
 
-/// <summary>Spaces: the column, the filter, the list, the migration (architecture.md section 25).</summary>
+/// <summary>Space names, the filter, the list, the migration.</summary>
 public class SpacesTests
 {
-    const long ClientTime = 1_700_000_000_000;
-
-    [Fact]
-    public async Task Push_without_a_space_reads_back_as_personal()
-    {
-        using var app = new TestApp();
-        var client = app.Client();
-
-        // No "space" key at all, as a client from before spaces sends it.
-        using var absent = await client.PostAsJsonAsync(
-            "/api/docs/doc-1/revisions",
-            new { baseRev = (long?)null, kind = "text", content = "x", deviceId = "device-a", clientTime = ClientTime });
-        Assert.Equal(HttpStatusCode.Created, absent.StatusCode);
-        using var explicitNull = await Push(client, "doc-2", space: null);
-        Assert.Equal(HttpStatusCode.Created, explicitNull.StatusCode);
-
-        var current = await client.GetFromJsonAsync<Change>("/api/docs/doc-1");
-        Assert.Equal("personal", current!.Space);
-
-        var changes = await client.GetFromJsonAsync<ChangesResponse>("/api/changes");
-        Assert.Equal(["personal", "personal"], changes!.Changes.Select(c => c.Space));
-    }
-
     [Theory]
     [InlineData("")]
     [InlineData("has space")]
@@ -39,7 +17,8 @@ public class SpacesTests
     public async Task A_bad_space_name_is_400_on_push(string space)
     {
         using var app = new TestApp();
-        using var push = await Push(app.Client(), "doc-1", space: space);
+        var phone = await app.Register("phone");
+        using var push = await Push(phone.Http, "doc-1", space);
 
         Assert.Equal(HttpStatusCode.BadRequest, push.StatusCode);
         var error = await push.Content.ReadFromJsonAsync<ErrorResponse>();
@@ -53,7 +32,8 @@ public class SpacesTests
     public async Task A_bad_space_name_is_400_on_the_filter(string spaces)
     {
         using var app = new TestApp();
-        using var response = await app.Client().GetAsync($"/api/changes?spaces={spaces}");
+        var phone = await app.Register("phone");
+        using var response = await phone.Http.GetAsync($"/api/changes?spaces={spaces}");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -62,11 +42,15 @@ public class SpacesTests
     public async Task The_filter_returns_only_documents_of_the_named_spaces()
     {
         using var app = new TestApp();
-        var client = app.Client();
+        var phone = await app.Register("phone");
+        await app.Space("personal", phone);
+        await app.Space("work", phone);
+        await app.Space("A-z_09-a234567890123456789012345", phone);
+        var client = phone.Http;
 
-        await Push(client, "home", space: "personal");
-        await Push(client, "job", space: "work");
-        await Push(client, "max", space: "A-z_09-a234567890123456789012345");
+        await Push(client, "home", "personal");
+        await Push(client, "job", "work");
+        await Push(client, "max", "A-z_09-a234567890123456789012345");
 
         Assert.Equal(["job"], await DocIds(client, "?spaces=work"));
         Assert.Equal(["home", "job"], await DocIds(client, "?spaces=personal,work"));
@@ -77,47 +61,40 @@ public class SpacesTests
     }
 
     [Fact]
-    public async Task A_document_that_moved_out_of_a_space_is_omitted_from_it()
+    public async Task Spaces_lists_the_callers_spaces_with_live_documents_and_the_log_head()
     {
         using var app = new TestApp();
-        var client = app.Client();
+        var phone = await app.Register("phone");
+        var dev = await app.Register("dev");
+        await app.Space("work", phone, dev);
+        await app.Space("old", phone);
+        await app.Space("empty", phone);
+        await app.Space("personal", phone);
+        var client = phone.Http;
 
-        await Push(client, "moved", baseRev: 0, space: "personal");
-        await Push(client, "moved", baseRev: 1, space: "work");
-
-        // The older row is still in personal, but the newest row decides.
-        Assert.Empty(await DocIds(client, "?spaces=personal"));
-        var changes = await client.GetFromJsonAsync<ChangesResponse>("/api/changes?spaces=work");
-        var only = Assert.Single(changes!.Changes);
-        Assert.Equal("moved", only.DocId);
-        Assert.Equal(2, only.Rev);
-        Assert.Equal("work", only.Space);
-    }
-
-    [Fact]
-    public async Task Spaces_counts_live_documents_per_space()
-    {
-        using var app = new TestApp();
-        var client = app.Client();
-
-        await Push(client, "a", space: "work");
-        await Push(client, "b", space: "work");
-        await Push(client, "c", space: null);
-        await Push(client, "gone", baseRev: 0, space: "work");
-        await Push(client, "gone", baseRev: 1, kind: "deleted", content: null, space: "work");
-        await Push(client, "left", baseRev: 0, space: "old");
-        await Push(client, "left", baseRev: 1, space: "work");
+        await Push(client, "a", "work");
+        await Push(client, "b", "work");
+        await Push(client, "c", "personal");
+        await Push(client, "gone", "work", baseRev: 0);
+        await Push(client, "gone", "work", baseRev: 1, kind: "deleted", content: null);
+        await Push(client, "left", "old", baseRev: 0);
+        await Push(client, "left", "work", baseRev: 1);
 
         var spaces = await client.GetFromJsonAsync<List<SpaceInfo>>("/api/spaces");
 
-        // "gone" ends in a tombstone; "left" moved away, so "old" has nothing live.
+        // "gone" ends in a tombstone; "left" moved away, so "old" has nothing live. "work"
+        // has two log entries: the create and the add of dev.
         Assert.Equal(
-            [new SpaceInfo("personal", 1), new SpaceInfo("work", 3)],
+            [new SpaceInfo("empty", 0, 1), new SpaceInfo("old", 0, 1), new SpaceInfo("personal", 1, 1), new SpaceInfo("work", 3, 2)],
             spaces!);
+
+        // dev sees only its own space, and no keyring entry.
+        var devSpaces = await dev.Http.GetFromJsonAsync<List<SpaceInfo>>("/api/spaces");
+        Assert.Equal([new SpaceInfo("work", 3, 2)], devSpaces!);
     }
 
     [Fact]
-    public void Migration_adds_the_space_column_to_an_old_database()
+    public void Migration_brings_a_database_from_before_spaces_to_the_current_schema()
     {
         var dir = Path.Combine(Path.GetTempPath(), "vrtti-tests", Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(dir);
@@ -145,21 +122,29 @@ public class SpacesTests
                     CREATE INDEX revisions_doc ON revisions(doc_id, seq);
                     INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time)
                     VALUES ('keys', 1, 'text', 'k', '{"kind":"keyring"}', 'd', 1, 1),
-                           ('note', 1, 'text', 'n', '{"title":"x"}', 'd', 1, 1),
+                           ('note', 1, 'text', 'n', '{"title":"x","lang":"markdown","langSource":"user","enc":{"preset":"all-devices"}}', 'd', 1, 1),
                            ('bare', 1, 'text', 'b', NULL, 'd', 1, 1);
                     """);
             }
 
             var db = new Db(path);
-            // A second start must find the column and leave the rows alone.
+            // A second start must find the columns and leave the rows alone.
             _ = new Db(path);
 
             using var check = db.Open();
             Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM pragma_table_info('revisions') WHERE name = 'space'"));
+            Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM pragma_table_info('revisions') WHERE name = 'prev_space'"));
             Assert.Equal("keyring", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'keys'"));
             Assert.Equal("personal", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'note'"));
             Assert.Equal("personal", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'bare'"));
             Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'revisions_space'"));
+            Assert.Equal(4L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('devices', 'members', 'space_log', 'joins')"));
+
+            // The readable labels are gone, the rows and the other fields stay.
+            Assert.Equal(3L, Scalar(check, "SELECT COUNT(*) FROM revisions"));
+            Assert.Equal("""{"enc":{"preset":"all-devices"}}""", Scalar(check, "SELECT meta FROM revisions WHERE doc_id = 'note'"));
+            Assert.Equal("""{"kind":"keyring"}""", Scalar(check, "SELECT meta FROM revisions WHERE doc_id = 'keys'"));
+            Assert.Equal("n", Scalar(check, "SELECT content FROM revisions WHERE doc_id = 'note'"));
         }
         finally
         {
@@ -181,17 +166,6 @@ public class SpacesTests
         var changes = await client.GetFromJsonAsync<ChangesResponse>($"/api/changes{query}");
         return [.. changes!.Changes.Select(c => c.DocId)];
     }
-
-    static Task<HttpResponseMessage> Push(
-        HttpClient client,
-        string docId,
-        string? space,
-        long? baseRev = null,
-        string kind = "text",
-        string? content = "text")
-        => client.PostAsJsonAsync(
-            $"/api/docs/{docId}/revisions",
-            new { baseRev, kind, content, deviceId = "device-a", clientTime = ClientTime, space });
 
     static void Execute(SqliteConnection conn, string sql)
     {
