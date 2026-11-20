@@ -931,6 +931,8 @@ export function createSyncClient({ store, keyring }) {
     if (next) await putSetting(CONFIG_KEY, next);
     else await deleteSetting(CONFIG_KEY);
     post("setting", { key: CONFIG_KEY });
+    // Only a device token answers /api/model (§27); probeModel checks it.
+    void probeModel();
   }
 
   /** Leave the server: this device forgets its token. Its notes stay. */
@@ -1099,6 +1101,40 @@ export function createSyncClient({ store, keyring }) {
     // could land between its page and that page's write and step back.
     if (!started) await readCursors();
     if (!started) setStatus({ state: isConfigured() ? "idle" : needsUpgrade() ? "error" : "off" });
+    void probeModel();
+  }
+
+  // ---- The user's language model (.work/mixed-spellcheck/plan.md) ---------
+  //
+  // The sync server can pass text to a model for "Add diacritics (vllm)".
+  // Asked once per configuration, in every window (not only the sync leader),
+  // because any window can show the menu entry.
+  let model = false;
+
+  async function probeModel() {
+    model = false;
+    if (isConfigured()) {
+      try {
+        const res = await request("/api/model");
+        // 404: a server from before this endpoint, which has no model.
+        if (res.ok) model = (await res.json()).diacritics === true;
+      } catch {
+        // Offline at startup: no entry until the next configuration or
+        // reload. The command asks again (runDiacritics in main.js).
+      }
+    }
+    return model;
+  }
+
+  /**
+   * One paragraph to the model, through the server. Throws on any failure;
+   * the caller keeps its local result for that paragraph.
+   * @param {string} text @returns {Promise<string>}
+   */
+  async function addDiacritics(text) {
+    const res = await request("/api/model/diacritics", { method: "POST", body: { text } });
+    if (!res.ok) throw httpError(res);
+    return (await res.json()).text;
   }
 
   async function readCursors() {
@@ -1228,6 +1264,12 @@ export function createSyncClient({ store, keyring }) {
     get needsUpgrade() {
       return needsUpgrade();
     },
+    // Whether the server has a model for "Add diacritics (vllm)".
+    get hasModel() {
+      return model;
+    },
+    addDiacritics,
+    probeModel,
     get config() {
       return config ?? { url: "", token: "" };
     },

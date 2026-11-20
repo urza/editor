@@ -36,7 +36,9 @@ import { PALETTE } from "./crypto/spaces.js";
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
-import { detectedLanguages, isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { activeLangs, switchLang } from "./editor/mixed.js";
+import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import {
   askPassphrase,
@@ -304,6 +306,59 @@ async function start() {
     },
   });
   register({
+    id: "spell.lang",
+    title: "Switch a spellcheck language of the note",
+    // The argument is "cs" or "en". With the spellcheck off on this device,
+    // a click turns it on and makes sure the clicked language is on: the
+    // user clicked to see that language, whatever the note had stored.
+    run: async (/** @type {"cs" | "en"} */ lang) => {
+      const id = store.activeId;
+      const record = id ? store.get(id) : undefined;
+      if (!id || !record) return;
+      const on = !isEnabled() || !activeLangs(record.spellOff)[lang];
+      setEnabled(true);
+      await store.setSpellOff(id, switchLang(record.spellOff, lang, on));
+    },
+  });
+  // A command from the menu of a note gets its id and works on the whole
+  // note, which it opens first: the store has no safe way to change the text
+  // of a note that is not on screen (a parked editor state would write the
+  // old text back). The key shortcut passes no id and works on the selection.
+  /** @param {string | undefined} id @param {boolean} withModel */
+  async function runDiacritics(id, withModel) {
+    // Asked again here: the answer from startup is "no" when the device was
+    // offline then (code review, UX finding 4).
+    if (withModel && !sync?.hasModel && !(await sync?.probeModel())) {
+      statusbar.notice(sync?.isConfigured ? "the sync server has no model" : "no sync server is set");
+      return;
+    }
+    const target = id ?? store.activeId;
+    if (!target) return;
+    if (target !== store.activeId) await store.activate(target);
+    const view = editor.view;
+    // A locked note, or one still being read, shows a read-only placeholder.
+    if (store.activeId !== target || view.state.readOnly) {
+      statusbar.notice("the note is not open for editing");
+      return;
+    }
+    await addDiacritics(view, {
+      model: withModel && sync ? { ask: (text) => /** @type {any} */ (sync).addDiacritics(text) } : null,
+      notice: statusbar.notice,
+      wholeNote: id !== undefined,
+      stillHere: () => store.activeId === target,
+    });
+  }
+  register({
+    id: "diacritics.local",
+    title: "Add diacritics (local)",
+    run: (id) => runDiacritics(id, false),
+  });
+  register({
+    id: "diacritics.model",
+    title: "Add diacritics (vllm)",
+    run: (id) => runDiacritics(id, true),
+  });
+  register({
     id: "syntax.set",
     title: "Set syntax",
     // The argument is a language id; editor/lang.js exports LANGUAGES, the
@@ -325,7 +380,19 @@ async function start() {
   register({
     id: "app.update",
     title: "Check for update",
-    run: (onStatus) => checkForUpdate(onStatus),
+    // Settings passes its row repaint. The shell's Help > Check for updates…
+    // sends this command with no argument (src-tauri/src/update.rs), and the
+    // shell's dialog speaks only for the shell, so the page's result goes to
+    // the status bar. Sticky, until the check's own null 3 s after the
+    // result: the shell's dialog opens at about the same time, and a 1.5 s
+    // notice would end behind it unread.
+    run: (onStatus) =>
+      checkForUpdate(
+        typeof onStatus === "function"
+          ? onStatus
+          : (/** @type {string | null} */ msg) =>
+              msg ? statusbar.notice("page: " + msg, true) : statusbar.endNotice()
+      ),
   });
 
   // Devices and keys (architecture.md §5, §27). No keyboard shortcuts: setup
@@ -1197,7 +1264,9 @@ async function start() {
   // editor/transform.js, run on this view.
   mountTransforms(editor);
   // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
-  // variable, and nothing from the editor controller.
+  // variable, and nothing from the editor controller. Must stay after
+  // store.load(): at mount it drops the saved zoom of every note the store
+  // does not know, and before the load that is every note.
   const zoom = mountZoom(host, store);
   // Sublime's Ctrl+1 (focus group 1), the partner of Ctrl+0 in ui/sidebar.js.
   // In a browser tab Ctrl+1 is "first tab" and may never arrive; it is for
@@ -1247,7 +1316,7 @@ async function start() {
   mountNewButton();
   mountThumb();
   mountSidebar(store, folders, sync);
-  const statusbar = mountStatusbar(store, sync, zoom);
+  const statusbar = mountStatusbar(store, sync, zoom, editor.view);
   const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
@@ -1352,7 +1421,7 @@ async function start() {
     settings: { get: getSetting, put: putSetting },
     // Spellcheck surface for the checks (architecture.md §11): the language
     // the last pass found, and the detector itself for table-driven cases.
-    spell: { languages: detectedLanguages, detect: detectLanguage, segments },
+    spell: { detect: detectLanguage, segments },
   };
 }
 

@@ -122,7 +122,7 @@ public class SpacesTests
                     CREATE INDEX revisions_doc ON revisions(doc_id, seq);
                     INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time)
                     VALUES ('keys', 1, 'text', 'k', '{"kind":"keyring"}', 'd', 1, 1),
-                           ('note', 1, 'text', 'n', '{"title":"x","lang":"markdown","langSource":"user","enc":{"preset":"all-devices"}}', 'd', 1, 1),
+                           ('note', 1, 'text', 'n', '{"title":"x","lang":"markdown","langSource":"user","spellOff":["en"],"enc":{"preset":"all-devices"}}', 'd', 1, 1),
                            ('bare', 1, 'text', 'b', NULL, 'd', 1, 1);
                     """);
             }

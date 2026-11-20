@@ -86,13 +86,14 @@ public sealed class Db
         {
             // One transaction, for the reason of the step above. The json_remove belongs
             // to this step and runs once: notes encrypted before the upgrade carried a
-            // readable title in meta, and the new server holds no readable title. It keeps
-            // the rows, so the history of those notes stays. json_remove ignores a path
-            // that is not there, so rows without these fields are unchanged.
+            // readable title and spellcheck languages in meta, and the new server holds no
+            // readable field. It keeps the rows, so the history of those notes stays.
+            // json_remove ignores a path that is not there, so rows without these fields
+            // are unchanged.
             using var transaction = conn.BeginTransaction();
             Execute(conn, "ALTER TABLE revisions ADD COLUMN prev_space TEXT;");
             Execute(conn, """
-                UPDATE revisions SET meta = json_remove(meta, '$.title', '$.lang', '$.langSource')
+                UPDATE revisions SET meta = json_remove(meta, '$.title', '$.lang', '$.langSource', '$.spellOff')
                 WHERE meta IS NOT NULL AND json_valid(meta);
                 """);
             transaction.Commit();

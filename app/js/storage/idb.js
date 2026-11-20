@@ -116,6 +116,8 @@
  *                            so the editor detects it again on open.
  * @property {'auto' | 'user'} [langSource]  Who decided `lang`. A 'user' choice is
  *                            never overwritten by detection (architecture.md §9).
+ * @property {string[]} [spellOff]  The spellcheck languages ("cs", "en") that are off
+ *                            for this note. Absent or empty means both are on.
  * @property {number} [trashedAt]  Set when a `deleted` tombstone reached this
  *                            record (architecture.md §22), or the device lost
  *                            the note (§27): out of every list, restorable for

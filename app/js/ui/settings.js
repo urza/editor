@@ -10,6 +10,8 @@
 
 import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { activeLangs } from "../editor/mixed.js";
+import { modelFixesCzechParagraphs, setModelFixesCzechParagraphs } from "../editor/adddiacritics.js";
 import { hasDisk, isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
@@ -228,7 +230,7 @@ const SECTIONS = [
         label: "Editor text size",
         hint:
           "The note text only. A setting of this device, so it never syncs. " +
-          "Ctrl+wheel over a note zooms that note alone, until you close it.",
+          "Ctrl+wheel over a note zooms that note alone, on this device.",
         unit: " px",
         min: EDITOR.min,
         max: EDITOR.max,
@@ -267,7 +269,7 @@ const SECTIONS = [
         key: "list-rows",
         label: "Longer rows in the note list",
         hint:
-          "Each note shows the time of its last change and two lines of its text. " +
+          "Each note shows two lines of its text in place of one. " +
           "A setting of this device.",
         get: () => listRowsLong(),
         set: () => run("view.listRows"),
@@ -282,10 +284,44 @@ const SECTIONS = [
         key: "spellcheck",
         label: "Spellcheck (English and Czech)",
         hint:
-          "Offline, per paragraph: Harper for English, Hunspell for Czech. " +
-          "Spelling is underlined red, style hints blue.",
+          "Offline. A word is marked only when each language of the note rejects it: " +
+          "a typo red, Czech without diacritics and style hints blue. " +
+          "A setting of this device.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
+      },
+      // Only where "Add diacritics (vllm)" exists: the sync server has a model.
+      {
+        type: "toggle",
+        key: "model-czech",
+        label: "Model may fix English-looking words in Czech paragraphs",
+        hint:
+          "For \u201cAdd diacritics (vllm)\u201d. Short Czech words such as az, tim or mit " +
+          "look English to the checker. On: the model may write až, tím, mít in a Czech " +
+          "paragraph, and it may also change a real English word there. A setting of this device.",
+        visible: () => Boolean(sync?.hasModel),
+        get: () => modelFixesCzechParagraphs(),
+        set: () => setModelFixesCzechParagraphs(!modelFixesCzechParagraphs()),
+      },
+      // The languages of the open note. Phone mode only (app.css): a PC has
+      // the two buttons in the status bar, and the phone has no status bar.
+      {
+        type: "toggle",
+        key: "spell-cs",
+        label: "Czech in this note",
+        visible: () => Boolean(store?.activeId),
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("cs"),
+        set: () => run("spell.lang", "cs"),
+      },
+      {
+        type: "toggle",
+        key: "spell-en",
+        label: "English in this note",
+        visible: () => Boolean(store?.activeId),
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("en"),
+        set: () => run("spell.lang", "en"),
       },
     ],
   },
@@ -1032,6 +1068,16 @@ function swatch(color) {
  * @param {{keyring?: import("../crypto/keyring.js").KeyRing,
  *          sync?: ReturnType<import("../sync/client.js").createSyncClient>}} [deps]
  */
+/**
+ * Whether a spellcheck language is on for the open note, as the status bar
+ * shows it: off when the spellcheck is off on this device.
+ * @param {"cs" | "en"} lang
+ */
+function noteLangOn(lang) {
+  const record = store?.activeId ? store.get(store.activeId) : undefined;
+  return isEnabled() && activeLangs(record?.spellOff)[lang];
+}
+
 export function mountSettings(deps = {}) {
   keyring = deps.keyring ?? null;
   sync = deps.sync ?? null;
@@ -1172,6 +1218,12 @@ export function mountSettings(deps = {}) {
   // The statusbar spellcheck button stays clickable next to an open panel on a
   // PC, so the panel repaints whenever that state flips, whoever flipped it.
   spellEvents.addEventListener("change", () => {
+    if (!panel.hidden) refresh();
+  });
+
+  // The language rows read the open note, which another window or a sync can
+  // change while the panel is open.
+  store?.events.addEventListener("spell", () => {
     if (!panel.hidden) refresh();
   });
 

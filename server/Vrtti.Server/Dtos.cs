@@ -107,3 +107,9 @@ public record PendingJoin(string Slot, string[] Spaces, string DeviceId, string 
 
 /// <summary>The member's reply to a join; both null while the member has not answered.</summary>
 public record JoinReply(string? Reply, string? Mac);
+
+/// <summary>Body of <c>POST /api/model/diacritics</c>: one paragraph.</summary>
+public record DiacriticsRequest(string? Text);
+
+/// <summary>The paragraph as the model returned it. The client checks it again.</summary>
+public record DiacriticsResponse(string Text);

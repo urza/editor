@@ -13,15 +13,14 @@ import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
 import { openMenu } from "./menu.js";
-import { phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode } from "./shell.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
 
-// Longer rows in the phone note list (architecture.md §9, Phone mode): the
-// time of the last change and two lines of preview, where a row has one line
-// by default. Device-local in localStorage, like the "+" setting next to it
+// Longer rows in the phone note list (architecture.md §9, Phone mode): two
+// lines of preview, where a row has one line by default. Device-local in localStorage, like the "+" setting next to it
 // (ui/newbutton.js): a phone and a small tablet want different answers. The
 // state is a class on <html> and app.css does the rest, so a change redraws
 // nothing; the inline script in index.html replays the class before the
@@ -237,6 +236,23 @@ export function mountSidebar(store, folders, sync) {
     // for it: there is no keyboard for Ctrl+A, Ctrl+C.
     items.push({ label: "Copy text", act: () => run("doc.copy", record.id) });
 
+    // Czech without diacritics (.work/mixed-spellcheck/plan.md). On a phone
+    // this menu is the one place for the commands; from here they work on
+    // the whole note. "(vllm)" only when the sync server has a model: the
+    // labels say where the text goes, as the user asked.
+    items.push({ separator: true });
+    items.push({
+      label: "Add diacritics (local)",
+      act: () => run("diacritics.local", record.id),
+    });
+    if (sync?.hasModel) {
+      items.push({
+        label: "Add diacritics (vllm)",
+        hint: "Sends the paragraphs to the model of your sync server",
+        act: () => run("diacritics.model", record.id),
+      });
+    }
+
     items.push({ separator: true });
     items.push(...syncItems(record));
     // History is the server's, so it only exists for a document the server
@@ -435,8 +451,8 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(warn);
     }
 
-    // The time of the last change, for the longer rows of the phone note
-    // list. Every row carries it and the preview below, in every layout, and
+    // The time of the last change, for the rows of the phone note list.
+    // Every row carries it and the preview below, in every layout, and
     // app.css shows them in phone mode only: the layout can change under a
     // drawn list (a phone turned on its side), and this way that needs no
     // redraw and no code that knows the mode.
@@ -1008,6 +1024,25 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
+   * The order of the Open list. On a PC it is the tab order, which the user
+   * sets by drag. In phone mode it is the time of the last change, oldest at
+   * the top and newest at the bottom, as in a chat with yourself (user
+   * decision, 2026-11-19): the newest note sits next to the thumb button.
+   * The phone has no drag (it ignores touch), so it loses no order the user
+   * made there, and the tab order stays untouched for the PC.
+   *
+   * The time is updatedAt: an edit, a sync that brings a change, and a
+   * reopen from Recent move a note to the bottom; a switch between notes
+   * does not. sort is stable, so notes with the same time keep the tab order.
+   *
+   * @param {BufferRecord[]} open
+   */
+  function openOrder(open) {
+    if (!phoneMode()) return open;
+    return [...open].sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+  }
+
+  /**
    * @param {{reveal?: boolean}} [opts] reveal: the active note changed, so
    *   its row must end up on screen. Off for every other redraw: a sync or a
    *   keystroke must not drag the list away from where the user scrolled it.
@@ -1032,7 +1067,7 @@ export function mountSidebar(store, folders, sync) {
     const focused = focusedRow();
 
     openList.replaceChildren(
-      ...store.openBuffers().map((b) => makeRow(b, { closable: true }))
+      ...openOrder(store.openBuffers()).map((b) => makeRow(b, { closable: true }))
     );
 
     const closed = store.closedBuffers();
@@ -1096,6 +1131,9 @@ export function mountSidebar(store, folders, sync) {
 
   store.events.addEventListener("change", () => render());
   store.events.addEventListener("active", () => render({ reveal: true }));
+  // The order of Open depends on the mode (openOrder), and a phone turned on
+  // its side can leave it with no store event to redraw the list.
+  onPhoneModeChange(() => render());
   // A lock takes the plaintext out of memory (model/docs.js lockAll), and a
   // preview drawn from it must leave the screen in the same moment. The store
   // sends no "change" for a lock, so without this the decrypted lines would

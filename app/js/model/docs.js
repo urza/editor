@@ -10,6 +10,7 @@
 //   "save"    { status }                       -> statusbar save indicator
 //   "replace" { id, content }                  -> editor replaces a document wholesale
 //   "lang"    { id, lang }                     -> editor swaps the language mode
+//   "spell"   { id }                           -> the spellcheck languages of a note changed
 //   "lock"    { ids }                          -> editor drops those states, shows the placeholder
 //   "unlock"                                   -> editor re-activates a placeholder
 //   "system"  { id }                            -> the hidden keyring record was written
@@ -1114,6 +1115,27 @@ export function createDocStore({
   }
 
   /**
+   * Switch a spellcheck language of one note on or off. The only writer of
+   * `spellOff` besides a pull (applyMeta). Like a hand-picked syntax, the
+   * choice travels with the note.
+   *
+   * No "change" event, as in setLang: the sync client reads "change" as an
+   * edit of the text. The push goes with the next edit or the next poll.
+   *
+   * @param {string} id
+   * @param {readonly string[]} spellOff The languages that are off, sorted.
+   */
+  async function setSpellOff(id, spellOff) {
+    const record = buffers.get(id);
+    if (!record) return;
+    if ((record.spellOff ?? []).join() === spellOff.join()) return;
+    record.spellOff = [...spellOff];
+    markDirty(record);
+    await persist({ ...record });
+    emit("spell", { id });
+  }
+
+  /**
    * Set or clear the user label of a buffer (architecture.md §7, §9). An empty
    * name clears it, which puts a scratch buffer back on its first line.
    *
@@ -1840,6 +1862,7 @@ export function createDocStore({
    * @property {string} [lang]
    * @property {'auto' | 'user'} [langSource]
    * @property {true} [pin]  Locked with a PIN.
+   * @property {string[]} [spellOff]  The languages switched off for the note.
    */
 
   /**
@@ -1969,6 +1992,9 @@ export function createDocStore({
     if (record.lang) fields.lang = record.lang;
     if (record.langSource) fields.langSource = record.langSource;
     if (record.pin) fields.pin = true;
+    // Always sent, an empty list when both languages are on: applyMeta reads
+    // a missing list as "keep this device's own" (see there).
+    fields.spellOff = record.spellOff ?? [];
     const space = record.sync?.space ?? "";
     return codec.encode(JSON.stringify(fields), codec.newEncMeta("space"), keyring, spaces.recipients(space));
   }
@@ -2108,6 +2134,15 @@ export function createDocStore({
     if (record.enc) record.firstLine = typeof fields.line === "string" ? fields.line : undefined;
     else delete record.firstLine;
     if (record.firstLine === undefined) delete record.firstLine;
+    // The one field that is NOT "absent means absent": a missing list keeps
+    // this device's own. sealMeta always sends it, so absent only means a
+    // sealed meta from before the field; deleting here would switch the
+    // note's languages back on, and nobody would see why.
+    if (Array.isArray(fields.spellOff)) {
+      const before = (record.spellOff ?? []).join();
+      record.spellOff = fields.spellOff.filter((l) => l === "cs" || l === "en");
+      if (record.spellOff.join() !== before) emit("spell", { id: record.id });
+    }
     // `kind` is deliberately not copied: it is per device. A doc that is
     // file-backed here stays file-backed, and one that arrived as scratch
     // stays scratch even if the other device has it on disk.
@@ -3130,6 +3165,11 @@ export function createDocStore({
       typeof previous?.content === "string";
     if (loaded) record.content = previous?.content;
     buffers.set(id, record);
+    // A language switched in another window (or pulled by the sync leader)
+    // changes no text, so nothing below would repaint the marks.
+    if ((previous?.spellOff ?? []).join() !== (record.spellOff ?? []).join()) {
+      emit("spell", { id });
+    }
     if (record.kind === "keyring") {
       plain.delete(id);
       emit("system", { id });
@@ -3280,6 +3320,7 @@ export function createDocStore({
     body,
     decodeContent,
     updateContent,
+    setSpellOff,
     // For the editor's locked placeholder: a LockedError while the keyring is
     // unlocked means this device is not a recipient, and no prompt can help.
     get isUnlocked() {

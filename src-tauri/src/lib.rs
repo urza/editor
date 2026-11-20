@@ -38,10 +38,13 @@ const MAIN: &str = "main";
 /// (app/js/commands/registry.js). The menu handler forwards them verbatim and
 /// never knows what a command does, so a new chord is one line here and one
 /// command on the page side. `CmdOrCtrl` gives Cmd on macOS and Ctrl elsewhere.
-const CHORDS: [(&str, &str, &str); 5] = [
+const CHORDS: [(&str, &str, &str); 6] = [
     ("buffer.new", "New", "CmdOrCtrl+N"),
     ("workspace.new", "New Window", "CmdOrCtrl+Shift+N"),
     ("buffer.save", "Save", "CmdOrCtrl+S"),
+    // The page's "Save to disk…": a scratch buffer gets its first file, a
+    // file buffer a new one (model/docs.js saveAs).
+    ("file.saveAs", "Save As…", "CmdOrCtrl+Shift+S"),
     ("buffer.close", "Close", "CmdOrCtrl+W"),
     ("search.inFiles", "Find in Files…", "CmdOrCtrl+Shift+F"),
 ];
@@ -447,7 +450,7 @@ fn open_paths<R: Runtime>(app: &AppHandle<R>, target: Option<&str>, paths: Vec<P
 /// page is ready. The page side is app/js/ui/desktop.js. `arg` is any JSON
 /// value; `command_js` writes the literal, so a path with a quote or a
 /// backslash in it cannot break out of the script.
-fn deliver<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: Option<Value>) {
+pub(crate) fn deliver<R: Runtime>(app: &AppHandle<R>, label: &str, id: &str, arg: Option<Value>) {
     if queue_unless_ready(app, label, id, &arg) {
         return;
     }
@@ -737,6 +740,7 @@ mod tests {
     #[test]
     fn menu_ids_route_to_the_page() {
         assert!(is_page_command("buffer.new"));
+        assert!(is_page_command("file.saveAs"));
         assert!(is_page_command("edit.titleCase"));
         assert!(is_page_command("edit.joinLines"));
         assert!(is_page_command("edit.sortLines"));

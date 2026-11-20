@@ -425,7 +425,7 @@ body {
   .action-label { display: none; }
 }
 
-/* Small chrome buttons: statusbar "↻". */
+/* Small chrome buttons: statusbar "⤓", the zoom percent. */
 .icon-button {
   border: 0;
   background: transparent;
@@ -440,23 +440,36 @@ body {
 
 .icon-button:hover { opacity: 1; }
 
-#status-update { color: var(--st-gutter-fg); font-size: var(--ui-md); }
+/* Spellcheck languages of the note, one button each, the only parts of the
+   bar with a border: they are the only parts with two states (user request,
+   2026-11-19: the look of a selected answer, but quieter). On is the
+   editor's hint blue at low strength; off is grey. */
+.status-langs { display: flex; gap: 6px; }
+.status-lang {
+  font: inherit;
+  line-height: 1.2;
+  padding: 1px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid rgba(102, 153, 204, 0.55);
+  background: rgba(102, 153, 204, 0.14);
+  color: var(--st-foreground);
+}
+.status-lang:hover { background: rgba(102, 153, 204, 0.24); }
+.status-lang.off {
+  border-color: #47515c;
+  background: transparent;
+  color: var(--st-gutter-fg);
+}
+.status-lang.off:hover { color: var(--st-text-fg); }
 
-/* Spellcheck indicator: the label is the state. Struck through and dimmed
-   means off. The id beats .icon-button:hover on specificity, so the hover
-   rule has to be repeated here or the off state would brighten on hover. */
-#status-spell { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
-#status-spell.off { opacity: 0.35; text-decoration: line-through; }
-#status-spell.off:hover { opacity: 0.6; }
+/* The state sign: a grey ✓ or … that draws no attention while all is well,
+   and the caret orange for a problem. */
+#status-state { color: #9aa7b4; font-size: inherit; min-width: 1.4em; opacity: 1; }
+#status-state.problem { color: var(--st-caret); }
 
-/* Sync indicator, same rules as the spellcheck one next to it: the label is
-   the state, and "off" (an error or offline) dims and strikes it. */
-#status-sync { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
-#status-sync.off { opacity: 0.35; text-decoration: line-through; }
-#status-sync.off:hover { opacity: 0.6; }
-
-/* Note zoom indicator (ui/zoom.js): the label is the percent, and the button
-   only shows while the open note is not at 100 %. A click resets. */
+/* Note zoom indicator (ui/zoom.js): the label is the percent of the open
+   note, 100 % too. A click resets. */
 #status-zoom { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
 
 .buffer-list {
@@ -1534,30 +1547,30 @@ img.twemoji {
    not add a box of its own. */
 .twemoji-wrap { white-space: nowrap; }
 
+/* About 31 px high with 13 px text (user request, 2026-11-19: "make it
+   larger"); it was 12 px text in about 23 px. */
 #statusbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 3px 10px;
+  gap: 16px;
+  padding: 5px 14px;
   background: var(--st-ui-bg);
   color: var(--st-text-fg);
-  font-size: var(--ui-sm);
+  font-size: var(--ui-md);
   user-select: none;
 }
 
-/* flex: 1 pushes the save and build stamps to the right edge. */
-#status-title {
+/* flex: 1 pushes everything else to the right edge. Tabular digits, so the
+   text does not shift while the cursor moves. */
+#status-pos {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--st-gutter-fg);
+  font-variant-numeric: tabular-nums;
 }
-
-#status-saveas { color: var(--st-gutter-fg); font-size: var(--ui-md); }
-
-#status-save { color: var(--st-gutter-fg); }
-#status-build { color: var(--st-gutter-fg); }
 
 /* ==== Phone mode (architecture.md §9, "Phone mode") ========================
 
@@ -1583,7 +1596,9 @@ img.twemoji {
 #notice,
 .buffer-preview,
 .buffer-time,
-.settings-row[data-key="list-rows"] {
+.settings-row[data-key="list-rows"],
+.settings-row[data-key="spell-cs"],
+.settings-row[data-key="spell-en"] {
   display: none;
 }
 
@@ -1709,8 +1724,18 @@ html.phone .buffer-preview {
   opacity: 0.7;
 }
 
-/* Longer rows, a setting of the device (ui/sidebar.js): the time of the last
-   change beside the title, and two lines of preview. */
+/* The time of the last change, at the right end of the first line (user
+   decision, 2026-11-19; before that only the longer rows had it). It never
+   shrinks, so a long title gives up the space and ends in "…". */
+html.phone .buffer-time {
+  display: block;
+  flex: 0 0 auto;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+}
+
+/* Longer rows, a setting of the device (ui/sidebar.js): two lines of preview
+   in place of one. */
 /* No larger min-height: a row grows with its preview, and a note with no
    preview keeps the short row instead of a tall empty one. */
 html.phone.rows-long .buffer-row {
@@ -1726,13 +1751,6 @@ html.phone.rows-long .buffer-preview {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;
-}
-
-html.phone.rows-long .buffer-time {
-  display: block;
-  flex: 0 0 auto;
-  font-size: var(--ui-xs);
-  color: var(--st-gutter-fg);
 }
 
 /* The ⋯ is the only way to the row menu on a phone, so it is a full target:
@@ -2083,4 +2101,7 @@ html.phone .menu-item {
 /* The row-length setting only means something here, and the sidebar "+" it
    replaces in this list is not on screen in phone mode. */
 html.phone .settings-row[data-key="list-rows"] { display: flex; }
+/* The note's spellcheck languages: on a PC the status bar has them. */
+html.phone .settings-row[data-key="spell-cs"],
+html.phone .settings-row[data-key="spell-en"] { display: flex; }
 html.phone .settings-row[data-key="sidebar-new"] { display: none; }
