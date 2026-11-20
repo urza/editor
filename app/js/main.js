@@ -460,7 +460,19 @@ async function start() {
   register({
     id: "app.update",
     title: "Check for update",
-    run: (onStatus) => checkForUpdate(onStatus),
+    // Settings passes its row repaint. The shell's Help > Check for updates…
+    // sends this command with no argument (src-tauri/src/update.rs), and the
+    // shell's dialog speaks only for the shell, so the page's result goes to
+    // the status bar. Sticky, until the check's own null 3 s after the
+    // result: the shell's dialog opens at about the same time, and a 1.5 s
+    // notice would end behind it unread.
+    run: (onStatus) =>
+      checkForUpdate(
+        typeof onStatus === "function"
+          ? onStatus
+          : (/** @type {string | null} */ msg) =>
+              msg ? statusbar.notice("page: " + msg, true) : statusbar.endNotice()
+      ),
   });
 
   // Encryption (architecture.md §5, §13.2). No keyboard shortcuts: setup runs

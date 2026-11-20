@@ -1,15 +1,16 @@
 // @ts-check
 // Status bar (.work/mixed-spellcheck/plan.md, "The status bar on a PC"): the
 // cursor position and word count at the left; at the right the note zoom,
-// the spellcheck languages of the note, one state sign for "saved and
-// synced", and "save to disk". Phone mode hides the bar; its notices then
-// show in #notice above the thumb button.
+// the spellcheck languages of the note, and one state sign for "saved and
+// synced". Phone mode hides the bar; its notices then show in #notice above
+// the thumb button.
 //
 // The name of the note, the build stamp and the update button were here
 // before. The first line of a note already shows its name, and Settings shows
-// the build and has the update check (user decision, 2026-11-19).
+// the build and has the update check (user decision, 2026-11-19). The "save
+// to disk" button went too: Ctrl+S, the palette and File > Save As… in the
+// shell offer the same (user decision, 2026-11-20).
 
-import { hasDisk } from "../model/capabilities.js";
 import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { editorEvents } from "../editor/editor.js";
@@ -47,7 +48,6 @@ export function mountStatusbar(store, sync, zoom, view) {
     cs: /** @type {HTMLElement} */ (document.getElementById("status-cs")),
     en: /** @type {HTMLElement} */ (document.getElementById("status-en")),
   };
-  const statusSaveAs = /** @type {HTMLElement} */ (document.getElementById("status-saveas"));
   const statusZoom = /** @type {HTMLElement} */ (document.getElementById("status-zoom"));
   // Phone mode hides the status bar, so a notice goes here too (app.css
   // shows it in phone mode only).
@@ -188,17 +188,11 @@ export function mountStatusbar(store, sync, zoom, view) {
    * A short message in the place of the state sign. It goes away after
    * 1.5 s, or, when sticky, stays until the next notice: a model can take
    * many seconds, and a 1.5 s "asking the model…" followed by a quiet bar
-   * looks like a command that did nothing.
+   * looks like a command that did nothing. endNotice ends a sticky one.
    * @param {string} text @param {boolean} [sticky]
    */
   function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
-    const end = () => {
-      noticeTimer = undefined;
-      statusState.classList.remove("notice");
-      phoneNotice.hidden = true;
-      renderState();
-    };
     statusState.textContent = text;
     statusState.classList.remove("problem");
     statusState.classList.add("notice");
@@ -206,10 +200,18 @@ export function mountStatusbar(store, sync, zoom, view) {
     phoneNotice.hidden = false;
     // A sticky notice still holds a timer handle, so renderState leaves it
     // alone until it ends.
-    noticeTimer = setTimeout(end, sticky ? 2 ** 31 - 1 : 1500);
+    noticeTimer = setTimeout(endNotice, sticky ? 2 ** 31 - 1 : 1500);
   }
 
-  // ---- Zoom and save to disk -------------------------------------------------
+  function endNotice() {
+    clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    statusState.classList.remove("notice");
+    phoneNotice.hidden = true;
+    renderState();
+  }
+
+  // ---- Zoom -----------------------------------------------------------------
 
   function renderZoom() {
     const value = zoom.percent();
@@ -226,22 +228,9 @@ export function mountStatusbar(store, sync, zoom, view) {
   statusZoom.addEventListener("click", () => run("view.zoomReset"));
   zoom.events.addEventListener("change", renderZoom);
 
-  function renderSaveAs() {
-    const record = store.activeId ? store.get(store.activeId) : undefined;
-    // The button offers a file to a buffer that has none. A file-backed buffer
-    // is already written by the disk write-behind, so the button would only
-    // invite a pointless second copy.
-    statusSaveAs.hidden = !hasDisk || !record || record.kind === "file";
-  }
-
-  if (hasDisk) statusSaveAs.addEventListener("click", () => run("file.saveAs"));
-  store.events.addEventListener("change", renderSaveAs);
-  store.events.addEventListener("active", renderSaveAs);
-
   renderPos();
   renderSpell();
   renderState();
   renderZoom();
-  renderSaveAs();
-  return { notice };
+  return { notice, endNotice };
 }
