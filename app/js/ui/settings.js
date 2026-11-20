@@ -267,7 +267,7 @@ const SECTIONS = [
         label: "Editor text size",
         hint:
           "The note text only. A setting of this device, so it never syncs. " +
-          "Ctrl+wheel over a note zooms that note alone, until you close it.",
+          "Ctrl+wheel over a note zooms that note alone, on this device.",
         unit: " px",
         min: EDITOR.min,
         max: EDITOR.max,

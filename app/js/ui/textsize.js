@@ -8,7 +8,7 @@
 //  - Interface: --ui-scale, a plain multiplier. Every size in the chrome is
 //    calc(Npx * var(--ui-scale)) in app.css, so one number turns all of them.
 //  - On top of the editor size, per note: --note-zoom, from Ctrl+wheel. It
-//    lives in ui/zoom.js, in memory only, and this module never sees it.
+//    lives in ui/zoom.js, saved per note, and this module never sees it.
 //
 // Two knobs and not one, because the editor is content and the sidebar is
 // chrome. A phone wants big document text next to a small sidebar. Browser

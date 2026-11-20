@@ -247,8 +247,8 @@
   <footer id="statusbar">
     <!-- "Line 12, Column 8 · 214 words", from ui/statusbar.js. -->
     <span id="status-pos"></span>
-    <!-- Note zoom. Hidden here and shown by ui/statusbar.js while the open
-         note is zoomed (ui/zoom.js): at 100% there is nothing to say. -->
+    <!-- Note zoom (ui/zoom.js). Hidden here and shown by ui/statusbar.js
+         while a note is open, so no empty button shows before boot. -->
     <button id="status-zoom" class="icon-button" type="button" hidden></button>
     <!-- The spellcheck languages of the open note. No title and no state
          class here: ui/statusbar.js owns both, because the state comes from

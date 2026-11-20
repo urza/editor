@@ -213,11 +213,14 @@ export function mountStatusbar(store, sync, zoom, view) {
 
   function renderZoom() {
     const value = zoom.percent();
-    // Hidden at 100: a label that reads "100%" on every note is noise. Shown,
-    // it answers "why is this note bigger?" and offers the way back.
-    statusZoom.hidden = value === ZOOM.default;
+    // Always shown, 100 % too (user decision, 2026-11-20): the label is where
+    // the zoom of the open note is read, and a zoom now outlives a restart.
+    statusZoom.hidden = !store.activeId;
     statusZoom.textContent = value + "%";
-    statusZoom.title = "Note zoom " + value + "% (click to reset)";
+    statusZoom.title =
+      value === ZOOM.default
+        ? "Note zoom 100% (Ctrl+wheel over the note to zoom)"
+        : "Note zoom " + value + "% (click to reset)";
   }
 
   statusZoom.addEventListener("click", () => run("view.zoomReset"));

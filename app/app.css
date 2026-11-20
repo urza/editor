@@ -468,8 +468,8 @@ body {
 #status-state { color: #9aa7b4; font-size: inherit; min-width: 1.4em; opacity: 1; }
 #status-state.problem { color: var(--st-caret); }
 
-/* Note zoom indicator (ui/zoom.js): the label is the percent, and the button
-   only shows while the open note is not at 100 %. A click resets. */
+/* Note zoom indicator (ui/zoom.js): the label is the percent of the open
+   note, 100 % too. A click resets. */
 #status-zoom { color: var(--st-gutter-fg); font-size: var(--ui-sm); }
 
 .buffer-list {

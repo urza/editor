@@ -1104,7 +1104,9 @@ async function start() {
   // editor/transform.js, run on this view.
   mountTransforms(editor);
   // Ctrl+wheel over the editor. Needs the host for the wheel and the CSS
-  // variable, and nothing from the editor controller.
+  // variable, and nothing from the editor controller. Must stay after
+  // store.load(): at mount it drops the saved zoom of every note the store
+  // does not know, and before the load that is every note.
   const zoom = mountZoom(host, store);
   // Sublime's Ctrl+1 (focus group 1), the partner of Ctrl+0 in ui/sidebar.js.
   // In a browser tab Ctrl+1 is "first tab" and may never arrive; it is for
