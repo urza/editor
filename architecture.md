@@ -1866,7 +1866,10 @@ whole folder.
 - **Scope is the workspace**: its tabs, then every file under its folders,
   in that order. Another workspace's tabs and folders are invisible, which
   §14 promised when folders became workspace property.
-- **Plain text, case-insensitive by default**, one toggle for case. No
+- **Plain text, case-insensitive by default.** Text in quotes matches
+  case (changed 2026-11-20; it was an "Aa" toggle). The closing quote is
+  optional, so a search as you type matches case from the first letter.
+  No
   regular expressions and no replace in this unit; both are cheap to add
   later and expensive to get wrong now.
 - **The search runs as the user types**, 250 ms after the last keystroke
@@ -1935,14 +1938,17 @@ whole folder.
 
 ### View
 
-Query field, an "Aa" toggle (`aria-pressed`), the × that closes the view
-(at the end of the field's row; on a phone, at the bottom of the list), a
-status line, then the list: one heading per file (the buffer title or the
-folder path), one row per matching line with the line number and the
-trimmed line, the first match wrapped in `<mark>`. Groups append as each
-file finishes, so a slow folder shows its first hits early. The status
-line ends with "N hits in M files", plus "K locked documents skipped" and
-one "needs reconnect" line per such folder. Escape in the field closes
+Query field with the × that closes the view inside it (on a phone, the ×
+is a bar at the bottom of the list), a status line, then the list: one
+heading per file (the buffer title or the folder path), one row per
+matching line with the line number and the trimmed line, the first match
+wrapped in `<mark>`. The heading and the field stay at the top while the
+list scrolls (not on a phone). A click on a file heading opens the file. A
+file shows its first 20 hits, then a "… N more" row that shows the rest.
+Groups append as each file finishes, so a slow folder shows its first hits
+early. The status line ends with "N hits in M files", plus "match case"
+for a quoted query, "K locked documents skipped", and one "needs
+reconnect" line per such folder. Escape in the field closes
 the view and returns focus to the editor.
 
 ### Gate

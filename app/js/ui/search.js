@@ -25,6 +25,7 @@ import { phoneMode } from "./shell.js";
  * @property {number} gen       Its generation; a newer one ends this run.
  * @property {RegExp} re        The query, escaped, case flag applied.
  * @property {number} len       Match length. Plain text, so it is the query's.
+ * @property {boolean} exact    The query was in quotes: case must match.
  * @property {number} hits
  * @property {number} files
  * @property {number} locked    Encrypted documents skipped (§5).
@@ -47,10 +48,28 @@ const PREVIEW = 160;
 const HEAD = 40;
 // Milliseconds after the last keystroke before the search runs.
 const TYPE_DELAY = 250;
+// Hits a file shows before a "… N more" row. One file that matches on every
+// line would otherwise push every other file far down the list.
+const FILE_HITS = 20;
 
 /** @param {string} text */
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The field's text as a query. Text in quotes matches case, and the quotes
+ * are not part of it (user request, 2026-11-20: this replaced the "Aa"
+ * toggle). The closing quote is optional, so the search as you type already
+ * matches case while the user types the word. The cost: a search for text
+ * that starts with a quote is not possible.
+ * @param {string} raw @returns {{text: string, exact: boolean}}
+ */
+function parseQuery(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('"')) return { text: raw, exact: false };
+  const end = trimmed.length > 1 && trimmed.endsWith('"') ? -1 : undefined;
+  return { text: trimmed.slice(1, end), exact: true };
 }
 
 /**
@@ -64,7 +83,6 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   const view = /** @type {HTMLElement} */ (document.getElementById("search-view"));
   const form = /** @type {HTMLFormElement} */ (document.getElementById("search-form"));
   const query = /** @type {HTMLInputElement} */ (document.getElementById("search-query"));
-  const caseButton = /** @type {HTMLElement} */ (document.getElementById("search-case"));
   const status = /** @type {HTMLElement} */ (document.getElementById("search-status"));
   const results = /** @type {HTMLElement} */ (document.getElementById("search-results"));
 
@@ -120,6 +138,8 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   function fileHeading(label, data) {
     const li = document.createElement("li");
     li.className = "search-file";
+    // Focusable like a hit: a click or Enter opens the file at its top.
+    li.tabIndex = 0;
     li.textContent = label;
     li.title = label;
     Object.assign(li.dataset, data);
@@ -195,8 +215,31 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     run.files++;
     // Groups append as each file finishes, so a slow folder shows its first
     // hits long before the scan ends (architecture.md §16).
-    results.append(fileHeading(label, data), ...rows);
+    results.append(fileHeading(label, data), ...rows.slice(0, FILE_HITS));
+    if (rows.length > FILE_HITS) {
+      const rest = rows.slice(FILE_HITS);
+      const more = document.createElement("li");
+      more.className = "search-more";
+      more.tabIndex = 0;
+      more.textContent = "… " + rest.length + " more";
+      hiddenRows.set(more, rest);
+      results.append(more);
+    }
     return true;
+  }
+
+  // The rows behind each "… N more", built with the others: the count is
+  // exact and a click only puts them on screen.
+  /** @type {WeakMap<Element, HTMLElement[]>} */
+  const hiddenRows = new WeakMap();
+
+  /** @param {Element} more */
+  function showMore(more) {
+    const rest = hiddenRows.get(more) || [];
+    more.replaceWith(...rest);
+    // Focus moves to the first new row, or a keyboard user would land on
+    // nothing: the row that had it is gone.
+    rest[0]?.focus();
   }
 
   /** @param {Run} run @param {boolean} running */
@@ -207,6 +250,9 @@ export function mountSearch({ store, folders, workspaces, editor }) {
         ? run.hits + (run.hits === 1 ? " hit in " : " hits in ") +
           run.files + (run.files === 1 ? " file" : " files")
         : "No hits";
+    // The only sign that the quotes worked: the field shows the quotes, not
+    // the mode.
+    if (run.exact) text += " · match case";
     if (run.locked) {
       text += " · " + run.locked +
         (run.locked === 1 ? " locked note skipped" : " locked notes skipped");
@@ -361,10 +407,11 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   }
 
   async function search() {
-    const text = query.value;
+    const { text, exact } = parseQuery(query.value);
     // Whitespace alone would match every line of every file on disk. An
     // emptied field also clears the list: with search as you type, rows for
-    // a query the user deleted would read as hits for nothing.
+    // a query the user deleted would read as hits for nothing. A lone quote
+    // counts as empty: it has nothing to match yet.
     if (!text.trim()) {
       generation++;
       handles.clear();
@@ -378,11 +425,9 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       gen: ++generation,
       // Plain text, not a pattern: §16 keeps regular expressions out of this
       // unit, so the query is escaped and the match length is its length.
-      re: new RegExp(
-        escapeRegExp(text),
-        caseButton.getAttribute("aria-pressed") === "true" ? "" : "i"
-      ),
+      re: new RegExp(escapeRegExp(text), exact ? "" : "i"),
       len: text.length,
+      exact,
       hits: 0,
       files: 0,
       locked: 0,
@@ -413,13 +458,19 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
   // ---- Opening a hit -------------------------------------------------------
 
-  /** @param {HTMLElement} row */
+  /**
+   * Open the file of a hit row and select the hit, or the file of a heading
+   * as it is, without a selection.
+   * @param {HTMLElement} row
+   */
   async function openHit(row) {
-    const at = {
-      line: Number(row.dataset.line),
-      col: Number(row.dataset.col),
-      len: Number(row.dataset.len),
-    };
+    const at = row.classList.contains("search-hit")
+      ? {
+          line: Number(row.dataset.line),
+          col: Number(row.dataset.col),
+          len: Number(row.dataset.len),
+        }
+      : null;
     const id = row.dataset.id;
     // The settings panel covers the editor; a hit opened behind it would be
     // invisible. Before the open, not after: closing hands focus back to the
@@ -432,7 +483,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       // owns brings that window forward instead (architecture.md §14).
       await run("buffer.reopen", id);
       if (workspaces.ownerOf(id) !== workspaces.id) return;
-      editor.reveal(id, at);
+      if (at) editor.reveal(id, at);
     } else {
       const folderId = row.dataset.folderId || "";
       const path = row.dataset.path || "";
@@ -452,7 +503,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       // (architecture.md §14). This window shows something else, so revealing
       // would select in a document the user never asked for.
       if (workspaces.ownerOf(record.id) !== workspaces.id) return;
-      editor.reveal(record.id, at);
+      if (at) editor.reveal(record.id, at);
     }
     // On a phone the sidebar is a drawer over the editor, so it has to get out
     // of the way of the line it just opened. A no-op on a PC.
@@ -461,18 +512,23 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
   // One delegated listener, not one per row: a run can put a thousand rows on
   // screen and replace them all on the next run.
-  results.addEventListener("click", (event) => {
-    const target = event.target;
-    const row = target instanceof Element ? target.closest(".search-hit") : null;
-    if (!(row instanceof HTMLElement)) return;
-    openHit(row).catch((err) => console.log("[vrtti] search: open failed", err));
-  });
+  /** @param {EventTarget | null} target */
+  function activate(target) {
+    const row = target instanceof Element
+      ? target.closest(".search-hit, .search-file, .search-more")
+      : null;
+    if (!(row instanceof HTMLElement)) return false;
+    if (row.classList.contains("search-more")) showMore(row);
+    else openHit(row).catch((err) => console.log("[vrtti] search: open failed", err));
+    return true;
+  }
+  results.addEventListener("click", (event) => activate(event.target));
   results.addEventListener("keydown", (event) => {
-    const row = event.target;
     if (event.key !== "Enter") return;
-    if (!(row instanceof HTMLElement) || !row.classList.contains("search-hit")) return;
-    event.preventDefault();
-    openHit(row).catch((err) => console.log("[vrtti] search: open failed", err));
+    // Only the focused row itself, as before: Enter is not for its children.
+    const row = event.target;
+    if (!(row instanceof HTMLElement) || row.tabIndex < 0) return;
+    if (activate(row)) event.preventDefault();
   });
 
   status.addEventListener("click", (event) => {
@@ -538,14 +594,6 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   query.addEventListener("input", () => {
     clearTimeout(typeTimer);
     typeTimer = setTimeout(startSearch, TYPE_DELAY);
-  });
-
-  caseButton.addEventListener("click", () => {
-    const on = caseButton.getAttribute("aria-pressed") === "true";
-    caseButton.setAttribute("aria-pressed", String(!on));
-    // The field searches as it changes, so the toggle does the same. An
-    // empty field has nothing to re-run.
-    if (query.value.trim()) startSearch();
   });
 
   const closeButton = /** @type {HTMLElement} */ (document.getElementById("search-close"));

@@ -685,13 +685,51 @@ body {
   display: none;
 }
 
-/* At the end of the field's row (user request, 2026-11-20): the way out sits
-   next to the field the user just typed in, not in the heading's corner. */
+/* The heading and the field stay at the top of the scroller while a long list
+   of hits scrolls under them (user request, 2026-11-20). An opaque
+   background, or the rows show through. flow-root keeps the heading's top
+   margin inside the box; a margin that escaped it would leave a see-through
+   gap above the stuck heading. z-index: over the <mark>s of the rows. */
+.search-top {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flow-root;
+  background: var(--st-sidebar-bg);
+}
+
+/* position: relative holds the × inside the field. */
+.search-form {
+  position: relative;
+  display: flex;
+  margin: 0 8px 6px;
+}
+
+#search-query {
+  flex: 1;
+  /* Without it the field refuses to shrink and overflows a 320px drawer. */
+  min-width: 0;
+  height: calc(22px * var(--ui-scale));
+  /* The right padding keeps typed text out from under the ×. */
+  padding: 0 calc(22px * var(--ui-scale)) 0 6px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-foreground);
+  font: inherit;
+  font-size: var(--ui-sm);
+}
+
+/* Inside the field, at its right end (user request, 2026-11-20). It closes
+   the search view; it does not clear the text. */
 #search-close {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: calc(22px * var(--ui-scale));
   height: calc(22px * var(--ui-scale));
   border: 0;
-  padding: 0 4px;
+  padding: 0;
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
@@ -702,58 +740,6 @@ body {
 }
 
 #search-close:hover { opacity: 1; }
-
-.search-form {
-  display: flex;
-  gap: 6px;
-  margin: 0 8px 6px;
-}
-
-#search-query {
-  flex: 1;
-  /* Without it the field refuses to shrink and pushes the buttons out of
-     a 320px drawer. */
-  min-width: 0;
-  height: calc(22px * var(--ui-scale));
-  padding: 0 6px;
-  border: 1px solid var(--st-selection-border);
-  border-radius: 3px;
-  background: var(--st-background);
-  color: var(--st-foreground);
-  font: inherit;
-  font-size: var(--ui-sm);
-}
-
-/* The same quiet look as the #open-actions row above: both are secondary
-   controls in the same column. */
-#search-case {
-  flex: 0 0 auto;
-  height: calc(22px * var(--ui-scale));
-  padding: 0 8px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--st-ui-bg);
-  color: var(--st-sidebar-label);
-  font: inherit;
-  font-size: var(--ui-xs);
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.85;
-}
-
-#search-case:hover {
-  background: var(--st-sidebar-selected);
-  color: var(--st-sidebar-heading);
-  opacity: 1;
-}
-
-/* The pressed state is the whole feedback for case sensitivity, so it uses the
-   caret orange rather than another shade of grey. */
-#search-case[aria-pressed="true"] {
-  background: var(--st-sidebar-selected);
-  color: var(--st-caret);
-  opacity: 1;
-}
 
 .search-status {
   margin: 0 10px 6px;
@@ -785,15 +771,38 @@ body {
 /* One heading per file with hits: a sidebar heading, smaller, and cut with an
    ellipsis because a folder path is as long as the tree is deep. No
    text-transform though, unlike .sidebar-heading: a path is data, and upper
-   casing it would misspell one on a case-sensitive file system. */
+   casing it would misspell one on a case-sensitive file system.
+   A click opens the file (user request, 2026-11-20), so it has a row's
+   hover. Padding, not margin, so the hover covers the whole width. */
 .search-file {
-  margin: 8px 10px 2px;
+  margin-top: 6px;
+  padding: 2px 10px;
   font-size: var(--ui-xs);
   letter-spacing: 0.04em;
   color: var(--st-sidebar-heading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+}
+.search-file:hover { background: #2A2F34; }
+.search-file:focus-visible {
+  background: var(--st-sidebar-selected);
+  outline: none;
+}
+
+/* "… 34 more" under the first hits of a file with many. A click shows the
+   rest. Indented like the line text, so it reads as part of the group. */
+.search-more {
+  padding: 2px 10px 2px calc(42px * var(--ui-scale));
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  cursor: pointer;
+}
+.search-more:hover { background: #2A2F34; color: var(--st-sidebar-label); }
+.search-more:focus-visible {
+  background: var(--st-sidebar-selected);
+  outline: none;
 }
 
 /* As dense as a tree row: a search can list a thousand of them. */
@@ -1916,14 +1925,19 @@ html.phone #search-query {
   font-size: max(16px, var(--ui-base));
 }
 
-html.phone #search-case {
-  height: var(--tap);
-  min-width: var(--tap);
-  font-size: var(--ui-sm);
-}
+/* The × is not in the field here: it is the "close search" bar at the bottom
+   (below), absolute against #sidebar. Both boxes must stay static, or the
+   bar would take one of them as its containing block and land in the field.
+   So on a phone the field scrolls away with the hits. */
+html.phone #search-query { padding-right: 6px; }
+html.phone .search-top { position: static; }
+html.phone .search-form { position: static; margin: 0 16px 8px; }
 
 html.phone .search-hit { min-height: var(--tap); align-items: center; }
-html.phone .search-form { margin: 0 16px 8px; }
+/* Tap targets too, now that a click opens the file or shows more hits.
+   line-height, not flex: a flex box loses the ellipsis on a long path. */
+html.phone .search-file,
+html.phone .search-more { padding-block: 0; line-height: var(--tap); }
 
 /* The disk buttons, where a phone browser has them at all. */
 html.phone #open-actions { margin: 0 16px 8px; }
