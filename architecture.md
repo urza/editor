@@ -3261,6 +3261,10 @@ detach of a note that moved away.
   the browser can, the X25519 secret becomes a stored key, the Ed25519 key
   is made fresh (no log names the old one yet), and the device never asks
   again. Where it cannot, the device keeps the passphrase.
+- A setting that holds a CryptoKey lives in the IndexedDB store `keys`,
+  which has no key path (v8). WebKit refuses a CryptoKey in a store with a
+  key path ("Evaluating the object store's key path did not yield a
+  value", seen on an iPhone); `putSetting` picks the store.
 - "Where the browser can" is tested step by step with throwaway keys
   (`storedKeysProblem`): make, use, store in IndexedDB, read back, use
   again. The switch names the step that failed. No import is tested: an
