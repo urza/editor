@@ -66,6 +66,7 @@ import * as age from "../crypto/age.js";
 // fact about device lists (architecture.md §13.3). This file only knows which
 // record it applies to.
 import { mergeKeyringContent, readKeyringContent } from "../crypto/keyring.js";
+import { needsReencrypt } from "../crypto/spaces.js";
 // The one import from editor/ in this layer. Detection is a rule about a
 // record, not about a view, and it lives next to the mode table it names
 // (editor/lang.js explains why the two stay together).
@@ -76,18 +77,22 @@ import { on, post } from "./channel.js";
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
 
 /**
- * What a device does with a space (architecture.md §25): 'tab' takes the
+ * What a device does with a space (architecture.md §25, §27): 'tab' takes the
  * notes and opens them in main, 'list' keeps a title stub until a click,
- * undefined is Not here.
+ * undefined is a space this device is not a member of.
  * @typedef {'tab' | 'list' | undefined} SpaceMode
  */
 
 /**
- * The store's view of the device's space settings. The sync client owns them;
- * the store only asks, the same way it asks `syncDefault`.
+ * The store's view of the device's spaces. The sync client owns them (the
+ * verified space logs and the settings); the store only asks, the same way it
+ * asks `syncDefault`.
  * @typedef {Object} SpacesDep
- * @property {() => string} defaultSpace
+ * @property {() => string | null} defaultSpace  null: the device is in no space.
  * @property {(space: string) => SpaceMode} modeOf
+ * @property {(space: string) => string[]} recipients  The members' recipients,
+ *   from the verified log; empty for a space this device does not know.
+ * @property {(space: string) => number} logSeq  The log position applied.
  */
 
 // Fixed id, not a UUID: every device must arrive at the same record so sync
@@ -145,20 +150,41 @@ export class UnavailableError extends Error {
   }
 }
 
+/**
+ * Whether the PIN-locked notes are open in this window right now
+ * (architecture.md §27). ui/pin.js owns the state and sets it here, so the
+ * pure title rule below can follow it without importing the UI.
+ */
+let pinOpen = false;
+/** @param {boolean} open */
+export function setPinOpen(open) {
+  pinOpen = open;
+}
+/** Is this note behind the PIN right now? @param {BufferRecord} record */
+export function isPinLocked(record) {
+  return Boolean(record.pin) && !pinOpen;
+}
+
 /** @param {BufferRecord} record @returns {string} */
 export function titleOf(record) {
   // A name the user typed wins over every derived one (architecture.md §7).
-  // It is also the label an encrypted doc keeps when its text is unreadable.
   if (record.title) return record.title;
+
+  // A locked note shows no first line: that line can hold the secret (§27).
+  if (isPinLocked(record)) return "Locked note";
 
   // A file-backed buffer is named by its file. Deriving the title from the
   // first line would rename someone's file every time they edit line 1.
   if (record.kind === "file" && record.file) return record.file.name;
 
-  // Untitled and encrypted: `content` is ciphertext, so its first line is a
-  // row of base64. A doc encrypted in this app is given a title first, so this
-  // is the courier case (§5) and a `.age` file with no name of its own.
-  if (record.enc) return "encrypted";
+  // An encrypted note: `content` is ciphertext, so its first line is a row of
+  // base64. The device keeps the first line of the text it last read or
+  // wrote (§27); without one (a courier device, §5, or a sealed title it
+  // could not open yet) the row says what it is.
+  if (record.enc) {
+    if (record.firstLine !== undefined) return record.firstLine || "untitled";
+    return "encrypted";
+  }
 
   return firstLineTitle(record.content) || "untitled";
 }
@@ -183,8 +209,10 @@ export function createDocStore({
   keyring,
   syncDefault = () => false,
   spaces = {
-    defaultSpace: () => DEFAULT_SPACE,
-    modeOf: (space) => (space === DEFAULT_SPACE ? "tab" : undefined),
+    defaultSpace: () => null,
+    modeOf: () => undefined,
+    recipients: () => [],
+    logSeq: () => 0,
   },
   workspaces,
 }) {
@@ -311,18 +339,24 @@ export function createDocStore({
     if (existing && change.rev <= existing.rev) return;
     if (change.kind !== "text") return dropRemote(change.docId);
     const meta = change.meta || {};
+    const sealed = meta.sealed ? await unseal(meta.sealed) : null;
     /** @type {RemoteStub} */
     const stub = {
       id: change.docId,
       space,
-      // Most notes carry no user title, so the first line stands in, taken
-      // now because the text is not kept. An encrypted note's text is
-      // ciphertext: its first line is base64, never a title.
-      title: meta.title || (meta.enc ? "" : firstLineTitle(change.content ?? "")),
+      // The title travels sealed (§27): the user's, else the first line the
+      // pushing device took from the text. A note from before §27 is plain
+      // text, and its own first line stands in.
+      title: sealed ? sealed.title || sealed.line || "" : meta.enc ? "" : firstLineTitle(change.content ?? ""),
       rev: change.rev,
       updatedAt: change.clientTime || Date.now(),
     };
-    if (meta.enc) stub.enc = true;
+    if (meta.enc) {
+      stub.enc = true;
+      stub.spaceSeq = meta.enc.spaceSeq ?? 0;
+    }
+    // Locked: the title opens at the next unlock (unsealPending).
+    if (meta.sealed && !sealed) stub.sealed = meta.sealed;
     await putStub(stub);
   }
 
@@ -413,11 +447,15 @@ export function createDocStore({
     await persist({ ...record });
   }
 
-  /** Back into Recent, as a local document. @param {string} id */
+  /**
+   * Back into Recent, as a local document: a note encrypted for its space
+   * turns back into plain text (architecture.md §27). @param {string} id
+   */
   async function restore(id) {
     const record = buffers.get(id);
     if (!record || !record.trashedAt) return null;
     delete record.trashedAt;
+    await toLocal(record);
     record.updatedAt = Date.now();
     await persist({ ...record });
     emit("change");
@@ -490,13 +528,114 @@ export function createDocStore({
         }
         return false;
       }
-      record.content = await codec.encode(text, record.enc, keyring);
+      record.content = await encodeFor(record, text);
       encodeSkipped.delete(record.id);
     }
     // After the codec, never in updateContent: a push must always read the
     // ciphertext that matches the revision it claims (architecture.md §13.4).
-    if (record.sync) record.sync.dirty = true;
+    // A keystroke is a real change, so a pending re-encryption is one no more.
+    if (record.sync) {
+      record.sync.dirty = true;
+      delete record.sync.rewrap;
+    }
     return true;
+  }
+
+  /**
+   * Encrypt a text for a record, as its `enc` says, and keep what the record
+   * learns from it (architecture.md §27): the log position a "space" note is
+   * encrypted for, and the first line, which is the row's title while the
+   * text is ciphertext. Throws for a "space" note whose members this device
+   * does not know: a guess would lock the other members out.
+   * @param {BufferRecord} record @param {string} text @returns {Promise<string>}
+   */
+  async function encodeFor(record, text) {
+    if (!record.enc) return text;
+    const space = record.sync?.space;
+    const isSpace = record.enc.preset === "space";
+    // Read together, before the await: a log pull during the encryption must
+    // not stamp a position the recipients did not come from.
+    const members = isSpace && space ? spaces.recipients(space) : undefined;
+    const seq = isSpace && space ? spaces.logSeq(space) : undefined;
+    const content = await codec.encode(text, record.enc, keyring, members);
+    if (isSpace) record.enc = { ...record.enc, spaceSeq: seq };
+    record.firstLine = firstLineTitle(text);
+    return content;
+  }
+
+  /**
+   * The plain text of an encrypted record, from memory or by a decode;
+   * undefined when this device cannot read it.
+   * @param {BufferRecord} record @param {string} [content] The encoded body.
+   * @returns {Promise<string | undefined>}
+   */
+  async function plainOf(record, content = record.content) {
+    const cached = plain.get(record.id);
+    if (cached !== undefined) return cached;
+    if (typeof content !== "string") return undefined;
+    try {
+      return await codec.decode(content, record.enc, keyring);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * A note that leaves sync is a local note (architecture.md §27): a scratch
+   * note with the preset "space" turns back into plain text, a file keeps
+   * its `.age` name and is encrypted for this device. Nothing is persisted
+   * here; the caller does that. A note this device cannot read keeps its
+   * ciphertext, with the preset of a local note.
+   * @param {BufferRecord} record
+   */
+  async function toLocal(record) {
+    if (!record.enc || record.enc.preset !== "space") return;
+    if (record.file) {
+      const text = await plainOf(record, await body(record.id).catch(() => undefined));
+      record.enc = codec.newEncMeta("this-device");
+      if (text === undefined) return;
+      record.content = await encodeFor(record, text);
+      plain.set(record.id, text);
+      await writeFileNow(record);
+      return;
+    }
+    const text = await plainOf(record);
+    if (text === undefined) {
+      record.enc = codec.newEncMeta("this-device");
+      return;
+    }
+    delete record.enc;
+    delete record.firstLine;
+    record.content = text;
+    plain.delete(record.id);
+  }
+
+  /**
+   * Make a record a synced one, encrypted for its space (architecture.md
+   * §27): the server never gets plain text, also not for an empty note. Sets
+   * `sync` and `enc` and encrypts the body; the caller persists. A file must
+   * already be an `.age` file (the command asks first, and encrypt() renames
+   * it); its body is written back here.
+   * @param {BufferRecord} record @param {string} space
+   */
+  async function sealForSpace(record, space) {
+    const encoded = buffers.has(record.id) ? await body(record.id) : record.content ?? "";
+    const text = record.enc ? await plainOf(record, encoded) : encoded;
+    if (text === undefined) throw new Error("sync: this note cannot be read here");
+    const before = { sync: record.sync, enc: record.enc };
+    record.sync = { rev: record.sync?.rev ?? 0, dirty: true, space };
+    record.enc = codec.newEncMeta("space");
+    try {
+      record.content = await encodeFor(record, text);
+    } catch (err) {
+      if (before.sync) record.sync = before.sync;
+      else delete record.sync;
+      if (before.enc) record.enc = before.enc;
+      else delete record.enc;
+      throw err;
+    }
+    plain.set(record.id, text);
+    if (record.file) await writeFileNow(record);
   }
 
   /** @param {string} id */
@@ -849,6 +988,13 @@ export function createDocStore({
   function textOf(id) {
     const record = buffers.get(id);
     if (!record) return "";
+    // Behind the PIN (§27): no reader gets the text, the editor shows its
+    // pad first. The name, as for the other locked case: search reads it.
+    if (isPinLocked(record)) {
+      const err = new Error("locked with a PIN");
+      err.name = "LockedError";
+      return Promise.reject(err);
+    }
     if (typeof record.content !== "string") {
       return bodyOf(id).then(({ content, enc }) =>
         enc ? decodeText(id, content, enc) : content
@@ -876,6 +1022,8 @@ export function createDocStore({
   function loadedText(id) {
     const record = buffers.get(id);
     if (!record) return undefined;
+    // A note behind the PIN shows no text in a preview (§27).
+    if (isPinLocked(record)) return undefined;
     if (record.enc) return plain.get(id);
     return typeof record.content === "string" ? record.content : undefined;
   }
@@ -1066,8 +1214,15 @@ export function createDocStore({
   async function create() {
     const record = newBufferRecord();
     // rev 0 means "never pushed", and dirty gets it into the first push, which
-    // attaches it with baseRev null (architecture.md §13.6).
-    if (syncDefault()) record.sync = { rev: 0, dirty: true, space: spaces.defaultSpace() };
+    // attaches it with baseRev null (architecture.md §13.6). Encrypted from
+    // the start, also while empty (§27). No space, or a device with a
+    // passphrase still locked: a local note, which the user can sync later.
+    const space = syncDefault() && keyring.isUnlocked ? spaces.defaultSpace() : null;
+    if (space) {
+      await sealForSpace(record, space).catch((err) => {
+        console.log("[vrtti] new note stays local:", err);
+      });
+    }
     buffers.set(record.id, record);
     await persist(record);
     await workspaces.addTab(record.id);
@@ -1096,30 +1251,57 @@ export function createDocStore({
   let keyringUnlocked = keyring.isUnlocked;
   keyring.addEventListener("change", () => {
     if (keyringUnlocked === keyring.isUnlocked) {
-      // Not a lock or an unlock: the record was written or pulled, or the
-      // user confirmed a device (§21). The resolved sets may have grown.
+      // Not a lock or an unlock: the keys or the recovery list changed.
       if (keyring.isUnlocked) void reencryptStale();
       return;
     }
     keyringUnlocked = keyring.isUnlocked;
     if (keyringUnlocked) {
       emit("unlock");
-      // A keyring change that arrived while locked could not re-wrap
+      // A change that arrived while locked could not re-wrap or unseal
       // anything; now it can.
-      void reencryptStale();
+      void unsealPending().then(reencryptStale);
     } else lockAll();
   });
 
   /**
-   * Was this document wrapped for fewer recipients than its preset resolves
-   * to now? Fewer means a device joined since the last save; more means a
-   * keyring this window has not pulled yet, and nothing here ever takes a
-   * recipient away (architecture.md §20).
+   * Set by reencryptAll: every readable note counts as stale, because this
+   * device has new keys and the old ones are going (architecture.md §27).
+   */
+  let rekeying = false;
+
+  /**
+   * Is this document encrypted for an older recipient set than it should be?
+   * A "space" note follows the log position (§27): a lower `spaceSeq` than
+   * this device applied means the members changed since. A higher one means
+   * this device is behind, and it leaves the note alone, or it would add
+   * back a device that was removed. Any other preset counts recipients, as
+   * before: fewer means a recovery key arrived since.
    * @param {BufferRecord} record @param {string} content Its encoded body.
    */
   function needsMoreRecipients(record, content) {
     if (!record.enc || !keyring.isSetUp || !age.isArmored(content)) return false;
+    if (rekeying) return true;
+    if (record.enc.preset === "space") {
+      const space = record.sync?.space;
+      if (!space || !spaces.recipients(space).length) return false;
+      return needsReencrypt(record.enc.spaceSeq, spaces.logSeq(space));
+    }
     return age.countRecipients(content) < keyring.recipientsFor(record.enc.preset).length;
+  }
+
+  /**
+   * After a change of the passphrase switch: encrypt every note this device
+   * can read for its new key (architecture.md §27). The old identity still
+   * decrypts meanwhile (keyring.previous).
+   */
+  async function reencryptAll() {
+    rekeying = true;
+    try {
+      await reencryptStale();
+    } finally {
+      rekeying = false;
+    }
   }
 
   /**
@@ -1170,7 +1352,14 @@ export function createDocStore({
       // The keyring may have locked while the decode ran (lockAll cleared
       // the map): stop, and the next unlock runs this again.
       if (!keyring.isUnlocked) return;
-      const content = await codec.encode(text, record.enc, keyring);
+      let content;
+      try {
+        content = await encodeFor(record, text);
+      } catch {
+        // The space's members are not known here yet: the next log pull
+        // runs this again.
+        continue;
+      }
       if (record.file) {
         // The re-wrap rewrites what it just read (§23): a stamp that moved
         // since is an edit this device never saw, and this round leaves the
@@ -1184,13 +1373,19 @@ export function createDocStore({
       } else {
         record.content = content;
       }
-      markDirty(record);
+      // A re-encryption is a change every member makes on its own, so a 409
+      // on its push forks nothing (rewrap, see applyRemote). Text the user
+      // typed and has not pushed yet keeps the push a real one.
+      if (record.sync) {
+        if (!record.sync.dirty) record.sync.rewrap = true;
+        record.sync.dirty = true;
+      }
       await persist({ ...record });
       // A Recent record keeps no body in memory (§23), unless the write
       // failed and the text is held as `unwritten`.
       if (!isMyTab(id)) dropBody(record);
       changed = true;
-      console.log("[vrtti] re-encrypted for the current keyring:", id);
+      console.log("[vrtti] re-encrypted for the current members:", id);
     }
     if (changed) emit("change");
   }
@@ -1232,12 +1427,11 @@ export function createDocStore({
    * A failed write renames back, best effort, and the error reaches the
    * caller with the record untouched (architecture.md §19).
    *
-   * @param {string} id @param {'all-devices' | 'this-device'} preset
-   * @param {string} [label] The plaintext name to store; "" clears the title,
-   *   undefined leaves it as it is.
+   * @param {string} id @param {'this-device'} [preset]  Synced notes are
+   *   encrypted by setSync, never through here.
    * @returns {Promise<BufferRecord | null>}
    */
-  async function encrypt(id, preset, label) {
+  async function encrypt(id, preset = "this-device") {
     const record = buffers.get(id);
     if (!record || record.enc) return null;
     // The command asks for setup and unlock before it gets here; a throw is
@@ -1248,8 +1442,10 @@ export function createDocStore({
     // The body, not record.content: a doc in Recent holds none (§23).
     const read = await bodyOf(id);
     const text = read.content;
-    const enc = codec.newEncMeta(preset);
-    const content = await codec.encode(text, enc, keyring);
+    // encodeFor reads the record's enc: it works on a copy, so a failure
+    // leaves the record untouched.
+    const probe = { ...record, enc: codec.newEncMeta(preset) };
+    const content = await encodeFor(probe, text);
 
     const handle = handleFor(record);
     if (record.file && handle) {
@@ -1273,16 +1469,9 @@ export function createDocStore({
       record.file.mtime = await lastModified(handle);
     }
 
-    // The label is the one plaintext the server ever sees for this doc (§5),
-    // so it is never derived here behind the user's back: the command asks,
-    // prefilled with the first line, and the user decides what stays readable.
-    // No label at all leaves the row saying "encrypted".
-    if (label !== undefined) {
-      if (label) record.title = label;
-      else delete record.title;
-    }
     plain.set(id, text);
-    record.enc = enc;
+    record.enc = probe.enc;
+    record.firstLine = probe.firstLine;
     // Immediately, not through persistSoon: the plaintext must not sit in
     // IndexedDB for another 300 ms once the user asked for this.
     record.content = content;
@@ -1352,10 +1541,9 @@ export function createDocStore({
     }
 
     delete record.enc;
+    delete record.firstLine;
     record.content = text;
     plain.delete(id);
-    // The label stays: the user chose it at encrypt time, and "Use first line"
-    // in the row menu clears it whenever they want the row to follow the text.
     if (record.sync) record.sync.dirty = true;
     await persist({ ...record });
     if (!isMyTab(id)) dropBody(record);
@@ -1387,14 +1575,16 @@ export function createDocStore({
     // Lossy for binary input, and that is fine: it is only read to test for
     // the armor header, which is ASCII.
     const text = new TextDecoder().decode(bytes);
+    // "this-device" until the record says more: a synced `.age` file keeps
+    // the preset "space" of its record (takeDisk, §23).
     if (age.isArmored(text)) {
-      return { content: text, lastModified, enc: { v: 1, preset: "all-devices" } };
+      return { content: text, lastModified, enc: { v: 1, preset: "this-device" } };
     }
     if (age.isAgeFile(bytes)) {
       return {
         content: age.armor.encode(bytes),
         lastModified,
-        enc: { v: 1, preset: "all-devices" },
+        enc: { v: 1, preset: "this-device" },
       };
     }
     return { content: text, lastModified };
@@ -1568,16 +1758,27 @@ export function createDocStore({
    * @param {string} [text] The encoded text to fork, when it is not the one
    *   in memory: a pull forks the DISK text of a file that changed under it,
    *   and a Recent record holds no text in memory at all (§23).
+   * @param {string} [plainText] The text itself, when the caller holds it:
+   *   a note this device lost may be encrypted for members it is not one of
+   *   any more, but its plaintext is still in memory (trashNote).
    */
-  async function forkConflict(record, text = record.content ?? "") {
+  async function forkConflict(record, text = record.content ?? "", plainText) {
     const fork = newBufferRecord();
-    if (record.enc) {
+    // A copy is a local note (§27): a note encrypted for its space forks as
+    // plain text when this device can read it.
+    if (plainText === undefined && record.enc?.preset === "space") {
+      plainText = await codec.decode(text, record.enc, keyring).catch(() => undefined);
+    }
+    if (plainText !== undefined) {
+      fork.content =
+        "conflict copy of " + titleOf(record) + " (" + new Date().toISOString() + ")\n\n" + plainText;
+    } else if (record.enc) {
       // Ciphertext, copied byte for byte. The usual "conflict copy of …"
       // prefix would corrupt the age file and make the copy undecryptable, so
       // the note goes into the title, which is plaintext by design (§7).
       // Works without any key: a courier device forks conflicts too (§5).
       fork.content = text;
-      fork.enc = { ...record.enc };
+      fork.enc = record.enc.preset === "space" ? codec.newEncMeta("this-device") : { ...record.enc };
       fork.title = "conflict copy of " + titleOf(record);
     } else {
       fork.content =
@@ -1621,15 +1822,24 @@ export function createDocStore({
    */
 
   /**
-   * The metadata that travels with a revision. Small on purpose: the server
-   * reads none of it, but it stores all of it in the clear (architecture.md §5),
-   * so nothing goes in here that the content itself protects.
+   * The metadata that travels with a revision. The server stores it in the
+   * clear and refuses any other key (architecture.md §27), so everything that
+   * says something about the note goes into `sealed`.
    * @typedef {Object} RecordMeta
-   * @property {string} [title]
-   * @property {string} [lang]
-   * @property {'auto' | 'user'} [langSource]
    * @property {import("../storage/idb.js").EncMeta} [enc]
    * @property {'scratch' | 'keyring'} [kind]
+   * @property {string} [sealed]  Armored age, for the same readers as the text: SealedMeta.
+   */
+
+  /**
+   * What `meta.sealed` holds (architecture.md §27).
+   * @typedef {Object} SealedMeta
+   * @property {string} line  The first line of the text, the row's title.
+   * @property {string} origin  The device id of the first revision.
+   * @property {string} [title]  The user's title.
+   * @property {string} [lang]
+   * @property {'auto' | 'user'} [langSource]
+   * @property {true} [pin]  Locked with a PIN.
    */
 
   /**
@@ -1641,8 +1851,8 @@ export function createDocStore({
    *
    * @param {string} id @param {boolean} on
    * @param {string} [space] Where a new sync goes; the device's default
-   *   space when absent (§25). An existing sync keeps its space: a move
-   *   between spaces is not built, and a second "Sync to" must not fake one.
+   *   space when absent (§25). An existing sync keeps its space: a move is
+   *   move(), never a second "Sync to".
    */
   async function setSync(id, on, space) {
     const record = buffers.get(id);
@@ -1650,8 +1860,17 @@ export function createDocStore({
     if (on) {
       // An already attached record is left alone: overwriting its rev with 0
       // would make the next push claim a revision the server passed long ago.
-      if (!record.sync) {
-        record.sync = { rev: 0, dirty: true, space: space ?? spaces.defaultSpace() };
+      if (!record.sync && record.kind === "keyring") {
+        // The device directory is no note: it is plain JSON in its own space,
+        // and the server lets it through as the one exception (§27).
+        record.sync = { rev: 0, dirty: true, space: KEYRING_SPACE };
+      } else if (!record.sync) {
+        const target = space ?? spaces.defaultSpace();
+        if (!target) throw new Error("sync: this device is in no space");
+        // Each synced note is encrypted (§27). A file turns into an `.age`
+        // file first; the command asked the user (§19).
+        if (record.file && !record.enc) await encrypt(id, "this-device");
+        await sealForSpace(record, target);
       }
       else if (record.sync.tombstone) {
         // Turned off and on again before the tombstone was pushed. The last
@@ -1675,7 +1894,9 @@ export function createDocStore({
     const record = buffers.get(id);
     if (!record || !record.sync) return;
     delete record.sync;
+    await toLocal(record);
     await persist({ ...record });
+    if (!isMyTab(id)) dropBody(record);
     emit("change");
   }
 
@@ -1703,14 +1924,11 @@ export function createDocStore({
     const tombstone = record.sync?.tombstone;
     /** @type {RecordMeta} */
     const meta = {};
-    if (record.title !== undefined) meta.title = record.title;
-    if (record.lang !== undefined) meta.lang = record.lang;
-    if (record.langSource !== undefined) meta.langSource = record.langSource;
-    if (record.enc !== undefined) meta.enc = record.enc;
     // A file-backed doc travels as a scratch doc, always: the disk link is per
     // device (architecture.md §3), and the other device has no such file. Do
     // not "fix" this by sending kind 'file'; it would arrive as a broken link.
     meta.kind = record.kind === "keyring" ? "keyring" : "scratch";
+    if (record.enc !== undefined) meta.enc = record.enc;
     let sentMtime = record.file?.mtime;
     /** @type {string | null} */
     let content = null;
@@ -1718,6 +1936,12 @@ export function createDocStore({
       const read = await bodyOf(record.id);
       content = read.content;
       if (record.file) sentMtime = read.mtime;
+      // Everything else about a note travels sealed, for the same readers
+      // as its text (§27): the server holds no readable title.
+      if (record.kind !== "keyring") {
+        record.origin ??= await deviceId();
+        meta.sealed = await sealMeta(record);
+      }
     }
     const payload = {
       // null is "attach without a claim". rev 0 is not a revision the server
@@ -1726,11 +1950,65 @@ export function createDocStore({
       kind: tombstone ?? "text",
       content,
       meta,
-      deviceId: await deviceId(),
       clientTime: record.updatedAt,
       space: spaceOf(record),
     };
     return { payload, sentMtime };
+  }
+
+  /**
+   * The fields of a note that must stay secret, as one age blob for the
+   * members of its space (architecture.md §27): the user's title, the first
+   * line, the language, the PIN mark and the device that made the note.
+   * @param {BufferRecord} record @returns {Promise<string>}
+   */
+  async function sealMeta(record) {
+    /** @type {SealedMeta} */
+    const fields = { line: record.firstLine ?? "", origin: record.origin ?? "" };
+    if (record.title) fields.title = record.title;
+    if (record.lang) fields.lang = record.lang;
+    if (record.langSource) fields.langSource = record.langSource;
+    if (record.pin) fields.pin = true;
+    const space = record.sync?.space ?? "";
+    return codec.encode(JSON.stringify(fields), codec.newEncMeta("space"), keyring, spaces.recipients(space));
+  }
+
+  /**
+   * Open `meta.sealed`; null when this device cannot (locked, or not a
+   * reader), or when it is not a sealed object.
+   * @param {unknown} text @returns {Promise<SealedMeta | null>}
+   */
+  async function unseal(text) {
+    if (typeof text !== "string" || !keyring.isUnlocked) return null;
+    try {
+      const value = JSON.parse(await codec.decode(text, codec.newEncMeta("space"), keyring));
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * After an unlock: the sealed meta that arrived while this device was
+   * locked opens now, for records and for stubs (§27).
+   */
+  async function unsealPending() {
+    for (const record of [...buffers.values()]) {
+      if (!record.sealed) continue;
+      const fields = await unseal(record.sealed);
+      if (!fields) continue;
+      applyMeta(record, { enc: record.enc, sealed: record.sealed }, fields);
+      await persist({ ...record });
+    }
+    for (const stub of [...remotes.values()]) {
+      if (!stub.sealed) continue;
+      const fields = await unseal(stub.sealed);
+      if (!fields) continue;
+      const next = { ...stub, title: fields.title || fields.line || "" };
+      delete next.sealed;
+      await putStub(next);
+    }
+    emit("change");
   }
 
   /**
@@ -1746,7 +2024,10 @@ export function createDocStore({
   /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
   function dirtyRecords() {
     return [...buffers.values()]
-      .filter((b) => b.sync?.dirty)
+      // A synced note in plain text is one from before §27 that waits for
+      // its encryption (sealSynced); the server would refuse it anyway. Its
+      // tombstone may go: a tombstone carries no text.
+      .filter((b) => b.sync?.dirty && (b.kind === "keyring" || b.enc || b.sync.tombstone))
       // The keyring goes first: a document encrypted to a device the other end
       // has never heard of is unreadable there, and the device list is what
       // teaches it about that device (architecture.md §13.3).
@@ -1791,6 +2072,7 @@ export function createDocStore({
     if (record.sync.tombstone) return clearSync(id);
     record.sync.rev = rev;
     record.sync.dirty = stillDirty();
+    if (!record.sync.dirty) delete record.sync.rewrap;
     await persist({ ...record });
     emit("change");
   }
@@ -1798,17 +2080,34 @@ export function createDocStore({
   /**
    * Copy the pulled metadata onto a record. Absent means absent: a title
    * cleared on the other device has to be cleared here, not kept.
+   *
+   * The fields come from the sealed meta (§27). A device that could not open
+   * it (locked) keeps its own fields and the sealed text, and unsealPending
+   * applies them at the next unlock.
    * @param {BufferRecord} record @param {RecordMeta} meta
+   * @param {SealedMeta | null} sealed `meta.sealed`, opened.
    */
-  function applyMeta(record, meta) {
-    if (meta.title !== undefined) record.title = meta.title;
-    else delete record.title;
-    if (meta.lang !== undefined) record.lang = meta.lang;
-    else delete record.lang;
-    if (meta.langSource !== undefined) record.langSource = meta.langSource;
-    else delete record.langSource;
+  function applyMeta(record, meta, sealed) {
     if (meta.enc !== undefined) record.enc = meta.enc;
     else delete record.enc;
+    if (meta.sealed && !sealed) {
+      record.sealed = meta.sealed;
+      return;
+    }
+    delete record.sealed;
+    const fields = sealed ?? {};
+    if (typeof fields.title === "string" && fields.title) record.title = fields.title;
+    else delete record.title;
+    if (typeof fields.lang === "string") record.lang = fields.lang;
+    else delete record.lang;
+    if (fields.langSource === "auto" || fields.langSource === "user") record.langSource = fields.langSource;
+    else delete record.langSource;
+    if (fields.pin) record.pin = true;
+    else delete record.pin;
+    if (typeof fields.origin === "string" && fields.origin) record.origin = fields.origin;
+    if (record.enc) record.firstLine = typeof fields.line === "string" ? fields.line : undefined;
+    else delete record.firstLine;
+    if (record.firstLine === undefined) delete record.firstLine;
     // `kind` is deliberately not copied: it is per device. A doc that is
     // file-backed here stays file-backed, and one that arrived as scratch
     // stays scratch even if the other device has it on disk.
@@ -1841,7 +2140,7 @@ export function createDocStore({
       }
     }
     record.content = incoming;
-    applyMeta(record, change.meta || {});
+    applyMeta(record, change.meta || {}, await unseal(change.meta?.sealed));
     record.sync = {
       rev: change.rev,
       dirty: false,
@@ -1994,10 +2293,9 @@ export function createDocStore({
       const mode = spaces.modeOf(space);
       if (mode === "list") return applyStub(change, space);
       if (mode === undefined || change.kind !== "text") {
-        // Not here: nothing is stored. A tombstone for an unknown id has no
-        // record to act on in any mode, but a stub with this id may be left
-        // from a list space that turned Open as tab, or from a note that
-        // left a listed space; either way its title is stale now.
+        // Not a space of this device (the note moved away, §27), or a
+        // tombstone for an unknown id: nothing is stored. A stub with this
+        // id is stale either way.
         return dropRemote(id);
       }
     }
@@ -2012,18 +2310,14 @@ export function createDocStore({
       return applyRemoteKeyring(record, change);
     }
 
-    // A change from a space this device does not receive is a detach,
-    // whatever its kind (§25). It still reaches a known record two ways: as
-    // the `current` of a 409 after the note moved spaces on another device,
-    // and as a routed or in-flight row after the user turned the space to
-    // Not here. The local copy stays, exactly as for a `detached` tombstone;
-    // adopting the text would sync a note into a space this device ignores.
+    // The note moved to a space this device is not a member of (§27): the
+    // device lost it, and its copy goes to the local trash. The server sends
+    // such a row without content, so there is nothing to adopt anyway. It
+    // reaches a known record as a pulled row (prev_space) and as the
+    // `current` of a 409.
     if (record && spaces.modeOf(space) === undefined) {
       if (!record.sync) return;
-      delete record.sync;
-      await persist({ ...record });
-      emit("change");
-      return;
+      return trashNote(id);
     }
 
     // A tombstone never applies to a record that was just attached by hand
@@ -2048,34 +2342,7 @@ export function createDocStore({
       // thinks: a copy kept after a detach must survive a later delete
       // elsewhere. Same rule as the detached branch below.
       if (!record || !record.sync) return;
-      // Deleted elsewhere while this device still held unpushed text. The text
-      // survives as a local copy; the record itself goes to the trash
-      // (architecture.md §22), or away for good when there is nothing in it.
-      // A file body not in memory needs no copy: it is the file, and the
-      // trash never touches the file.
-      if (record.sync?.dirty && !discarded && typeof record.content === "string") {
-        await forkConflict(record);
-      }
-      if (isEmpty(record) || discarded) {
-        buffers.delete(id);
-        plain.delete(id);
-        await remove(id);
-      } else {
-        await trash(record);
-      }
-      await workspaces.removeTab(id);
-      dropBody(record);
-      emit("evict", { id });
-      if (id === activeId) {
-        // Null first, so the next activate() parks nothing into a record that
-        // no longer exists (same rule as close()).
-        activeId = null;
-        const next = openBuffers()[0];
-        if (next) activate(next.id);
-        else await create();
-      }
-      emit("change");
-      return;
+      return trashNote(id);
     }
 
     if (change.kind === "detached") {
@@ -2101,8 +2368,13 @@ export function createDocStore({
       // and nothing prompts (architecture.md §3). Dirty here is also a
       // keystroke still in its debounce, or a file write that failed: text
       // the push has not seen yet (§23).
+      // A pending re-encryption (rewrap) is no text of the user's: the
+      // incoming version is encrypted for the members too, by the device
+      // that won the race.
       const dirty =
-        record.sync.dirty || saveTimers.has(id) || Boolean(record.file?.unwritten);
+        (record.sync.dirty && !record.sync.rewrap) ||
+        saveTimers.has(id) ||
+        Boolean(record.file?.unwritten);
       if (dirty && !discarded && typeof record.content === "string") {
         forked = record.content;
         await forkConflict(record);
@@ -2163,7 +2435,7 @@ export function createDocStore({
       updatedAt: change.clientTime || Date.now(),
       sync: { rev: change.rev, dirty: false, space: change.space ?? DEFAULT_SPACE },
     };
-    applyMeta(created, change.meta || {});
+    applyMeta(created, change.meta || {}, await unseal(change.meta?.sealed));
     buffers.set(id, created);
     // persist() also removes the stub with this id (§25).
     await persist({ ...created });
@@ -2173,22 +2445,247 @@ export function createDocStore({
   }
 
   /**
-   * Turn a space to Not here for the records (§25): each synced record of the
-   * space drops `sync` and keeps its text, and the space's stubs go. The
-   * leader runs this for every window. A record another window owns reaches
-   * it through the ordinary `buffer` message, which carries `sync` and leaves
-   * the text of that window's tab alone, so the one-writer rule holds.
+   * This device lost a space (architecture.md §27): it removed itself, a
+   * member removed it, or the server no longer gives it the space. Each note
+   * of the space goes into the local trash, and the space's stubs go. The
+   * leader runs this for every window; a record another window holds as a
+   * tab reaches that window as a `buffer` message with `trashedAt`, and
+   * adoptFromWindow closes the tab there.
    * @param {string} space
    */
-  async function detachSpace(space) {
-    for (const record of buffers.values()) {
+  async function loseSpace(space) {
+    for (const record of [...buffers.values()]) {
       // The keyring's space is received by every device, always.
       if (!record.sync || record.kind === "keyring" || spaceOf(record) !== space) continue;
-      delete record.sync;
-      await persist({ ...record });
+      await trashNote(record.id);
     }
     await forgetRemotes(space);
     emit("change");
+  }
+
+  /**
+   * The whole job of a note leaving this device for the trash (§22, §27): a
+   * text not pushed yet survives as a local copy, the tab closes, another
+   * note takes the screen, and the record goes to the trash, or away for good
+   * when there is nothing in it. One door for a `deleted` tombstone, a move
+   * to a space this device is not in, and the loss of a space.
+   * @param {string} id
+   */
+  async function trashNote(id) {
+    const record = buffers.get(id);
+    if (!record) return;
+    const discarded = record.sync?.tombstone === "deleted";
+    const dirty = Boolean(record.sync?.dirty && !record.sync.rewrap) || saveTimers.has(id);
+    // The text, not the ciphertext: a lost note may be encrypted for members
+    // this device is not one of any more, but what it typed is in memory.
+    const typed = record.enc ? plain.get(id) : undefined;
+    dropTimers(id);
+    // A file body not in memory needs no copy: it is the file, and the trash
+    // never touches the file.
+    if (dirty && !discarded && (typed !== undefined || typeof record.content === "string")) {
+      await forkConflict(record, record.content ?? "", typed);
+    }
+    if (isEmpty(record) || discarded) {
+      buffers.delete(id);
+      plain.delete(id);
+      await remove(id);
+    } else {
+      await trash(record);
+    }
+    await closeHere(id);
+  }
+
+  /**
+   * Take a record that is gone or trashed out of this window: the tab, the
+   * editor state, and the screen. @param {string} id
+   */
+  async function closeHere(id) {
+    const record = buffers.get(id);
+    if (record) dropBody(record);
+    emit("evict", { id });
+    if (workspaces.current().tabs.includes(id)) await workspaces.removeTab(id);
+    if (id === activeId) {
+      // Null first, so the next activate() parks nothing into a record that
+      // no longer exists (same rule as close()).
+      activeId = null;
+      const next = openBuffers()[0];
+      if (next) activate(next.id);
+      else await create();
+    }
+    emit("change");
+  }
+
+  /**
+   * "Move to <space>" (architecture.md §27): the note is encrypted for the
+   * members of the new space and pushed with it. The server records the old
+   * space, so its members learn that the note left. Only to a space of this
+   * device: a move away from all of its own spaces is a loss, never a click.
+   * @param {string} id @param {string} space @returns {Promise<boolean>}
+   */
+  async function move(id, space) {
+    const record = buffers.get(id);
+    if (!record || !record.sync || record.sync.tombstone || record.sync.space === space) return false;
+    if (spaces.modeOf(space) === undefined) return false;
+    const text = record.enc ? await plainOf(record, await body(id)) : await body(id);
+    if (text === undefined) throw new Error("move: this note cannot be read here");
+    const before = record.sync.space;
+    record.sync.space = space;
+    if (!record.enc) record.enc = codec.newEncMeta("space");
+    try {
+      record.content = await encodeFor(record, text);
+    } catch (err) {
+      record.sync.space = before;
+      throw err;
+    }
+    plain.set(id, text);
+    record.sync.dirty = true;
+    delete record.sync.rewrap;
+    if (record.file) await writeFileNow(record);
+    await persist({ ...record });
+    if (!isMyTab(id)) dropBody(record);
+    emit("change");
+    return true;
+  }
+
+  /**
+   * The upgrade (architecture.md §27): each synced note from before is plain
+   * text on this device and on the server. Once its space has members here,
+   * it is encrypted for them, pushed, and its old revisions purged. A synced
+   * file stops syncing instead: turning it into an `.age` file is the user's
+   * call (§19), from its menu. Each window does its own tabs; the leader also
+   * does Recent.
+   * @param {{mineOnly?: boolean}} [opts]
+   */
+  async function sealSynced(opts = {}) {
+    const mine = new Set(workspaces.current().tabs);
+    const open = workspaces.openSet();
+    let changed = false;
+    for (const record of [...buffers.values()]) {
+      if (!isDocument(record) || !record.sync || record.enc || record.trashedAt || record.sync.tombstone) continue;
+      const id = record.id;
+      if (open.has(id) ? !mine.has(id) : opts.mineOnly) continue;
+      const space = record.sync.space;
+      if (!space || !spaces.recipients(space).length) continue;
+      if (record.file) {
+        record.sync.tombstone = "detached";
+        record.sync.dirty = true;
+        record.sync.purge = true;
+      } else {
+        // Every device of the space runs this for its copy of the same old
+        // note. Without unpushed text, the change is the encryption alone,
+        // and the device that loses the race takes the winner's row without
+        // a conflict copy (rewrap, see applyRemote).
+        const wasDirty = record.sync.dirty;
+        try {
+          await sealForSpace(record, space);
+        } catch (err) {
+          console.log("[vrtti] upgrade: note not encrypted yet", id, err);
+          continue;
+        }
+        record.sync.purge = true;
+        if (!wasDirty) record.sync.rewrap = true;
+      }
+      await persist({ ...record });
+      changed = true;
+    }
+    if (changed) emit("change");
+    if (!opts.mineOnly) post("seal-synced", {});
+  }
+  on("seal-synced", () => void sealSynced({ mineOnly: true }));
+
+  /**
+   * A note this device holds as a title only, encrypted again for the
+   * current members of its space (architecture.md §27): its text and its
+   * sealed meta, for the sync client to push. null when this device cannot
+   * read it or does not know the members.
+   * @param {Change} change The note as the server has it.
+   * @returns {Promise<{content: string, meta: RecordMeta} | null>}
+   */
+  async function rewrapChange(change) {
+    const meta = change.meta || {};
+    const space = change.space ?? "";
+    const members = spaces.recipients(space);
+    if (!meta.enc || typeof change.content !== "string" || !members.length) return null;
+    try {
+      /** @type {import("../storage/idb.js").EncMeta} */
+      const enc = { v: 1, preset: "space", spaceSeq: spaces.logSeq(space) };
+      const text = await codec.decode(change.content, meta.enc, keyring);
+      /** @type {RecordMeta} */
+      const out = { kind: meta.kind === "keyring" ? "keyring" : "scratch", enc };
+      if (meta.sealed) {
+        const fields = await codec.decode(meta.sealed, enc, keyring);
+        out.sealed = await codec.encode(fields, enc, keyring, members);
+      }
+      return { content: await codec.encode(text, enc, keyring, members), meta: out };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The text and the title of a note for "Back up to a folder" (§27). The
+   * text this device holds wins over the server copy: it may hold edits the
+   * server has not got yet. null for a note this device cannot read.
+   * @param {Change} change The newest server row of the note.
+   * @returns {Promise<{text: string, title: string} | null>}
+   */
+  async function readForBackup(change) {
+    const record = buffers.get(change.docId);
+    if (record && !record.trashedAt) {
+      try {
+        return { text: await textOf(record.id), title: titleOf(record) };
+      } catch {
+        // A file not readable here: the server copy below.
+      }
+    }
+    const meta = change.meta || {};
+    try {
+      const text = meta.enc ? await codec.decode(change.content ?? "", meta.enc, keyring) : change.content ?? "";
+      const sealed = await unseal(meta.sealed);
+      return { text, title: sealed?.title || sealed?.line || firstLineTitle(text) };
+    } catch {
+      return null;
+    }
+  }
+
+  /** A backup file as armored age for this device and the recovery key. @param {string} text */
+  function encryptForBackup(text) {
+    return codec.encode(text, codec.newEncMeta("this-device"), keyring);
+  }
+
+  /**
+   * The PIN-locked notes close (ui/pin.js): the editor drops their states,
+   * as for a lock of the keys, and shows the pad on the next open.
+   */
+  function pinLock() {
+    setPinOpen(false);
+    const ids = [...buffers.values()].filter((b) => b.pin).map((b) => b.id);
+    emit("lock", { ids });
+    emit("change");
+  }
+
+  /** The right PIN: every PIN-locked note opens in this window. */
+  function pinUnlock() {
+    setPinOpen(true);
+    emit("unlock");
+    emit("change");
+  }
+
+  /**
+   * "Lock with PIN" and "Remove PIN lock" (architecture.md §27). The mark
+   * travels sealed with a synced note; the PIN itself never leaves the
+   * device (ui/pin.js).
+   * @param {string} id @param {boolean} on
+   */
+  async function setPin(id, on) {
+    const record = buffers.get(id);
+    if (!record || Boolean(record.pin) === on) return false;
+    if (on) record.pin = true;
+    else delete record.pin;
+    markDirty(record);
+    await persist({ ...record });
+    emit("change");
+    return true;
   }
 
   /**
@@ -2446,13 +2943,17 @@ export function createDocStore({
    * @param {BufferRecord} record
    */
   function isEmpty(record) {
-    return (
-      isDocument(record) &&
-      record.kind !== "file" &&
-      !record.enc &&
-      !record.title &&
-      (record.content ?? "").trim() === ""
-    );
+    if (!isDocument(record) || record.kind === "file" || record.title) return false;
+    if (record.enc) {
+      // A synced note is encrypted even while empty (§27), so its decoded
+      // text decides. Without it in memory (after a restart) the first line
+      // does: "" means no line with anything on it. Any other preset is a
+      // note the user encrypted on purpose, and that is never empty.
+      if (record.enc.preset !== "space") return false;
+      const text = plain.get(record.id) ?? (record.firstLine === "" ? "" : undefined);
+      return text !== undefined && text.trim() === "";
+    }
+    return (record.content ?? "").trim() === "";
   }
 
   /**
@@ -2635,6 +3136,13 @@ export function createDocStore({
       emit("change");
       return;
     }
+    // Trashed in another window (the leader lost the note, §27): the tab
+    // here closes as for a removal.
+    if (record.trashedAt && mine) {
+      plain.delete(id);
+      await closeHere(id);
+      return;
+    }
     if (loaded) {
       // Only a file write elsewhere moves the stamp of this window's tab:
       // the sync leader applied a pull itself (§14.3 fallback). The file is
@@ -2781,6 +3289,22 @@ export function createDocStore({
     decrypt,
     lockAll,
     reencryptStale,
+    reencryptAll,
+    unsealPending,
+    sealSynced,
+    move,
+    trash: trashNote,
+    setPin,
+    pinLock,
+    pinUnlock,
+    readForBackup,
+    encryptForBackup,
+    /** @param {string} id */
+    isPinLocked(id) {
+      const record = buffers.get(id);
+      return Boolean(record && isPinLocked(record));
+    },
+    rewrapChange,
     // Exported for the sync client (architecture.md §13.6): a pull that meets
     // a dirty local record forks it before it adopts the incoming one.
     forkConflict,
@@ -2794,7 +3318,7 @@ export function createDocStore({
     remotes: remoteList,
     dropRemote,
     forgetRemotes,
-    detachSpace,
+    loseSpace,
     createFromChange,
     pushPayload,
     dirtyRecords,

@@ -1,27 +1,46 @@
 // @ts-check
-// The sync client (architecture.md §3, §13.6).
+// The sync client (architecture.md §3, §13.6, §27).
 //
-// It owns the network and the schedule, and nothing else. Every rule about
-// records (what forks, what merges, what a tombstone does) lives in
-// model/docs.js, so this file can be read as "pull, then push, then say so".
+// It owns the network, the schedule, the device token and the space logs.
+// Every rule about records (what forks, what merges, what a tombstone does)
+// lives in model/docs.js; every rule about who is a member lives in
+// crypto/spaces.js. This file can be read as "pull the logs, pull the notes,
+// push, then say so".
 //
-// Inert until a server URL and a token exist. No login wall, no blocking on the
-// network, and no request at all to any other origin before the user configured
-// one: the app is fully functional with no server (architecture.md §3).
+// Inert until a server URL and a device token exist. No login wall, no
+// blocking on the network, and no request at all to any other origin before
+// the user configured one: the app is fully functional with no server (§3).
 //
-// Order matters: pull first, then push. A push against a stale revision is the
-// 409 path, which costs a round trip and a conflict copy; pulling first makes
-// most of those disappear before they happen.
+// Order matters: logs first (a note is encrypted for members this device must
+// know), then notes, then push. A push against a stale revision is the 409
+// path, which costs a round trip; pulling first makes most of those
+// disappear before they happen.
 
 import { deleteSetting, getSetting, putSetting } from "../storage/idb.js";
 import { on, post } from "../model/channel.js";
-import { DEFAULT_SPACE, KEYRING_ID, KEYRING_SPACE } from "../model/docs.js";
+import { KEYRING_ID, KEYRING_SPACE } from "../model/docs.js";
 import { hasDisk } from "../model/capabilities.js";
+import { entryKey } from "../crypto/keyring.js";
+import { sha256Hex } from "../crypto/sign.js";
+import {
+  formatCode,
+  joinProof,
+  joinReplyMac,
+  joinVerifier,
+  newCode,
+  nextColor,
+  nextEntry,
+  normalizeCode,
+  parseEntryKey,
+  replay,
+  sameHex,
+  slotOf,
+} from "../crypto/spaces.js";
 
 const CONFIG_KEY = "sync.config";
 const DEFAULT_ON_KEY = "sync.defaultOn";
-// Spaces (architecture.md §25): the device's mode per space, its default
-// space, and one pull cursor per space.
+// The device's mode per space ('tab' or 'list'), its default space, and one
+// pull cursor per space (§25).
 const SPACES_KEY = "sync.spaces";
 const DEFAULT_SPACE_KEY = "sync.defaultSpace";
 const CURSORS_KEY = "sync.cursors";
@@ -30,13 +49,18 @@ const CURSORS_KEY = "sync.cursors";
 // reset waits for that server's first answer (see pullSpace), so a URL
 // mistyped and put back never rewinds.
 const CURSORS_URL_KEY = "sync.cursorsUrl";
-// The single cursor from before spaces. load() turns it into the cursors of
-// `personal` and `keyring`, then deletes it.
-const LEGACY_CURSOR_KEY = "sync.cursor";
-// How long the server's space list stays fresh. The settings panel asks on
-// every paint; ten seconds is a repaint burst, not a stale answer.
-const SPACES_TTL = 10000;
+// The space logs this device follows (§27): for each space, the creator it
+// pinned when it made or joined the space, and the entries it pulled.
+const LOGS_KEY = "sync.logs";
+// Join codes this device showed and still has to answer (§27). The code is
+// kept: the new device's proof and the reply's MAC both come from it.
+const INVITES_KEY = "sync.invites";
+// The join this device made with a typed code and waits to hear back on.
+const JOINING_KEY = "sync.joining";
 
+// How long an invite is kept: the code lives ten minutes on the server, but a
+// used one waits for this device's next sync, which can be days on a phone.
+const INVITE_KEEP = 7 * 24 * 60 * 60 * 1000;
 const PAGE = 200;
 // Slow poll. The responsive triggers are visibility, online, and the edit
 // debounce; this only covers a window that sits open and untouched.
@@ -50,8 +74,7 @@ const MAX_PAGES = 100;
 
 /**
  * The server's rule for a space name (architecture.md §25). The client checks
- * it too, so a typo is refused at the settings row and never becomes a 400
- * on every push of a note.
+ * it too, so a typo is refused at the dialog and never becomes a 400.
  * @param {unknown} name @returns {name is string}
  */
 export function isValidSpace(name) {
@@ -61,10 +84,9 @@ export function isValidSpace(name) {
 /**
  * A plain map with no prototype. Space names are user text, and `constructor`
  * and `__proto__` pass the name rule: on an ordinary object the first reads
- * back as Object's own function (a "mode" for a space nobody set) and the
- * second assigns the prototype instead of a key. Every map keyed by a space
- * name goes through here, including the ones read back from IndexedDB, which
- * come back as ordinary objects.
+ * back as Object's own function and the second assigns the prototype instead
+ * of a key. Every map keyed by a space name goes through here, including the
+ * ones read back from IndexedDB, which come back as ordinary objects.
  * @template T
  * @param {Record<string, T> | undefined | null} [from]
  * @returns {Record<string, T>}
@@ -73,8 +95,14 @@ function dict(from) {
   return Object.assign(Object.create(null), from ?? {});
 }
 
+/** A fresh device token: 32 random bytes as hex. The server sees only its hash. */
+function newToken() {
+  return [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** @typedef {import("../model/docs.js").SpaceMode} SpaceMode */
 /** @typedef {'tab' | 'list'} StoredMode */
+/** @typedef {import("../crypto/spaces.js").SpaceState} SpaceState */
 
 /**
  * @typedef {Object} SyncStatus
@@ -84,32 +112,51 @@ function dict(from) {
  */
 
 /**
+ * `v: 2` marks a device token. A config without it holds the server token of
+ * the time before §27; the server refuses that for data, and the device has
+ * to register or join (the upgrade, §27).
+ * @typedef {{url: string, token: string, v?: 2}} Config
+ */
+
+/** @typedef {{creator: string, log: string[]}} SpaceLog */
+/** @typedef {{slot: string, code: string, spaces: string[], at: number}} Invite */
+
+/** An error the user can read, with the server's status when there is one. */
+class SyncError extends Error {
+  /** @param {string} message @param {number} [status] */
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/**
  * @param {{store: ReturnType<import("../model/docs.js").createDocStore>,
  *          keyring: import("../crypto/keyring.js").KeyRing}} deps
  */
 export function createSyncClient({ store, keyring }) {
   const events = new EventTarget();
 
-  /** @type {{url: string, token: string} | null} */
+  /** @type {Config | null} */
   let config = null;
-  /**
-   * The seq of the last change applied, per received space: the server's
-   * paging cursor (§13.5, §25). The leader writes it, as one settings row.
-   * @type {Record<string, number>}
-   */
+  /** @type {Record<string, number>} */
   let cursors = dict();
   /** The URL `cursors` belong to; "" before any page ever advanced one. */
   let cursorsUrl = "";
-  /**
-   * The device's mode per space (§25). An absent name is Not here. Starts as
-   * the no-setting answer, so a store question before load() finds the
-   * behaviour of a device that never touched spaces.
-   * @type {Record<string, StoredMode>}
-   */
-  let modes = dict({ [DEFAULT_SPACE]: "tab" });
-  let defaultSpaceName = DEFAULT_SPACE;
-  /** @type {{at: number, list: {space: string, count: number}[]} | null} */
-  let spacesCache = null;
+  /** @type {Record<string, StoredMode>} */
+  let modes = dict();
+  /** @type {string} */
+  let defaultSpaceName = "";
+  /** @type {Record<string, SpaceLog>} */
+  let logs = dict();
+  /** The replayed state of each log, rebuilt whenever `logs` changes. @type {Record<string, SpaceState>} */
+  let states = dict();
+  /** The last `GET /api/spaces` answer. @type {{space: string, count: number, logSeq: number}[]} */
+  let serverSpaces = [];
+  /** @type {Invite[]} */
+  let invites = [];
+  /** @type {{slot: string, code: string} | null} */
+  let joining = null;
   /** @type {boolean | undefined} An explicit choice; undefined means "platform". */
   let defaultOn;
   /** @type {SyncStatus} */
@@ -126,7 +173,12 @@ export function createSyncClient({ store, keyring }) {
   const unreadable = new Set();
 
   function isConfigured() {
-    return Boolean(config && config.url && config.token);
+    return Boolean(config && config.v === 2 && config.url && config.token);
+  }
+
+  /** A config from before §27: a server is set, but its token only registers. */
+  function needsUpgrade() {
+    return Boolean(config && config.url && config.token && config.v !== 2);
   }
 
   /** @param {SyncStatus} next */
@@ -148,17 +200,22 @@ export function createSyncClient({ store, keyring }) {
   });
 
   /**
-   * @param {string} path @param {{method?: string, body?: any}} [opts]
+   * @param {string} path @param {{method?: string, body?: any, url?: string, token?: string | null}} [opts]
+   *   `url` and `token` for a request outside the stored config: a
+   *   registration or a join, before there is a device token. `token: null`
+   *   sends none.
    * @returns {Promise<Response>}
    */
   function request(path, opts = {}) {
-    if (!config) throw new Error("sync: not configured");
-    return fetch(config.url + path, {
+    const url = opts.url ?? config?.url;
+    if (!url) throw new Error("sync: not configured");
+    const token = opts.token === undefined ? config?.token : opts.token;
+    /** @type {Record<string, string>} */
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = "Bearer " + token;
+    return fetch(url + path, {
       method: opts.method ?? "GET",
-      headers: {
-        Authorization: "Bearer " + config.token,
-        "Content-Type": "application/json",
-      },
+      headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       // The service worker ignores cross-origin requests, but an HTTP cache in
       // front of the API would be just as wrong: a cached /changes page would
@@ -169,30 +226,448 @@ export function createSyncClient({ store, keyring }) {
 
   /** @param {Response} res */
   function httpError(res) {
-    const err = new Error("server error " + res.status);
-    // @ts-ignore - carried so the status handler can tell 401 from the rest
-    err.status = res.status;
-    return err;
+    return new SyncError("server error " + res.status, res.status);
   }
 
-  /**
-   * The spaces this device pulls: the keyring, then every mode in the map.
-   * The keyring goes first in a round, as it came first in the one feed
-   * before spaces: a note encrypted to a device this one has not met yet
-   * must find the device list already merged (§13.3, §20).
-   */
-  function receivedSpaces() {
-    return [KEYRING_SPACE, ...Object.keys(modes)];
+  // ---- Spaces (architecture.md §27) ---------------------------------------
+
+  /** Replay every log; the store and the UI read the result. */
+  function rebuild() {
+    const next = dict();
+    for (const [space, entry] of Object.entries(logs)) {
+      const state = replay(entry.log, entry.creator);
+      if (state.error) console.log("[vrtti] space log of", space, "stops at", state.error);
+      next[space] = state;
+    }
+    states = next;
+    events.dispatchEvent(new CustomEvent("spaces"));
   }
 
   /** @param {string} space */
-  function isReceived(space) {
-    return space === KEYRING_SPACE || Object.hasOwn(modes, space);
+  function isMine(space) {
+    const me = keyring.ownKey();
+    return Boolean(me && states[space]?.members.includes(me));
   }
 
-  /** Pull each received space in turn (§25). */
-  async function pull() {
-    for (const space of receivedSpaces()) await pullSpace(space);
+  /** The spaces this device is a member of, by name. @returns {string[]} */
+  function mySpaces() {
+    return Object.keys(states).filter(isMine).sort();
+  }
+
+  /** @param {string} space @returns {string[]} */
+  function recipients(space) {
+    if (!isMine(space)) return [];
+    return states[space].members.map((key) => parseEntryKey(key)?.recipient ?? "").filter(Boolean);
+  }
+
+  /** @param {string} space */
+  function logSeq(space) {
+    return states[space]?.seq ?? 0;
+  }
+
+  /** @param {string} space */
+  function colorOf(space) {
+    return states[space]?.color ?? "";
+  }
+
+  async function saveLogs() {
+    await putSetting(LOGS_KEY, { ...logs });
+    post("setting", { key: LOGS_KEY });
+    rebuild();
+  }
+
+  /**
+   * Pull the new entries of one log. The server sends only what is after
+   * `since`; an entry whose seq does not follow is left out, and the replay
+   * decides what counts.
+   * @param {string} space
+   * @returns {Promise<boolean>} false: the server refuses this device the space.
+   */
+  async function pullLog(space) {
+    const entry = logs[space];
+    if (!entry) return true;
+    const res = await request("/api/spaces/" + encodeURIComponent(space) + "/log?since=" + entry.log.length);
+    if (res.status === 403) return false;
+    if (!res.ok) throw httpError(res);
+    /** @type {{seq: number, entry: string}[]} */
+    const rows = await res.json();
+    let grew = false;
+    for (const row of rows) {
+      if (row.seq !== entry.log.length + 1 || typeof row.entry !== "string") break;
+      entry.log.push(row.entry);
+      grew = true;
+    }
+    if (grew) await saveLogs();
+    return true;
+  }
+
+  /**
+   * The logs of this device's spaces, and the loss of the ones it is not in
+   * any more (§27): the server stopped listing it, refuses its log, or the
+   * log itself says this device was removed.
+   */
+  async function pullLogs() {
+    const res = await request("/api/spaces");
+    if (!res.ok) throw httpError(res);
+    serverSpaces = await res.json();
+    const listed = new Map(serverSpaces.map((s) => [s.space, s.logSeq]));
+    for (const space of Object.keys(logs)) {
+      const seq = listed.get(space);
+      if (seq === undefined) continue;
+      if (seq > logs[space].log.length && !(await pullLog(space))) listed.delete(space);
+    }
+    for (const space of Object.keys(logs)) {
+      // A log this device wrote itself and the server lists: a member. A log
+      // that ends with this device removed, or that the server no longer
+      // lists: lost. A space whose replay stopped early keeps the members
+      // up to there.
+      if (!listed.has(space) || !isMine(space)) await lose(space);
+    }
+    events.dispatchEvent(new CustomEvent("spaces"));
+  }
+
+  /**
+   * This device is out of a space: its notes go to the local trash, and the
+   * device forgets the log, the cursor and the mode (§27).
+   * @param {string} space
+   */
+  async function lose(space) {
+    console.log("[vrtti] this device left the space", space);
+    await store.loseSpace(space);
+    delete logs[space];
+    delete cursors[space];
+    delete modes[space];
+    await putSetting(CURSORS_KEY, { ...cursors });
+    await putSetting(SPACES_KEY, { ...modes });
+    await saveLogs();
+  }
+
+  /**
+   * Append one entry to a log, signed by this device. A 409 means another
+   * member wrote first: pull the log and sign the next position again.
+   * @param {string} space @param {{op: "add" | "remove" | "color", device: string, color?: string}} what
+   */
+  async function append(space, what) {
+    const entry = logs[space];
+    if (!entry || !isMine(space)) throw new SyncError("this device is not a member of " + space);
+    if (!keyring.signer) throw new SyncError("unlock this device first");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const text = await nextEntry(entry.log, { ...what, space }, keyring.ownKey(), keyring.signer);
+      // Checked here first, so a refused change says why before the server.
+      const after = replay([...entry.log, text], entry.creator);
+      if (after.error) throw new SyncError(after.error.replace(/^entry \d+: /, ""));
+      const res = await request("/api/spaces/" + encodeURIComponent(space) + "/log", {
+        method: "POST",
+        body: { entry: text },
+      });
+      if (res.status === 409) {
+        const body = await res.json().catch(() => ({}));
+        if (/last member/.test(body.error ?? "")) throw new SyncError("the last member cannot remove itself", 409);
+        await pullLog(space);
+        continue;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new SyncError(body.error ?? "server error " + res.status, res.status);
+      }
+      entry.log.push(text);
+      await saveLogs();
+      return;
+    }
+    throw new SyncError("the space changed during the write, try again");
+  }
+
+  /**
+   * A new space, with this device as its first member (§27). `claim` takes
+   * over a space from before the upgrade: its old notes come down whole.
+   * @param {string} name @param {{claim?: boolean}} [opts]
+   */
+  async function createSpace(name, opts = {}) {
+    if (!isValidSpace(name) || name === KEYRING_SPACE) throw new SyncError("letters, digits, - and _ only, up to 32");
+    if (logs[name]) throw new SyncError("this device has a space " + name);
+    if (!keyring.signer) throw new SyncError("unlock this device first");
+    const me = keyring.ownKey();
+    const color = nextColor(Object.values(states).map((s) => s.color));
+    const text = await nextEntry([], { op: "create", space: name, device: me, color }, me, keyring.signer);
+    const res = await request(
+      "/api/spaces/" + encodeURIComponent(name) + (opts.claim ? "/claim" : "/log"),
+      { method: "POST", body: { entry: text } }
+    );
+    if (res.status === 409) throw new SyncError("the name " + name + " is taken", 409);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new SyncError(body.error ?? "server error " + res.status, res.status);
+    }
+    logs[name] = { creator: me, log: [text] };
+    if (opts.claim) {
+      cursors[name] = 0;
+      await putSetting(CURSORS_KEY, { ...cursors });
+    }
+    await saveLogs();
+    if (!defaultSpaceName || !isMine(defaultSpaceName)) await setDefaultSpace(name);
+    void syncNow();
+  }
+
+  /** The spaces from before the upgrade that nobody claimed yet. @returns {Promise<string[]>} */
+  async function listUnclaimed() {
+    const res = await request("/api/spaces/unclaimed");
+    if (res.status === 403) return [];
+    if (!res.ok) throw httpError(res);
+    return res.json();
+  }
+
+  /** @param {string} space @param {string} deviceKey */
+  async function addDevice(space, deviceKey) {
+    await append(space, { op: "add", device: deviceKey });
+    void syncNow();
+  }
+
+  /** @param {string} space @param {string} deviceKey */
+  async function removeDevice(space, deviceKey) {
+    await append(space, { op: "remove", device: deviceKey });
+    // A device that removed itself lost the space; the next pull says so.
+    void syncNow();
+  }
+
+  /** @param {string} space @param {string} color */
+  async function setColor(space, color) {
+    await append(space, { op: "color", device: keyring.ownKey(), color });
+  }
+
+  /**
+   * The grid of Settings › Devices: this device's spaces as columns, every
+   * device their logs ever named as rows (a removed one can be added back).
+   */
+  function grid() {
+    const spaces = mySpaces();
+    /** @type {Map<string, {key: string, id: string, name: string, me: boolean}>} */
+    const devices = new Map();
+    const me = keyring.ownKey();
+    for (const space of spaces) {
+      for (const key of states[space].known) {
+        const parsed = parseEntryKey(key);
+        if (parsed && !devices.has(key)) devices.set(key, { key, id: parsed.id, name: parsed.name, me: key === me });
+      }
+    }
+    const rows = [...devices.values()].sort((a, b) => Number(b.me) - Number(a.me) || a.name.localeCompare(b.name));
+    return {
+      spaces: spaces.map((name) => ({ name, color: colorOf(name), creator: states[name].creator })),
+      devices: rows,
+      /** @param {string} space @param {string} key */
+      isMember: (space, key) => Boolean(states[space]?.members.includes(key)),
+    };
+  }
+
+  /** The device name for a device id, from the logs. @param {string} id */
+  function deviceName(id) {
+    for (const state of Object.values(states)) {
+      for (const key of state.known) {
+        const parsed = parseEntryKey(key);
+        if (parsed?.id === id) return parsed.name;
+      }
+    }
+    return "";
+  }
+
+  // ---- Joins (architecture.md §27) ----------------------------------------
+
+  /**
+   * "Add a device": a code for the ticked spaces, valid ten minutes, once.
+   * @param {string[]} spaces @returns {Promise<string>} The code, formatted.
+   */
+  async function invite(spaces) {
+    for (const space of spaces) if (!isMine(space)) throw new SyncError("not a member of " + space);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = newCode();
+      const slot = slotOf(code);
+      if (invites.some((i) => i.slot === slot)) continue;
+      const res = await request("/api/joins", {
+        method: "POST",
+        body: { slot, verifier: await joinVerifier(code), spaces },
+      });
+      // The slot serves another join: draw another code.
+      if (res.status === 409) continue;
+      if (!res.ok) throw httpError(res);
+      invites = [...invites.filter((i) => Date.now() - i.at < INVITE_KEEP), { slot, code, spaces, at: Date.now() }];
+      await putSetting(INVITES_KEY, invites);
+      return formatCode(code);
+    }
+    throw new SyncError("no free code, try again");
+  }
+
+  /**
+   * The member's half of a join: a device used one of this device's codes.
+   * Check its proof, add it to the spaces, and send the reply (§27).
+   */
+  async function completeJoins() {
+    if (!invites.length || !keyring.signer) return;
+    const res = await request("/api/joins");
+    if (!res.ok) throw httpError(res);
+    /** @type {{slot: string, spaces: string[], deviceId: string, entry: string, proof: string}[]} */
+    const pending = await res.json();
+    for (const join of pending) {
+      const invite = invites.find((i) => i.slot === join.slot);
+      if (!invite) continue;
+      const parsed = parseEntryKey(join.entry);
+      // The proof binds the device entry to the code: without it the server
+      // could swap the new device's keys for its own.
+      if (!parsed || parsed.id !== join.deviceId || !sameHex(join.proof, await joinProof(invite.code, join.entry))) {
+        console.log("[vrtti] a join with a wrong proof was refused", join.slot);
+        invites = invites.filter((i) => i !== invite);
+        await putSetting(INVITES_KEY, invites);
+        continue;
+      }
+      /** @type {Record<string, string>} */
+      const creators = {};
+      for (const space of invite.spaces) {
+        if (!isMine(space)) continue;
+        if (!states[space].members.includes(join.entry)) await append(space, { op: "add", device: join.entry });
+        creators[space] = logs[space].creator;
+      }
+      const reply = JSON.stringify({ member: keyring.ownKey(), creators, recovery: keyring.recoveryRecipients });
+      const answered = await request("/api/joins/" + encodeURIComponent(join.slot) + "/reply", {
+        method: "POST",
+        body: { reply, mac: await joinReplyMac(invite.code, reply) },
+      });
+      if (!answered.ok && answered.status !== 404) throw httpError(answered);
+      invites = invites.filter((i) => i !== invite);
+      await putSetting(INVITES_KEY, invites);
+      console.log("[vrtti] added", parsed.name, "to", Object.keys(creators).join(", "));
+    }
+  }
+
+  /**
+   * The new device's half: type the server URL and the code. The device
+   * registers with its own token; its memberships arrive with the reply.
+   * @param {string} url @param {string} typed
+   */
+  async function redeem(url, typed) {
+    const code = normalizeCode(typed);
+    if (!code) throw new SyncError("that is not a code: ten letters and digits");
+    const entry = keyring.ownKey();
+    if (!entry) throw new SyncError("set up this device first");
+    const base = url.trim().replace(/\/+$/, "");
+    const token = newToken();
+    let res;
+    try {
+      res = await request("/api/joins/redeem", {
+        url: base,
+        token: null,
+        method: "POST",
+        body: {
+          slot: slotOf(code),
+          verifier: await joinVerifier(code),
+          deviceId: keyring.deviceId,
+          tokenHash: sha256Hex(token),
+          entry,
+          proof: await joinProof(code, entry),
+        },
+      });
+    } catch {
+      throw new SyncError("no answer from the server");
+    }
+    if (res.status === 403) throw new SyncError("wrong code", 403);
+    if (res.status === 404) throw new SyncError("the code is unknown or expired", 404);
+    if (res.status === 409) throw new SyncError("this device is registered already", 409);
+    if (!res.ok) throw httpError(res);
+    joining = { slot: slotOf(code), code };
+    await putSetting(JOINING_KEY, joining);
+    await saveConfig({ url: base, token, v: 2 });
+    void syncNow();
+  }
+
+  /** The new device waits for its member's reply; true once it arrived. */
+  async function checkJoinReply() {
+    if (!joining) return true;
+    const res = await request("/api/joins/" + encodeURIComponent(joining.slot) + "/reply");
+    if (res.status === 404) return false;
+    if (!res.ok) throw httpError(res);
+    const { reply, mac } = await res.json();
+    if (!reply) return false;
+    if (!sameHex(mac, await joinReplyMac(joining.code, reply))) {
+      // A reply that is not from the member: the server made it up. The
+      // device waits on; only the real reply pins anything.
+      console.log("[vrtti] a join reply with a wrong MAC was ignored");
+      return false;
+    }
+    const parsed = JSON.parse(reply);
+    for (const [space, creator] of Object.entries(parsed.creators ?? {})) {
+      if (isValidSpace(space) && typeof creator === "string" && !logs[space]) {
+        logs[space] = { creator, log: [] };
+        cursors[space] = 0;
+      }
+    }
+    await putSetting(CURSORS_KEY, { ...cursors });
+    await keyring.addRecovery(Array.isArray(parsed.recovery) ? parsed.recovery : []);
+    joining = null;
+    await deleteSetting(JOINING_KEY);
+    await saveLogs();
+    return true;
+  }
+
+  /**
+   * The first device: the server token registers it (§27). Nothing else uses
+   * that token, and it is not stored.
+   * @param {string} url @param {string} serverToken
+   */
+  async function registerFirst(url, serverToken) {
+    if (!keyring.deviceId) throw new SyncError("set up this device first");
+    const base = url.trim().replace(/\/+$/, "");
+    const token = newToken();
+    let res;
+    try {
+      res = await request("/api/devices", {
+        url: base,
+        token: serverToken.trim(),
+        method: "POST",
+        body: { id: keyring.deviceId, tokenHash: sha256Hex(token) },
+      });
+    } catch {
+      throw new SyncError("no answer from the server");
+    }
+    if (res.status === 401) throw new SyncError("wrong server token", 401);
+    if (res.status === 409) throw new SyncError("this device is registered already", 409);
+    if (!res.ok) throw httpError(res);
+    await saveConfig({ url: base, token, v: 2 });
+  }
+
+  /**
+   * A change of the passphrase switch (§27): new keys under a new device id.
+   * While this device holds both, it adds the new device to each of its
+   * spaces, encrypts its notes again, and then removes the old device.
+   * @param {{askPassphrase: boolean, passphrase?: string}} opts
+   */
+  async function changePassphraseSwitch(opts) {
+    const next = await keyring.makeSuccessor(opts);
+    if (isConfigured()) {
+      const token = newToken();
+      const res = await request("/api/devices/successor", {
+        method: "POST",
+        body: { id: next.stored.deviceId, tokenHash: sha256Hex(token) },
+      });
+      if (!res.ok) throw httpError(res);
+      const own = /** @type {any} */ (next.stored);
+      const newKey = entryKey({ id: own.deviceId, name: own.deviceName, recipient: own.deviceRecipient, signKey: own.signKey, addedAt: own.createdAt });
+      const oldKey = keyring.ownKey();
+      const spaces = mySpaces();
+      for (const space of spaces) await append(space, { op: "add", device: newKey });
+      await saveConfig({ ...(/** @type {Config} */ (config)), token });
+      await keyring.adopt(next);
+      rebuild();
+      await store.reencryptAll();
+      for (const space of spaces) await append(space, { op: "remove", device: oldKey });
+      void syncNow();
+      return;
+    }
+    await keyring.adopt(next);
+    await store.reencryptAll();
+  }
+
+  // ---- Pull and push --------------------------------------------------------
+
+  /** The spaces this device pulls notes of: the keyring, then its own. */
+  function receivedSpaces() {
+    return [KEYRING_SPACE, ...mySpaces()];
   }
 
   /**
@@ -209,9 +684,7 @@ export function createSyncClient({ store, keyring }) {
    */
   async function pullSpace(space) {
     for (let page = 0; page < MAX_PAGES; page++) {
-      // The settings can change during a page (another window, a click):
-      // a space dropped since must not get its cursor back.
-      if (!isReceived(space)) return;
+      if (space !== KEYRING_SPACE && !isMine(space)) return;
       // Another server than the cursors know: start at 0, and forget the old
       // positions only once this server has answered. A typo in the URL and
       // the way back to the real server then cost nothing.
@@ -219,9 +692,10 @@ export function createSyncClient({ store, keyring }) {
       const stale = cursorsUrl !== url;
       const since = stale ? 0 : cursors[space] ?? 0;
       const res = await request(
-        "/api/changes?since=" + since + "&limit=" + PAGE +
-          "&spaces=" + encodeURIComponent(space)
+        "/api/changes?since=" + since + "&limit=" + PAGE + "&spaces=" + encodeURIComponent(space)
       );
+      // The server refuses the space: this device is out of it.
+      if (res.status === 403) return lose(space);
       if (!res.ok) throw httpError(res);
       if (stale) {
         cursors = dict();
@@ -234,9 +708,9 @@ export function createSyncClient({ store, keyring }) {
       const body = await res.json();
       for (const change of body.changes ?? []) await store.applyRemote(change);
       // Compare and set: a reset to 0 while this page was in flight (a space
-      // turned from From server to Open as tab) must win over this page's
+      // turned from Titles only to Open as tabs) must win over this page's
       // `next`, or the listed notes would never arrive as tabs.
-      if ((cursors[space] ?? 0) !== since || !isReceived(space)) return;
+      if ((cursors[space] ?? 0) !== since) return;
       if (typeof body.next === "number" && body.next !== since) {
         cursors[space] = body.next;
         await putSetting(CURSORS_KEY, { ...cursors });
@@ -246,13 +720,35 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
+   * Notes this device holds as a title only, encrypted for older members:
+   * fetch, encrypt again, push (§27). A "Titles only" note has no record
+   * here, so the record pass of the store cannot reach it.
+   */
+  async function rewrapStubs() {
+    for (const stub of store.remotes()) {
+      if (!stub.enc || !isMine(stub.space)) continue;
+      if ((stub.spaceSeq ?? 0) >= logSeq(stub.space)) continue;
+      const res = await request("/api/docs/" + encodeURIComponent(stub.id));
+      if (!res.ok) continue;
+      const change = await res.json();
+      if (change.kind !== "text" || change.space !== stub.space) continue;
+      const body = await store.rewrapChange(change);
+      if (!body) continue;
+      const pushed = await request("/api/docs/" + encodeURIComponent(stub.id) + "/revisions", {
+        method: "POST",
+        body: { baseRev: change.rev, kind: "text", content: body.content, meta: body.meta, clientTime: change.clientTime, space: stub.space },
+      });
+      // 409: another member was faster, and its row arrives with the pull.
+      if (!pushed.ok && pushed.status !== 409) throw httpError(pushed);
+    }
+  }
+
+  /**
    * Push one record.
    *
    * age wraps a fresh file key on every save, so the ciphertext of unchanged
    * text differs on every push. Never add a "skip if the bytes are the same"
-   * shortcut here: it would do nothing for encrypted docs and would hide real
-   * pushes of plaintext ones (architecture.md §13.6).
-   *
+   * shortcut here (architecture.md §13.6).
    * @param {import("../storage/idb.js").BufferRecord} record
    * @param {boolean} [attach] Retry with baseRev null, after a 409 that came
    *   back with no current revision (the document has no rows at all).
@@ -279,21 +775,22 @@ export function createSyncClient({ store, keyring }) {
     const purge = Boolean(record.sync && record.sync.purge);
     const sentUpdatedAt = record.updatedAt;
 
-    const res = await request(
-      "/api/docs/" + encodeURIComponent(record.id) + "/revisions",
-      { method: "POST", body: payload }
-    );
+    const res = await request("/api/docs/" + encodeURIComponent(record.id) + "/revisions", {
+      method: "POST",
+      body: payload,
+    });
 
     if (res.status === 409) {
       const body = await res.json().catch(() => ({}));
       // The server's current version goes through the same door as a pulled
-      // one, so the conflict rule stays in one place (model/docs.js). The
-      // space rules too: a `current` from a space this device does not
-      // receive (the note moved elsewhere) detaches the record there.
+      // one, so the conflict rule stays in one place (model/docs.js).
       if (body && body.current) return store.applyRemote(body.current);
       if (!attach) return pushOne(record, true);
       return;
     }
+    // 404: the note sits in a space this device is not a member of any more
+    // (a move by another member, §27). The copy here goes to the trash.
+    if (res.status === 404 && record.kind !== "keyring") return store.trash(record.id);
     if (!res.ok) throw httpError(res);
 
     const body = await res.json();
@@ -313,11 +810,10 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
-   * Push every dirty record. One refused note (too large for the server, a
-   * server bug on one row) must not hold back the notes after it in every
-   * round, so the loop goes on and rethrows the first error at the end, for
-   * the status. A wrong token or no network would fail every record alike,
-   * so those stop the round at once.
+   * Push every dirty record. One refused note must not hold back the notes
+   * after it in every round, so the loop goes on and rethrows the first error
+   * at the end, for the status. A wrong token or no network would fail every
+   * record alike, so those stop the round at once.
    */
   async function push() {
     /** @type {unknown} */
@@ -357,6 +853,10 @@ export function createSyncClient({ store, keyring }) {
       post("sync-request", {});
       return;
     }
+    if (needsUpgrade()) {
+      setStatus({ state: "error", message: "set up sync again", lastSyncAt });
+      return;
+    }
     if (!isConfigured()) {
       setStatus({ state: "off" });
       return;
@@ -370,15 +870,26 @@ export function createSyncClient({ store, keyring }) {
       do {
         queued = false;
         setStatus({ state: "syncing", lastSyncAt });
+        const joined = await checkJoinReply();
         await ensureKeyringSynced();
-        await pull();
+        await pullLogs();
+        await completeJoins();
+        for (const space of receivedSpaces()) await pullSpace(space);
         // Recent file notes changed on disk become dirty here, so this
         // round's push carries them (§23). After the pull: a pull writes
         // files itself and moves their stamps first.
         await store.stampRecentFiles();
+        // The upgrade and the re-encryption run once the members are known.
+        await store.sealSynced();
+        await store.reencryptStale();
         await push();
+        await rewrapStubs();
         lastSyncAt = Date.now();
-        setStatus({ state: "idle", lastSyncAt });
+        setStatus({
+          state: "idle",
+          lastSyncAt,
+          message: joined ? undefined : "waiting for the device that showed the code",
+        });
       } while (queued);
     } catch (err) {
       queued = false;
@@ -387,7 +898,7 @@ export function createSyncClient({ store, keyring }) {
       // can do nothing about. The status element is the report.
       const code = err && /** @type {any} */ (err).status;
       if (code === 401) {
-        setStatus({ state: "error", message: "wrong token", lastSyncAt });
+        setStatus({ state: "error", message: "this device is not registered", lastSyncAt });
       } else if (!navigator.onLine) {
         // Nothing is lost: every dirty record stays dirty and the next online
         // event runs this again.
@@ -409,35 +920,26 @@ export function createSyncClient({ store, keyring }) {
     }
   }
 
-  /**
-   * Store a server and try it at once. Called by the settings rows through the
-   * sync.configure command.
-   * @param {{url?: string, token?: string}} next
-   */
-  async function configure(next) {
-    // A new server may have the spaces endpoint the old one lacked.
-    spacesCache = null;
-    const url = (next.url ?? "").trim().replace(/\/+$/, "");
-    const token = (next.token ?? "").trim();
-    config = { url, token };
-    await putSetting(CONFIG_KEY, config);
+  /** @param {Config | null} next */
+  async function saveConfig(next) {
+    config = next;
+    if (next) await putSetting(CONFIG_KEY, next);
+    else await deleteSetting(CONFIG_KEY);
     post("setting", { key: CONFIG_KEY });
-    if (!isConfigured()) {
-      setStatus({ state: "off" });
-      return;
-    }
-    // A new server is a new namespace. The cursors are not touched here:
-    // pullSpace compares the URL they belong to and starts at 0 on another
-    // server once it answers, so a typo put back costs nothing.
-    await syncNow();
+  }
+
+  /** Leave the server: this device forgets its token. Its notes stay. */
+  async function disconnect() {
+    await saveConfig(null);
+    setStatus({ state: "off" });
   }
 
   /** @returns {Promise<{ok: boolean, message?: string}>} */
   async function testConnection() {
     if (!isConfigured()) return { ok: false, message: "no server configured" };
     try {
-      const res = await request("/api/changes?since=0&limit=1");
-      if (res.status === 401) return { ok: false, message: "wrong token" };
+      const res = await request("/api/spaces");
+      if (res.status === 401) return { ok: false, message: "this device is not registered" };
       if (!res.ok) return { ok: false, message: "server error " + res.status };
       return { ok: true };
     } catch {
@@ -455,85 +957,80 @@ export function createSyncClient({ store, keyring }) {
   async function fetchDoc(id) {
     const res = await request("/api/docs/" + encodeURIComponent(id));
     if (!res.ok) throw httpError(res);
-    const change = await res.json();
-    change.space ??= DEFAULT_SPACE;
-    return change;
+    return res.json();
   }
 
   /**
-   * The server's spaces with a count of live documents each, for the settings
-   * panel (§25). `keyring` is left out: no list ever shows it.
-   * @returns {Promise<{space: string, count: number}[]>}
+   * Every live note of a space as the server has it, for a backup (§27):
+   * the newest row of each, from the start of the change log.
+   * @param {string} space @returns {Promise<import("../model/docs.js").Change[]>}
    */
-  async function listSpaces() {
-    if (!isConfigured()) return [];
-    if (spacesCache && Date.now() - spacesCache.at < SPACES_TTL) return spacesCache.list;
-    const res = await request("/api/spaces");
-    // A server from before spaces has no such endpoint. Its notes are all in
-    // `personal`, which the panel lists from the device's own map anyway.
-    // Remembered until the server config changes: the panel asks on every
-    // paint, and Chrome logs every 404 as an error of its own.
-    if (res.status === 404) {
-      spacesCache = { at: Infinity, list: [] };
-      return [];
+  async function allNotes(space) {
+    /** @type {Map<string, any>} */
+    const notes = new Map();
+    let since = 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await request(
+        "/api/changes?since=" + since + "&limit=" + PAGE + "&spaces=" + encodeURIComponent(space)
+      );
+      if (!res.ok) throw httpError(res);
+      const body = await res.json();
+      for (const change of body.changes ?? []) {
+        if (change.space === space && change.kind === "text") notes.set(change.docId, change);
+        else notes.delete(change.docId);
+      }
+      if (!body.more) break;
+      since = body.next;
     }
-    if (!res.ok) throw httpError(res);
-    /** @type {{space: string, count: number}[]} */
-    const all = await res.json();
-    const list = all.filter((entry) => entry.space !== KEYRING_SPACE);
-    spacesCache = { at: Date.now(), list };
-    return list;
+    return [...notes.values()];
   }
 
-  /** What this device does with a space; undefined is Not here. @param {string} space @returns {SpaceMode} */
+  /** This device's spaces with a count of live notes each, for Settings. */
+  function listSpaces() {
+    const counts = new Map(serverSpaces.map((s) => [s.space, s.count]));
+    return mySpaces().map((space) => ({ space, count: counts.get(space) ?? 0 }));
+  }
+
+  /** What this device does with a space; undefined: not one of its spaces. @param {string} space @returns {SpaceMode} */
   function modeOf(space) {
     if (space === KEYRING_SPACE) return "tab";
-    return Object.hasOwn(modes, space) ? modes[space] : undefined;
-  }
-
-  /** @returns {string} */
-  function defaultSpace() {
-    return defaultSpaceName;
+    if (!isMine(space)) return undefined;
+    return Object.hasOwn(modes, space) ? modes[space] : "tab";
   }
 
   /**
-   * Give a space a mode, or take it off this device with null (§25). Any
-   * window can call this. It only writes the setting; the leader's reload
-   * diffs the modes and does the cursor resets, the detach and the stub
-   * removal, because those touch the records and the cursors it owns.
-   * @param {string} space @param {StoredMode | null} mode
+   * Where this device's new syncs go (§25, §27): the chosen space while this
+   * device is in it, else its first space, else nowhere.
+   * @returns {string | null}
+   */
+  function defaultSpace() {
+    if (defaultSpaceName && isMine(defaultSpaceName)) return defaultSpaceName;
+    return mySpaces()[0] ?? null;
+  }
+
+  /**
+   * Open as tabs or Titles only (§25). Any window can call this. It only
+   * writes the setting; the leader's reload resets the cursor of a space
+   * that turned to tabs, because it owns the cursors.
+   * @param {string} space @param {StoredMode} mode
    * @returns {Promise<boolean>} false for a refused change
    */
   async function setSpaceMode(space, mode) {
-    if (!isValidSpace(space) || space === KEYRING_SPACE) return false;
-    if (mode !== "tab" && mode !== "list" && mode !== null) return false;
-    // The default space is always received: a note this device attaches
-    // must be able to come back to it.
-    if (mode === null && space === defaultSpaceName) return false;
+    if (!isMine(space) || (mode !== "tab" && mode !== "list")) return false;
     const next = dict(modes);
-    if (mode === null) delete next[space];
-    else next[space] = mode;
+    next[space] = mode;
     await putSetting(SPACES_KEY, { ...next });
     post("setting", { key: SPACES_KEY });
     await reloadSettings();
     return true;
   }
 
-  /**
-   * Where this device's new syncs go (§25). A space that was Not here turns
-   * Open as tab in the same step, so the default is always received.
-   * @param {string} name @returns {Promise<boolean>} false for a refused name
-   */
+  /** @param {string} name @returns {Promise<boolean>} false for a refused name */
   async function setDefaultSpace(name) {
     if (!isValidSpace(name) || name === KEYRING_SPACE) return false;
-    if (!Object.hasOwn(modes, name)) {
-      await putSetting(SPACES_KEY, { ...modes, [name]: "tab" });
-    }
+    defaultSpaceName = name;
     await putSetting(DEFAULT_SPACE_KEY, name);
-    // One message for both rows: a reload re-reads every space setting, and
-    // two messages would run the leader's diff twice.
     post("setting", { key: DEFAULT_SPACE_KEY });
-    await reloadSettings();
     return true;
   }
 
@@ -546,9 +1043,7 @@ export function createSyncClient({ store, keyring }) {
 
   /** @param {string} id @param {number} rev @returns {Promise<any>} */
   async function revision(id, rev) {
-    const res = await request(
-      "/api/docs/" + encodeURIComponent(id) + "/revisions/" + rev
-    );
+    const res = await request("/api/docs/" + encodeURIComponent(id) + "/revisions/" + rev);
     if (!res.ok) throw httpError(res);
     return res.json();
   }
@@ -556,10 +1051,10 @@ export function createSyncClient({ store, keyring }) {
   /**
    * Does a new document get a server target? Unset means the platform default:
    * on where there is no disk to fall back on (architecture.md §3, §4), and
-   * never at all without a server, because a flag nothing acts on is a lie.
+   * never without a space to put it in (§27).
    */
   function syncDefaultOn() {
-    if (!isConfigured()) return false;
+    if (!isConfigured() || !defaultSpace()) return false;
     if (typeof defaultOn === "boolean") return defaultOn;
     return window.matchMedia("(pointer: coarse)").matches && !hasDisk;
   }
@@ -573,60 +1068,36 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
-   * Read the stored config, cursor and default. Separate from start() because
-   * the store creates its first buffer in store.start(), and that buffer's
-   * sync target depends on the default this reads.
+   * Read the stored settings. Separate from start() because the store creates
+   * its first buffer in store.start(), and that buffer's sync target depends
+   * on the default this reads.
    */
   async function load() {
     config = (await getSetting(CONFIG_KEY)) ?? null;
     defaultOn = await getSetting(DEFAULT_ON_KEY);
-    await loadSpaces();
-    setStatus({ state: isConfigured() ? "idle" : "off" });
-  }
-
-  /** The space settings and the cursors (§25), with their two defaults. */
-  async function loadSpaces() {
     const storedName = await getSetting(DEFAULT_SPACE_KEY);
-    defaultSpaceName =
-      isValidSpace(storedName) && storedName !== KEYRING_SPACE ? storedName : DEFAULT_SPACE;
-    /** @type {Record<string, StoredMode>} */
-    const next = dict();
-    const stored = await getSetting(SPACES_KEY);
-    // Unset means a device that never touched spaces: it takes `personal`
-    // as tabs, exactly as sync worked before.
-    for (const [name, mode] of Object.entries(stored ?? { [DEFAULT_SPACE]: "tab" })) {
-      // `keyring` is received apart from the map, always, so it is never a
-      // mode a setting could turn off.
-      if (!isValidSpace(name) || name === KEYRING_SPACE) continue;
-      if (mode === "tab" || mode === "list") next[name] = mode;
+    defaultSpaceName = isValidSpace(storedName) && storedName !== KEYRING_SPACE ? storedName : "";
+    modes = dict();
+    for (const [name, mode] of Object.entries((await getSetting(SPACES_KEY)) ?? {})) {
+      if (isValidSpace(name) && (mode === "tab" || mode === "list")) modes[name] = mode;
     }
-    // The default is always received (setDefaultSpace writes it so). A map
-    // that lost it by hand still gets it here, in memory only.
-    if (!Object.hasOwn(next, defaultSpaceName)) next[defaultSpaceName] = "tab";
-    modes = next;
+    logs = dict();
+    for (const [name, entry] of Object.entries((await getSetting(LOGS_KEY)) ?? {})) {
+      if (isValidSpace(name) && entry && typeof entry.creator === "string" && Array.isArray(entry.log)) {
+        logs[name] = { creator: entry.creator, log: entry.log.filter((t) => typeof t === "string") };
+      }
+    }
+    invites = (await getSetting(INVITES_KEY)) ?? [];
+    joining = (await getSetting(JOINING_KEY)) ?? null;
+    rebuild();
     // The leader owns the cursors and keeps them in memory; a re-read here
     // could land between its page and that page's write and step back.
     if (!started) await readCursors();
+    if (!started) setStatus({ state: isConfigured() ? "idle" : needsUpgrade() ? "error" : "off" });
   }
 
-  /** The cursors, with the one-time move from the single legacy cursor. */
   async function readCursors() {
-    let storedCursors = await getSetting(CURSORS_KEY);
-    if (storedCursors === undefined) {
-      const legacy = await getSetting(LEGACY_CURSOR_KEY);
-      if (typeof legacy === "number") {
-        // Before spaces every row was in one of these two, so both have
-        // seen everything up to the old cursor.
-        storedCursors = { [DEFAULT_SPACE]: legacy, [KEYRING_SPACE]: legacy };
-        await putSetting(CURSORS_KEY, storedCursors);
-        await deleteSetting(LEGACY_CURSOR_KEY);
-      }
-    }
-    cursors = dict(storedCursors);
-    // Cursors from before the URL key were advanced against the server that
-    // is configured now: adopt it, or every old install would pull its whole
-    // history again. Stored at once, so a URL changed later and a restart
-    // before the new server answers cannot adopt the new URL for old positions.
+    cursors = dict(await getSetting(CURSORS_KEY));
     const storedUrl = await getSetting(CURSORS_URL_KEY);
     if (typeof storedUrl === "string") {
       cursorsUrl = storedUrl;
@@ -638,11 +1109,8 @@ export function createSyncClient({ store, keyring }) {
 
   /**
    * Re-read the settings after a write here or in another window. The leader
-   * then applies what changed in the modes (§25): a space that appears, or
-   * turns from From server to Open as tab, starts again at 0 so its notes
-   * arrive whole and as tabs; a space that goes loses its cursor, its
-   * records' sync and its stubs. Only the leader does this, because only it
-   * writes the cursors and the stubs.
+   * then starts a space again at 0 when it turned from Titles only to Open as
+   * tabs, so its notes arrive whole and as tabs, and drops the stubs.
    */
   async function reloadSettings() {
     const before = modes;
@@ -650,28 +1118,22 @@ export function createSyncClient({ store, keyring }) {
     if (!started) return;
     let reset = false;
     for (const space of Object.keys(modes)) {
-      const was = Object.hasOwn(before, space) ? before[space] : undefined;
-      if (was === undefined || (was === "list" && modes[space] === "tab")) {
+      const was = Object.hasOwn(before, space) ? before[space] : "tab";
+      if (was === "list" && modes[space] === "tab") {
         cursors[space] = 0;
         reset = true;
+        await store.forgetRemotes(space);
       }
-    }
-    for (const space of Object.keys(before)) {
-      if (Object.hasOwn(modes, space)) continue;
-      delete cursors[space];
-      reset = true;
-      await store.detachSpace(space);
     }
     if (reset) await putSetting(CURSORS_KEY, { ...cursors });
     syncNow();
   }
 
   // A setting written in another window (architecture.md §14.2): the leader
-  // picks up a new server, default or space without a reload, and a window
-  // that does not run the schedule still answers syncDefaultOn(), modeOf()
-  // and defaultSpace() correctly.
+  // picks up a new server, default, mode or log without a reload, and a window
+  // that does not run the schedule still answers modeOf() and defaultSpace().
   on("setting", ({ key }) => {
-    if (![CONFIG_KEY, DEFAULT_ON_KEY, SPACES_KEY, DEFAULT_SPACE_KEY].includes(key)) return;
+    if (![CONFIG_KEY, DEFAULT_ON_KEY, SPACES_KEY, DEFAULT_SPACE_KEY, LOGS_KEY].includes(key)) return;
     reloadSettings().catch((err) => console.log("[vrtti] sync settings reload failed", err));
   });
 
@@ -697,9 +1159,6 @@ export function createSyncClient({ store, keyring }) {
       if (!isConfigured()) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        // The keyring record is the one thing that can be waiting here without
-        // being dirty yet: setup writes it with no server target at all, and
-        // ensureKeyringSynced attaches it inside the run.
         if (store.dirtyRecords().length > 0 || keyringNeedsAttach()) syncNow();
       }, DEBOUNCE);
     });
@@ -716,23 +1175,40 @@ export function createSyncClient({ store, keyring }) {
     load,
     start,
     syncNow,
-    configure,
     testConnection,
     history,
     revision,
     syncDefaultOn,
     toggleSyncDefault,
-    // Spaces (architecture.md §25).
+    // Spaces (architecture.md §25, §27).
     modeOf,
     defaultSpace,
+    recipients,
+    logSeq,
+    colorOf,
+    mySpaces,
     receivedSpaces,
     setSpaceMode,
     setDefaultSpace,
     fetchDoc,
+    allNotes,
     listSpaces,
+    listUnclaimed,
     isValidSpace,
-    get spaces() {
-      return { modes: { ...modes }, defaultSpace: defaultSpaceName };
+    createSpace,
+    addDevice,
+    removeDevice,
+    setColor,
+    grid,
+    deviceName,
+    // Joins and registration (§27).
+    invite,
+    redeem,
+    registerFirst,
+    changePassphraseSwitch,
+    disconnect,
+    get isJoining() {
+      return joining !== null;
     },
     get status() {
       return status;
@@ -743,6 +1219,9 @@ export function createSyncClient({ store, keyring }) {
     },
     get isConfigured() {
       return isConfigured();
+    },
+    get needsUpgrade() {
+      return needsUpgrade();
     },
     get config() {
       return config ?? { url: "", token: "" };
