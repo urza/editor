@@ -15,7 +15,7 @@ import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { editorEvents } from "../editor/editor.js";
 import { activeLangs } from "../editor/mixed.js";
-import { countWords, positionText, stateSign } from "./statustext.js";
+import { countWords, positionText, readTime, stateSign } from "./statustext.js";
 import { ZOOM } from "./zoom.js";
 
 /**
@@ -190,22 +190,23 @@ export function mountStatusbar(store, sync, zoom, view) {
   sync?.events.addEventListener("status", renderState);
 
   /**
-   * A short message in the place of the state sign. It goes away after
-   * 1.5 s, or, when sticky, stays until the next notice: a model can take
-   * many seconds, and a 1.5 s "asking the model…" followed by a quiet bar
-   * looks like a command that did nothing. endNotice ends a sticky one.
+   * A message in the place of the state sign. It stays as long as it takes
+   * to read (readTime), or, when sticky, until the next notice: a model can
+   * take many seconds, and a short "asking the model…" followed by a quiet
+   * bar looks like a command that did nothing. endNotice ends a sticky one.
    * @param {string} text @param {boolean} [sticky]
    */
   function notice(text, sticky = false) {
     clearTimeout(noticeTimer);
     statusState.textContent = text;
+    statusState.title = text;
     statusState.classList.remove("problem");
     statusState.classList.add("notice");
     phoneNotice.textContent = text;
     phoneNotice.hidden = false;
     // A sticky notice still holds a timer handle, so renderState leaves it
     // alone until it ends.
-    noticeTimer = setTimeout(endNotice, sticky ? 2 ** 31 - 1 : 1500);
+    noticeTimer = setTimeout(endNotice, sticky ? 2 ** 31 - 1 : readTime(text));
   }
 
   function endNotice() {
