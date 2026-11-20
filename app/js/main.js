@@ -1275,6 +1275,18 @@ async function start() {
       if (!keyring.isUnlocked && !document.querySelector("dialog[open]")) void run("crypto.unlock");
     }, 300);
   }
+  // The upgrade (§27): a device that still holds the server token of the
+  // time before asks, once per start, whether it is the first device or
+  // joins with a code. In the main window only, and after the unlock above.
+  let upgradeOffered = false;
+  const offerUpgrade = () => {
+    if (upgradeOffered || !sync.needsUpgrade || workspaces.id !== MAIN_WORKSPACE) return;
+    if (document.querySelector("dialog[open]") || (keyring.isSetUp && !keyring.isUnlocked)) return;
+    upgradeOffered = true;
+    void run(keyring.isSetUp ? "device.connect" : "device.setup");
+  };
+  setTimeout(offerUpgrade, 800);
+  keyring.addEventListener("change", () => setTimeout(offerUpgrade, 300));
   // Last: its first run pulls, and a pull emits "replace" and "active" into UI
   // that has to be mounted already. One client per origin (architecture.md
   // §14.3, the lock ships with §14.2): the window that holds the lock runs

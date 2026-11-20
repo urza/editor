@@ -307,16 +307,21 @@ export function createSyncClient({ store, keyring }) {
    * log itself says this device was removed.
    */
   async function pullLogs() {
+    // Only the spaces known before the request are judged by its answer: a
+    // space made or joined while it was out is missing from the list, and
+    // must not count as lost.
+    const known = Object.keys(logs);
     const res = await request("/api/spaces");
     if (!res.ok) throw httpError(res);
     serverSpaces = await res.json();
     const listed = new Map(serverSpaces.map((s) => [s.space, s.logSeq]));
-    for (const space of Object.keys(logs)) {
+    for (const space of known) {
       const seq = listed.get(space);
-      if (seq === undefined) continue;
+      if (seq === undefined || !logs[space]) continue;
       if (seq > logs[space].log.length && !(await pullLog(space))) listed.delete(space);
     }
-    for (const space of Object.keys(logs)) {
+    for (const space of known) {
+      if (!logs[space]) continue;
       // A log this device wrote itself and the server lists: a member. A log
       // that ends with this device removed, or that the server no longer
       // lists: lost. A space whose replay stopped early keeps the members
