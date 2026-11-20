@@ -2,7 +2,7 @@
 // The texts of the status bar (.work/mixed-spellcheck/plan.md, step 8b).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countWords, positionText, stateSign } from "../app/js/ui/statustext.js";
+import { countWords, positionText, readTime, stateSign } from "../app/js/ui/statustext.js";
 
 test("countWords counts letters and digits, with inner hyphens and apostrophes", () => {
   assert.equal(countWords("# Weekend in Prague\n\n- passport, 2 tickets"), 6);
@@ -47,4 +47,11 @@ test("stateSign without a server: a dirty record is not waiting for anything", (
   assert.equal(sign.text, "✓");
   assert.doesNotMatch(sign.title, /server/);
   assert.equal(stateSign({ save: "saved", syncs: false, waiting: false, client: "idle" }).title, "Saved on this device.");
+});
+
+test("readTime: short notices keep 1.5 s, long ones get time to read, 10 s at most", () => {
+  assert.equal(readTime("copied"), 1500);
+  const long = "the model did not answer; 3 words changed, 1 word needs your choice (blue mark)";
+  assert.ok(readTime(long) >= 5000, String(readTime(long)));
+  assert.equal(readTime("x".repeat(1000)), 10000);
 });

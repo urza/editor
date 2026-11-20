@@ -67,3 +67,16 @@ export function stateSign({ save, syncs, waiting, client }) {
     title: server ? "Saved on this device and on the server." : "Saved on this device.",
   };
 }
+
+/**
+ * How long a notice stays, in ms. A short one ("copied") keeps the old
+ * 1.5 s; a long one gets reading time. "the model did not answer; 3 words
+ * changed, 1 word needs your choice (blue mark)" was gone after 1.5 s,
+ * before the user could read past its first words (phone test, 2026-11-20).
+ * About 15 characters a second, the pace of a person who looks up from the
+ * text, and at most 10 s, so a notice never hides the state for long.
+ * @param {string} text
+ */
+export function readTime(text) {
+  return Math.min(10000, Math.max(1500, 1000 + text.length * 65));
+}
