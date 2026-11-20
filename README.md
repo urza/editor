@@ -97,19 +97,23 @@ The text in the note keeps the normal emoji characters.
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
 - When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Trash** restores it. A wrong or forged delete from the server cannot wipe a note.
-- A synced note lives in a named **space**, `personal` unless you pick another. Each device decides per space what it receives: everything as tabs, titles only under **From server** in the sidebar (a click fetches the note), or nothing. A work computer can take the `work` space and never see your personal notes. One token serves every device.
+- A synced note lives in a **space**. A space is a group of your devices, like a group chat: only its members get its notes and can read them. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in the space `dev-work` never gets a note of `personal`, not even a title.
+- **Move to <space>** in a note's menu lends one note to another space. A device that loses a note (a move away, or its removal from a space) keeps its copy in the local trash.
+- Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
+- **Back up to a folder** (Settings › Sync) writes each note of a space into a folder, as plain text or as `.age` files.
 
 ![The history of a synced note with three revisions](docs/screenshots/history.png)
 
-### Encryption (optional)
+### Encryption
 
-- You encrypt one note at a time. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage).
-- Each device has its own key, locked with your passphrase. Setup also shows a recovery key one time. Keep it offline, on paper or in a password manager.
-- A new device shows a six-digit pairing code. You type the code on a device you already use, and that device signs the new one into the keyring. The sync server can add entries to the keyring, but it cannot forge the signatures.
-- An encrypted file on disk becomes `name.age`, and the `age` command line tool can decrypt it. The app is never the only way to read your notes.
-- The server stores only ciphertext for encrypted notes. The name you give the note stays readable.
+- Each synced note is encrypted for the devices of its space and for your recovery key. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage). The server refuses plain text and holds no readable title.
+- Each device has its own key. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
+- The first device shows a recovery key one time. Keep it offline, on paper or in a password manager.
+- A new device joins with a code: **Add a device** on a device you use shows it, and the new device types the server URL and the code. The server cannot add a reader: the member list of a space is a log of entries that your devices sign.
+- A file on disk can become `name.age`, and the `age` command line tool can decrypt it. The app is never the only way to read your notes.
+- **Lock with PIN** in a note's menu keeps a note off the screen until the 4-digit PIN of the device. It is a guard for the screen, not encryption.
 
-![Settings with the Sync and Security sections](docs/screenshots/settings.png)
+![The settings panel](docs/screenshots/settings.png)
 
 ### Phone
 
@@ -172,9 +176,28 @@ docker run -d --name vrtti --restart unless-stopped \
   ghcr.io/urza/vrtti-server:latest
 ```
 
-Put a reverse proxy with HTTPS in front of it, then enter the URL and the token
-in **Settings › Sync**. [server/README.md](server/README.md) lists the API and
-all options.
+Put a reverse proxy with HTTPS in front of it. On your first device, use
+**Settings › Sync › Sync with a server**, choose "First device", and type the
+URL and the token. Every other device joins with a code from **Add a device**
+on the first one. [server/README.md](server/README.md) lists the API and all
+options.
+
+**Upgrade from a version before spaces as groups of devices.** Old and new
+devices do not work together; update all of them.
+
+1. Make a new `VRTTI_TOKEN` and start the new server image with it. Your dev
+   machines keep the old token, which the new server refuses.
+2. On your phone, update the app and type your old passphrase one time. Then
+   choose "First device on this server" and type the new token. The phone
+   takes over the spaces that exist on the server, encrypts their notes and
+   removes the readable old versions.
+3. On the phone, use **Add a device** for each other device, with its spaces.
+   Each one joins with its code.
+
+What the server still sees: note ids, space names, sizes, times, which device
+made each change, and the device names and member lists. A device that someone
+takes over can change the spaces it is in; it cannot touch other spaces. A
+removed device keeps what it downloaded before.
 
 ## Keyboard shortcuts
 

@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "3ed37c8b3455",
+  "version": "3f82d5fdb962",
   "files": [
     "./",
     "./app.css",
@@ -12,6 +12,7 @@ self.__PRECACHE = {
     "./js/crypto/age.js",
     "./js/crypto/keyring.js",
     "./js/crypto/sign.js",
+    "./js/crypto/spaces.js",
     "./js/crypto/unlock.js",
     "./js/crypto/unlock.worker.js",
     "./js/editor/cursors.js",
@@ -24,6 +25,7 @@ self.__PRECACHE = {
     "./js/editor/textlang.js",
     "./js/editor/transform.js",
     "./js/main.js",
+    "./js/model/backup.js",
     "./js/model/capabilities.js",
     "./js/model/channel.js",
     "./js/model/codec.js",
@@ -41,6 +43,7 @@ self.__PRECACHE = {
     "./js/ui/history.js",
     "./js/ui/menu.js",
     "./js/ui/newbutton.js",
+    "./js/ui/pin.js",
     "./js/ui/resizer.js",
     "./js/ui/search.js",
     "./js/ui/settings.js",
