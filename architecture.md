@@ -3258,8 +3258,14 @@ detach of a note that moved away.
 - The grid hides a device that a switch change replaced: its log shows the
   old key adding the new one, and the new one removing the old key.
 - A row from before (`v: 1`) asks its old passphrase once at start; where
-  the browser can, the secrets become stored keys and the device never asks
-  again.
+  the browser can, the X25519 secret becomes a stored key, the Ed25519 key
+  is made fresh (no log names the old one yet), and the device never asks
+  again. Where it cannot, the device keeps the passphrase.
+- "Where the browser can" is tested step by step with throwaway keys
+  (`storedKeysProblem`): make, use, store in IndexedDB, read back, use
+  again. The switch names the step that failed. No import is tested: an
+  import is a step iOS Safari may refuse, and only the upgrade needs one,
+  for the X25519 key (it falls back to the passphrase).
 - The keyring record (§13.3) stays, as a directory of device entries for
   names only. It decides nothing.
 
@@ -3412,7 +3418,10 @@ it over.
 - After a change to "Ask for a passphrase at start", the old keys stay on
   the device without a passphrase until the last note is encrypted again: a
   non-extractable key cannot be wrapped. A `.age` file that the browser may
-  not read keeps them there until it can.
+  not read keeps them there until it can. An old key that the browser would
+  not import as a CryptoKey is a string; a device without a passphrase
+  stores that string too until then, so a restart cannot lose the notes it
+  alone opens.
 - The keyring record is written by every device, a removed one too. It
   gives names only: a device of a space this device is not in shows the
   name the record says.

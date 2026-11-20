@@ -103,38 +103,54 @@ export function entryKey(device) {
   return ["vrtti-device", device.id, device.name, device.recipient, device.signKey ?? "", String(device.addedAt)].join("\n");
 }
 
-/** Can this browser keep both keys as stored CryptoKeys? Cached. @type {Promise<boolean> | null} */
-let storedKeysSupport = null;
+/** Why this browser cannot keep stored keys, or null. Cached. @type {Promise<string | null> | null} */
+let storedKeysCheck = null;
 
 /**
- * Both keys of a device without a passphrase need WebCrypto X25519 and
- * Ed25519, the import of an Ed25519 secret (the upgrade of a passphrase
- * device), and IndexedDB that stores a CryptoKey and gives it back. A
- * browser that lacks one keeps the passphrase (§27). The last two are
- * tested for real: a browser can know an algorithm and still refuse one of
- * these steps (iOS Safari is the one to watch), and a refusal half way
- * through the upgrade would leave the device locked.
- * @returns {Promise<boolean>}
+ * What a device without a passphrase needs, step by step, tested for real
+ * with throwaway keys: WebCrypto X25519 and Ed25519 keys that are made
+ * here, used, stored in IndexedDB, read back and used again. A browser can
+ * know an algorithm and still refuse one of these steps (iOS Safari is the
+ * one to watch). No import of a secret: making keys is all that setup and
+ * the switch need, and the upgrade makes its signing key fresh too (unlock).
+ * @returns {Promise<string | null>} The step that failed, for the user.
  */
-export function supportsStoredKeys() {
-  storedKeysSupport ??= (async () => {
+export function storedKeysProblem() {
+  storedKeysCheck ??= (async () => {
+    let step = "making an X25519 key";
     try {
       const pair = /** @type {CryptoKeyPair} */ (
         await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"])
       );
-      await crypto.subtle.generateKey({ name: "Ed25519" }, false, ["sign", "verify"]);
-      const signer = await sign.importSigningSecret(sign.generateSigningKey().secret);
-      await sign.sign("vrtti-probe", signer);
-      await putSetting(PROBE_KEY, { identity: pair.privateKey, signer });
+      step = "using an X25519 key";
+      await age.toRecipient(pair.privateKey);
+      step = "making an Ed25519 key";
+      const signing = await sign.generateStoredSigningKey();
+      step = "signing with an Ed25519 key";
+      await sign.sign("vrtti-probe", signing.key);
+      step = "storing keys in IndexedDB";
+      await putSetting(PROBE_KEY, { identity: pair.privateKey, signer: signing.key });
+      step = "reading stored keys back";
       const back = await getSetting(PROBE_KEY);
       await deleteSetting(PROBE_KEY);
-      return back?.identity instanceof CryptoKey && back?.signer instanceof CryptoKey;
+      if (!(back?.identity instanceof CryptoKey && back?.signer instanceof CryptoKey)) {
+        throw new Error("IndexedDB gave back no CryptoKey");
+      }
+      step = "using keys read back";
+      await age.toRecipient(back.identity);
+      await sign.sign("vrtti-probe", back.signer);
+      return null;
     } catch (err) {
-      console.log("[vrtti] stored keys not possible here, the passphrase stays", err);
-      return false;
+      console.log("[vrtti] stored keys not possible here:", step, err);
+      return step + " failed (" + String(/** @type {any} */ (err)?.message ?? err) + ")";
     }
   })();
-  return storedKeysSupport;
+  return storedKeysCheck;
+}
+
+/** Can this browser keep both keys as stored CryptoKeys? @returns {Promise<boolean>} */
+export async function supportsStoredKeys() {
+  return (await storedKeysProblem()) === null;
 }
 
 /**
@@ -392,12 +408,18 @@ export class KeyRing extends EventTarget {
       // browser refuses must not read as a wrong passphrase: the device then
       // keeps its passphrase instead of stored keys.
       try {
+        // The X25519 key must stay: the notes on this device are encrypted
+        // for it. The Ed25519 key is made fresh instead of imported (an
+        // import is a step iOS may refuse): a row from before §27 is in no
+        // space log yet, so no log names its old signing key.
         const identityKey = await toNonExtractableKey(secret);
         if (identityKey && (await supportsStoredKeys())) {
-          const signingKey = await sign.importSigningSecret(signing.secret);
-          await this.save(this.upgraded(stored, { askPassphrase: false, signKey: signing.public, identityKey, signingKey }));
+          const fresh = await sign.generateStoredSigningKey();
+          await this.save(
+            this.upgraded(stored, { askPassphrase: false, signKey: fresh.public, identityKey, signingKey: fresh.key })
+          );
           this.identity = identityKey;
-          this.signer = signingKey;
+          this.signer = fresh.key;
           this.emit("change");
           return;
         }
@@ -529,8 +551,8 @@ export class KeyRing extends EventTarget {
     if (this.identity) this.previous.push(this.identity);
     for (const id of rekeyIds) this.rekeyIds.add(id);
     // Before the new row: a start between the two writes then still has
-    // the old key for every note.
-    await this.saveRekey();
+    // the old key for every note. The mode is the new row's, not this one's.
+    await this.saveRekey(!next.stored.askPassphrase);
     await setDeviceId(next.stored.deviceId);
     await this.save(next.stored);
     this.identity = next.identity;
@@ -568,10 +590,11 @@ export class KeyRing extends EventTarget {
       this.previous = [];
       return;
     }
-    const stored = Array.isArray(row?.identities) ? row.identities.filter((/** @type {unknown} */ k) => k instanceof CryptoKey) : [];
-    // A string identity (a browser without X25519 in WebCrypto) is never
-    // stored in the clear; it lives in the memory of this window only.
-    const inMemory = this.previous.filter((k) => typeof k === "string");
+    const stored = Array.isArray(row?.identities)
+      ? row.identities.filter((/** @type {unknown} */ k) => k instanceof CryptoKey || typeof k === "string")
+      : [];
+    // A string this window holds and the row does not (see saveRekey).
+    const inMemory = this.previous.filter((k) => typeof k === "string" && !stored.includes(k));
     this.previous = [...stored, ...inMemory];
   }
 
@@ -580,11 +603,18 @@ export class KeyRing extends EventTarget {
    * a change to "ask for a passphrase", this keeps an old key without one
    * until the last note is encrypted again, because a non-extractable key
    * cannot be wrapped (architecture.md §27).
+   *
+   * An old key that is a string (a browser that refused to import it as a
+   * CryptoKey, iOS Safari perhaps) is stored too, but only on a device
+   * without a passphrase, where anyone at the device opens the notes anyway.
+   * Kept in memory only, a restart before the last note was encrypted again
+   * lost the notes it alone opened. With a passphrase it stays in memory.
+   * @param {boolean} [noPassphrase] The mode the device is in, or going to.
    */
-  async saveRekey() {
+  async saveRekey(noPassphrase = !this.askPassphrase) {
     if (this.rekeyIds.size) {
       await putSetting(REKEY_KEY, {
-        identities: this.previous.filter((k) => typeof k !== "string"),
+        identities: this.previous.filter((k) => typeof k !== "string" || noPassphrase),
         ids: [...this.rekeyIds],
       });
     } else {
