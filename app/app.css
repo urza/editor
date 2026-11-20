@@ -59,6 +59,38 @@
 
 * { box-sizing: border-box; }
 
+/* Scrollbars in the colors of the chrome (user request, 2026-11-20): the
+   desktop shell drew the system's light bars over the dark panels. One rule
+   for every scroll box: the note list, Recent, settings, the editor.
+   The thumb is white at low strength, so it reads on the sidebar and the
+   editor alike; the track is the panel itself.
+   Only for a mouse: a touch screen draws thin overlay bars that fade out, and
+   a styled bar there would take space from the text and stay on screen. */
+@media (pointer: fine) {
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    /* The transparent border with padding-box clip draws a slim bar inside a
+       full-width target: easy to grab, quiet to look at. */
+    border: 3px solid transparent;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.16) padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.28); }
+  ::-webkit-scrollbar-thumb:active { background-color: rgba(255, 255, 255, 0.4); }
+
+  /* Firefox has no ::-webkit-scrollbar. The standard properties are only for
+     it: in Chromium (the Windows shell) a scrollbar-color turns the rules
+     above off. */
+  @supports not selector(::-webkit-scrollbar) {
+    * { scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
+  }
+}
+
 html, body {
   height: 100%;
   margin: 0;
