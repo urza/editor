@@ -7,7 +7,7 @@
 // (one per keystroke), and a folder tree can hold hundreds of rows that have
 // nothing to do with the text being typed.
 
-import { titleOf, DEFAULT_SPACE, KEYRING_SPACE } from "../model/docs.js";
+import { titleOf } from "../model/docs.js";
 import { previewOf, shortTime } from "../model/preview.js";
 import { hasDisk } from "../model/capabilities.js";
 import { isNativeHandle } from "../storage/native.js";
@@ -199,9 +199,9 @@ export function mountSidebar(store, folders, sync) {
   /**
    * The row menu (architecture.md §9). Sync is a per-document server target
    * (§3); with no server configured the item is disabled and says where to set
-   * one, rather than claiming to sync into nothing. Encrypt on a file-backed
-   * doc renames it to `.age` on disk (architecture.md §19), so it is disabled
-   * where the browser cannot rename a file.
+   * one, rather than claiming to sync into nothing. Encrypt is for a file on
+   * disk only (§19, §27): it renames the file to `.age`, so it is disabled
+   * where the browser cannot rename a file. A synced note is encrypted anyway.
    *
    * @param {BufferRecord} record @param {{closable: boolean}} opts
    * @returns {import("./menu.js").MenuItem[]}
@@ -245,23 +245,29 @@ export function mountSidebar(store, folders, sync) {
       items.push({ label: "History…", act: () => run("doc.history", record.id) });
     }
     // Two labels, not one checked item: "Decrypt" says what the click does,
-    // and a check mark did not.
+    // and a check mark did not. A synced note stays encrypted (§27), so it
+    // gets neither; a local note gets Decrypt only, for an old encrypted one.
+    if (!record.sync) {
+      if (record.kind === "file" && record.file) {
+        items.push(
+          store.canEncryptFile(record)
+            ? record.enc
+              ? { label: "Decrypt", hint: "Stores the file readable again", act: () => run("doc.decrypt", record.id) }
+              : { label: "Encrypt", hint: "For this device and the recovery key", act: () => run("doc.encrypt", record.id) }
+            : {
+                label: record.enc ? "Decrypt" : "Encrypt",
+                disabled: true,
+                hint: "Needs Chrome, Edge or the desktop app to rename the file",
+              }
+        );
+      } else if (record.enc) {
+        items.push({ label: "Decrypt", hint: "Stores the text readable again", act: () => run("doc.decrypt", record.id) });
+      }
+    }
     items.push(
-      store.canEncryptFile(record)
-        ? record.enc
-          ? {
-              label: "Decrypt",
-              hint: record.sync
-                ? "Stores the text readable again, on the server too"
-                : "Stores the text readable again",
-              act: () => run("doc.decrypt", record.id),
-            }
-          : { label: "Encrypt", act: () => run("doc.encrypt", record.id) }
-        : {
-            label: record.enc ? "Decrypt" : "Encrypt",
-            disabled: true,
-            hint: "Needs Chrome, Edge or the desktop app to rename the file",
-          }
+      record.pin
+        ? { label: "Remove PIN lock", act: () => run("doc.unpin", record.id) }
+        : { label: "Lock with PIN", hint: "The note opens after this device's PIN", act: () => run("doc.pin", record.id) }
     );
     items.push({ separator: true });
     // A row is either a tab of this window (closable) or in Recent; the
@@ -275,42 +281,67 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
-   * "Sync to <space>" for an unsynced note, the default space first (§25), and
-   * "Stop syncing" for a synced one, with its space in the hint. A synced note
-   * gets no "Sync to": a move between spaces is Stop syncing, then Sync to the
-   * other one, because the old space would never hear of a direct move. Flat
-   * items, since the menu has no submenus and two or three spaces need none.
+   * "Sync to <space>" for an unsynced note, the default space first (§25),
+   * and for a synced one "Move to <space>" for each other space of this
+   * device, then "Stop syncing" with its space in the hint (§27). The origin
+   * device is the hint of a move: it is what tells a lent note from one of
+   * the space's own. Flat items, since the menu has no submenus and two or
+   * three spaces need none.
    *
    * @param {BufferRecord} record
    * @returns {import("./menu.js").MenuItem[]}
    */
   function syncItems(record) {
     if (!sync?.isConfigured) {
-      return [{ label: "Sync", disabled: true, hint: "Enter a server in Settings › Sync first" }];
+      return [{ label: "Sync", disabled: true, hint: "Set up sync in Settings › Sync first" }];
     }
+    const mine = sync.mySpaces();
     if (record.sync) {
+      const here = record.sync.space ?? "";
+      const from = originName(record);
       return [
+        ...mine
+          .filter((name) => name !== here)
+          .map((name) => ({
+            label: "Move to " + name,
+            hint: from ? "from " + from : undefined,
+            act: () => run("doc.move", { id: record.id, space: name }),
+          })),
         {
           label: "Stop syncing",
-          // A record from before spaces may lack the field, and every reader
-          // takes that as DEFAULT_SPACE, as the migration does.
-          hint: "in " + (record.sync.space ?? DEFAULT_SPACE) + " · the text stays on every device",
+          hint: "in " + here + " · the text stays on every device",
           act: () => run("doc.sync.off", record.id),
         },
       ];
     }
     const target = sync.defaultSpace();
-    const others = sync
-      .receivedSpaces()
-      .filter((name) => name !== KEYRING_SPACE && name !== target)
-      .sort();
-    return [
-      { label: "Sync to " + target, act: () => run("doc.sync.on", record.id) },
-      ...others.map((name) => ({
-        label: "Sync to " + name,
-        act: () => run("doc.sync.on", { id: record.id, space: name }),
-      })),
-    ];
+    if (!target) {
+      return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Devices first" }];
+    }
+    return [target, ...mine.filter((name) => name !== target)].map((name) => ({
+      label: "Sync to " + name,
+      act: () => run("doc.sync.on", { id: record.id, space: name }),
+    }));
+  }
+
+  /** The name of the device that made a synced note, or "". @param {BufferRecord} record */
+  function originName(record) {
+    if (!record.origin || !sync) return "";
+    return sync.deviceName(record.origin) || "";
+  }
+
+  /**
+   * The thin bar in the color of the note's space, at the left edge of the
+   * row (§27). A local note has none.
+   * @param {HTMLElement} li @param {string | undefined} space
+   */
+  function spaceBar(li, space) {
+    const color = space && sync ? sync.colorOf(space) : "";
+    if (!color) return;
+    li.classList.add("has-space");
+    // The bar is the row's ::before (app.css): the drag marks of a row are
+    // its box-shadow, so the bar cannot be one too.
+    li.style.setProperty("--space-color", color);
   }
 
   /**
@@ -345,10 +376,17 @@ export function mountSidebar(store, folders, sync) {
     // it is already gone.
     li.dataset.id = record.id;
     if (record.id === store.activeId) li.classList.add("active");
-    // Hover on the row: where the file sits, as far as the page can know it.
-    if (record.kind === "file" && record.file) {
-      li.title = "On disk: " + store.diskPath(record);
+    // Hover on the row: the space and the device that made the note (§27),
+    // and where the file sits, as far as the page can know it.
+    /** @type {string[]} */
+    const hover = [];
+    if (record.sync?.space) {
+      const from = originName(record);
+      hover.push(record.sync.space + (from ? " · from " + from : ""));
+      spaceBar(li, record.sync.space);
     }
+    if (record.kind === "file" && record.file) hover.push("On disk: " + store.diskPath(record));
+    if (hover.length) li.title = hover.join("\n");
 
     // A file-backed row is marked, never labelled: the file name is already
     // the title, so the marker only has to say "this one is on disk". The
@@ -361,28 +399,14 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(mark);
     }
 
-    // A synced row is marked the same way a file-backed one is: the mark says
-    // "this text also lives somewhere else". A pending detach keeps the mark
-    // until the tombstone is pushed, because until then it is still up there.
-    if (record.sync) {
-      const mark = document.createElement("span");
-      mark.className = "buffer-mark";
-      mark.textContent = "☁";
-      mark.title = record.sync.tombstone
-        ? "Stopping sync…"
-        : record.sync.rev === 0
-          ? "Syncing for the first time…"
-          : "Synced";
-      li.appendChild(mark);
-    }
-
-    // Encrypted rows are marked too, and keep their stored `title`: the first
-    // line of an encrypted doc is ciphertext and can never name it (§5).
-    if (record.enc) {
+    // The lock mark means the PIN lock (§27). A synced note is shown by its
+    // colored bar, and every synced note is encrypted, so neither needs a
+    // mark of its own.
+    if (record.pin) {
       const mark = document.createElement("span");
       mark.className = "buffer-mark";
       mark.textContent = "🔒";
-      mark.title = "Encrypted";
+      mark.title = "Locked with the PIN";
       li.appendChild(mark);
     }
 
@@ -473,8 +497,8 @@ export function mountSidebar(store, folders, sync) {
 
   /**
    * A From server row (§25). Its own builder, not a mode of makeRow: a stub
-   * is no record, and has no menu, no close and no drag. The ☁ says where
-   * the text is; a click fetches it and opens it as a tab here.
+   * is no record, and has no menu, no close and no drag. A click fetches the
+   * note and opens it as a tab here.
    * @param {RemoteStub} stub
    */
   function makeStubRow(stub) {
@@ -482,24 +506,12 @@ export function mountSidebar(store, folders, sync) {
     li.className = "buffer-row";
     keyboardRow(li);
     li.dataset.id = stub.id;
-
-    const cloud = document.createElement("span");
-    cloud.className = "buffer-mark";
-    cloud.textContent = "☁";
-    cloud.title = "On the server. Click to open it here.";
-    li.appendChild(cloud);
-
-    if (stub.enc) {
-      const lock = document.createElement("span");
-      lock.className = "buffer-mark";
-      lock.textContent = "🔒";
-      lock.title = "Encrypted";
-      li.appendChild(lock);
-    }
+    li.title = stub.space + " · on the server. Click to open it here.";
+    spaceBar(li, stub.space);
 
     const title = document.createElement("span");
     title.className = "buffer-title";
-    // An encrypted stub has no readable first line to fall back on (§5).
+    // A title this device could not open yet (locked) is no first line.
     title.textContent = stub.title || (stub.enc ? "encrypted" : "untitled");
     li.appendChild(title);
 
@@ -1095,6 +1107,8 @@ export function mountSidebar(store, folders, sync) {
     for (const el of sidebar.querySelectorAll(".buffer-preview")) el.remove();
     render();
   });
+  // A new color or a new member list changes the bars and the menus (§27).
+  sync?.events.addEventListener("spaces", () => render());
   folders.events.addEventListener("change", renderFolders);
   folders.events.addEventListener("listing", renderFolders);
   render();

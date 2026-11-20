@@ -119,6 +119,16 @@ export async function writeFile(handle, content) {
   await writable.close();
 }
 
+/**
+ * A file in a picked folder, made when it is not there: the backup of a space
+ * (architecture.md §27). Both backends take the same call; the native one
+ * makes the file at its first write.
+ * @param {DirHandle} dir @param {string} name @returns {Promise<FileHandle>}
+ */
+export function fileIn(dir, name) {
+  return dir.getFileHandle(name, { create: true });
+}
+
 /** @param {FileHandle} handle @returns {Promise<number>} Epoch ms of the file on disk. */
 export async function lastModified(handle) {
   return (await handle.getFile()).lastModified;

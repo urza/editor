@@ -478,6 +478,35 @@ body {
 .buffer-row:hover { background: #2A2F34; }
 .buffer-row.active { background: var(--st-sidebar-selected); }
 
+/* The space of a synced note (architecture.md §27): a thin bar in the
+   space's color at the left edge. A ::before, not a box-shadow or a border:
+   the drag marks below are the row's box-shadow, and a border would move
+   the text. ui/sidebar.js sets --space-color on the row. */
+.buffer-row.has-space { position: relative; }
+.buffer-row.has-space::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--space-color);
+  /* Decoration only: a click on the bar is a click on the row. */
+  pointer-events: none;
+}
+
+/* The same color as a small square, before a space's name in Settings. */
+.space-swatch {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 6px;
+  border-radius: 2px;
+  background: var(--space-color);
+  vertical-align: baseline;
+}
+
 /* Reorder by drag (ui/sidebar.js). The row under the pointer fades, and a
    line marks where it will land: the top edge of the row it goes before, or
    the bottom edge of the last row. An inset shadow, not a border: a border
@@ -1264,6 +1293,39 @@ body {
 }
 .settings-list-text { flex: 1; min-width: 0; }
 
+/* Settings › Devices (architecture.md §27): devices down, spaces across, a
+   tick where a device is a member. It scrolls sideways on a phone rather
+   than squeezing the space names. */
+.settings-grid-wrap { overflow-x: auto; margin-top: 6px; }
+.settings-grid { border-collapse: collapse; font-size: var(--ui-md); }
+.settings-grid th,
+.settings-grid td {
+  padding: 4px 8px;
+  border-top: 1px solid var(--st-sidebar-bg);
+  text-align: center;
+  font-weight: normal;
+}
+.settings-grid tbody th { text-align: left; color: var(--st-sidebar-label); white-space: nowrap; }
+.settings-grid-head {
+  border: 0;
+  background: none;
+  color: var(--st-sidebar-heading);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-grid-cell {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-background);
+  color: var(--st-caret);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-grid-cell:disabled { opacity: 0.5; cursor: progress; }
+
 /* Stepper (the two text sizes). The number sits between its two buttons and
    holds a fixed column, so "+" does not walk sideways as the value grows. */
 .settings-stepper {
@@ -1437,6 +1499,23 @@ body {
 .dialog-option:hover { background: var(--st-sidebar-selected); }
 
 .dialog-busy { margin: 0; color: var(--st-sidebar-label); }
+
+/* A join code (architecture.md §27): typed by hand on another device, so it
+   is large and spaced. */
+.dialog-code { font-size: 1.6em; letter-spacing: 0.12em; text-align: center; }
+
+/* One checkbox per space in "Add a device". */
+.dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  color: var(--st-sidebar-label);
+  cursor: pointer;
+}
+
+/* The PIN pad: four digits, large enough for a thumb. */
+.pin-input { font-size: 1.6em; letter-spacing: 0.4em; text-align: center; width: 6em; }
 
 /* Twemoji widgets (js/editor/emoji.js). Sized in em so they track the editor
    font. 1.2em is a hair taller than the glyphs around them, but the 1.4

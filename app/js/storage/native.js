@@ -160,6 +160,22 @@ class NativeDirectoryHandle extends NativeHandle {
       path: childPath(this.path, name),
     });
   }
+
+  /**
+   * Pure, like getDirectoryHandle: the file comes into being at its first
+   * write, because disk_write creates a file under a root. `create` is
+   * accepted for the FSA signature (storage/fsa.js fileIn) and always true
+   * in effect. The backup of a space (architecture.md §27) is the caller.
+   * @param {string} name @param {{create?: boolean}} [_options]
+   */
+  async getFileHandle(name, _options) {
+    return new NativeFileHandle({
+      name,
+      root: this.root,
+      rootPath: this.rootPath,
+      path: childPath(this.path, name),
+    });
+  }
 }
 
 class NativeFileHandle extends NativeHandle {
