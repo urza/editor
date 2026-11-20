@@ -11,6 +11,7 @@
 import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { activeLangs } from "../editor/mixed.js";
+import { modelFixesCzechParagraphs, setModelFixesCzechParagraphs } from "../editor/adddiacritics.js";
 import { isPersisted, storageEstimate } from "../model/capabilities.js";
 import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
@@ -325,6 +326,19 @@ const SECTIONS = [
           "A setting of this device.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
+      },
+      // Only where "Add diacritics (vllm)" exists: the sync server has a model.
+      {
+        type: "toggle",
+        key: "model-czech",
+        label: "Model may fix English-looking words in Czech paragraphs",
+        hint:
+          "For \u201cAdd diacritics (vllm)\u201d. Short Czech words such as az, tim or mit " +
+          "look English to the checker. On: the model may write až, tím, mít in a Czech " +
+          "paragraph, and it may also change a real English word there. A setting of this device.",
+        visible: () => Boolean(sync?.hasModel),
+        get: () => modelFixesCzechParagraphs(),
+        set: () => setModelFixesCzechParagraphs(!modelFixesCzechParagraphs()),
       },
       // The languages of the open note. Phone mode only (app.css): a PC has
       // the two buttons in the status bar, and the phone has no status bar.

@@ -963,7 +963,10 @@ Plan, review and measurements: `.work/mixed-spellcheck/` (not in Git).
   also asks the user's model through the sync server, one paragraph per
   request, 16 at a time. The client keeps a model change only when the
   answer (NFC) has the same length, each changed character only gains a
-  diacritic, the word is Czech, and it was not an English-only word. Both
+  diacritic, the word is Czech, and, outside a Czech paragraph, the word
+  had a blue mark. In a Czech paragraph a word Harper takes as English
+  ("az", "tim") is protected only when the device setting "Model may fix
+  English-looking words in Czech paragraphs" is off (default on). Both
   work on the selection or the whole note, end in one undo step, and change
   nothing when the note changed while the model worked.
 

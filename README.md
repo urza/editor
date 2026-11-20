@@ -102,7 +102,11 @@ into the whole note when nothing is selected. Each one is a single undo step.
   [server/README.md](server/README.md)). The paragraphs with such words go to
   the sync server and from there to the model, also from an encrypted note,
   and only when you start the command. vrtti keeps a change of the model only
-  when it adds diacritics and the result is a Czech word.
+  when it adds diacritics and the result is a Czech word. In an English
+  paragraph it changes only words with a blue mark. Short Czech words such as
+  "az" or "tim" look English to the checker; the setting **Model may fix
+  English-looking words in Czech paragraphs** (Settings › Editor, on by
+  default) lets the model write "až" and "tím" in a Czech paragraph.
 
 The menu of a note (**⋯**) has the two commands too, for the whole note.
 

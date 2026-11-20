@@ -18,6 +18,33 @@ import { segments } from "./textlang.js";
 // from opening hundreds of connections.
 const PARALLEL = 16;
 
+// "Let the model fix English-looking words in Czech paragraphs", a setting
+// of this device (Settings > Editor). Harper takes some frequent Czech words
+// without diacritics as English ("az", "tim", "mit", "ci"), so without this
+// the model could never write "až", "tím", "mít", "či". It stays a switch
+// because it is a risk: in a Czech paragraph the model can then also change
+// a real English word such as "mate" (user decision, 2026-11-20). On by
+// default, as the user chose.
+const TRUST_KEY = "vrtti.diacritics.czechParagraphs";
+
+/** @returns {boolean} */
+export function modelFixesCzechParagraphs() {
+  try {
+    return localStorage.getItem(TRUST_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+/** @param {boolean} on */
+export function setModelFixesCzechParagraphs(on) {
+  try {
+    localStorage.setItem(TRUST_KEY, on ? "on" : "off");
+  } catch {
+    // Private mode with storage denied: the default stays.
+  }
+}
+
 /**
  * @typedef {{ ask: (text: string) => Promise<string> }} Model
  * @typedef {(text: string, sticky?: boolean) => void} Notice
@@ -53,6 +80,9 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   const plain = new Set();
   /** @type {Set<string>} words Harper takes as English and Czech does not */
   const englishOnly = new Set();
+  /** @type {Set<number>} start offsets of those words */
+  const englishAt = new Set();
+  const trustCzech = modelFixesCzechParagraphs();
   // The start of every prose word in the range. The model may change only
   // these: a paragraph also holds links and inline code, and a model that
   // writes "články" into a URL would break the link (code review, finding 1).
@@ -67,6 +97,7 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
     if (hunspell.isWord(word)) continue;
     if (harper && (await englishNow(harper, word))) {
       englishOnly.add(word);
+      englishAt.add(at);
       continue;
     }
     const twins = hunspell.twinsNow(word);
@@ -82,10 +113,16 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
     return;
   }
 
-  // The paragraphs with a blue word, as they read after the local step.
+  // The paragraphs with a blue word, as they read after the local step. With
+  // the setting on, also a Czech paragraph whose only candidates are words
+  // Harper takes as English ("az", "tim"): no blue mark, but the model may
+  // still fix them there.
   const after = withChanges(text, local);
+  /** @param {{from: number, to: number}} p @param {Set<number>} set */
+  const holds = (p, set) => [...set].some((at) => at >= p.from && at < p.to);
+  const czechTrusted = (/** @type {{lang: string}} */ p) => trustCzech && p.lang === "cs";
   const paras = segments(text).filter(
-    (p) => !p.code && [...plain].some((at) => at >= p.from && at < p.to)
+    (p) => !p.code && (holds(p, plain) || (czechTrusted(p) && holds(p, englishAt)))
   );
   let done = 0;
   let failed = 0;
@@ -106,10 +143,17 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
         for (const w of prose) {
           if (w.from < p.from || w.to > p.to) continue;
           const next = checked.text.slice(w.from - p.from, w.to - p.from);
-          // Only prose words in the selection, never an English word: the
+          // Only prose words in the selection, and no English word: the
           // instruction says so, and this is where a model that ignores it
-          // is stopped ("mate" must not become "máte").
-          if (next === w.word || englishOnly.has(w.word) || !starts.has(w.from)) continue;
+          // is stopped ("mate" must not become "máte"). In a Czech paragraph
+          // the setting above can let the model through.
+          if (next === w.word || !starts.has(w.from)) continue;
+          if (englishOnly.has(w.word) && !czechTrusted(p)) continue;
+          // Outside a Czech paragraph, only a word with a blue mark: a word
+          // that is valid in both languages ("mate", Czech "you confuse")
+          // passes the English guard, and in "The mate opens the list" the
+          // model wrote "máte" (found in the end-to-end check, 2026-11-20).
+          if (p.lang !== "cs" && !plain.has(w.from)) continue;
           final.set(w.from, next);
         }
       }
