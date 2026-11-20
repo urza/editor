@@ -3,6 +3,13 @@
 // UI, start. All behavior lives in the modules (architecture.md §6).
 // Frameworkless on purpose.
 
+// First, before any other module runs: the log keeps what the app says,
+// for "Copy the log" on a phone (model/log.js). Hoisted with the imports
+// below, and that is fine: the modules only log from start() on.
+import { installLog, logText } from "./model/log.js";
+installLog();
+import { BUILD } from "./version.js";
+
 import {
   deleteBuffer,
   getAllHandles,
@@ -406,9 +413,41 @@ async function start() {
         typeof onStatus === "function"
           ? onStatus
           : (/** @type {string | null} */ msg) =>
-              msg ? statusbar.notice("page: " + msg, true) : statusbar.endNotice()
+              msg ? statusbar.notice("page: " + msg, true) : statusbar.endNotice(),
+        { beforeReload: () => store.flushAll() }
       ),
   });
+
+  // The app's log (model/log.js), with a Copy button: on a phone this is
+  // the one way to see what went wrong.
+  register({
+    id: "app.log",
+    title: "Show the log",
+    run: () =>
+      showSecret({
+        title: "Log",
+        text: logText() || "(empty)",
+        note: "The last lines the app wrote: steps, ids and errors, no text of a note. Build " + BUILD.commit + ".",
+        confirm: "Close",
+      }),
+  });
+
+  // The same check on its own: a few seconds after the start, and when the
+  // app comes back to the front, at most every five minutes. An installed
+  // app on a phone is opened from the background for days and never asks;
+  // without this it ran an old build until someone pressed the button.
+  // Quiet unless it updates: the reload says the rest.
+  let lastUpdateCheck = 0;
+  const autoUpdate = () => {
+    if (Date.now() - lastUpdateCheck < 5 * 60 * 1000) return;
+    lastUpdateCheck = Date.now();
+    void checkForUpdate(
+      (msg) => {
+        if (msg?.startsWith("updating")) statusbar.notice(msg, true);
+      },
+      { beforeReload: () => store.flushAll(), auto: true }
+    );
+  };
 
   // Devices and keys (architecture.md §5, §27). No keyboard shortcuts: setup
   // runs once in a lifetime and unlock is dispatched by whatever needs a key.
@@ -1352,6 +1391,11 @@ async function start() {
   mountSidebar(store, folders, sync);
   const statusbar = mountStatusbar(store, sync, zoom, editor.view);
   const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
+  // After the status bar exists: autoUpdate reports through it.
+  setTimeout(autoUpdate, 3000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") autoUpdate();
+  });
   mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
   mountShortcuts();
   mountDesktop({
