@@ -76,11 +76,14 @@ self.addEventListener("fetch", (event) => {
       // app shell, so the installed app opens with no network. The crypto
       // prototype is deployed under our scope but is its own page: handing it
       // the app shell would make its URL silently open the editor. The same
-      // holds for the test pages in /tools/ (tools/keytest.html).
+      // holds for the test pages in /tools/ (tools/keytest.html) and for the
+      // "How it works" guide in /docs/ (docs/how-it-works.html), which
+      // pages.yml deploys next to the app.
       if (
         req.mode === "navigate" &&
         !url.pathname.includes("/crypto-proto") &&
-        !url.pathname.includes("/tools/")
+        !url.pathname.includes("/tools/") &&
+        !url.pathname.includes("/docs/")
       ) {
         return caches.match("./index.html").then((shell) => shell || fetch(req));
       }

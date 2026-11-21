@@ -17,6 +17,8 @@
   <a href="https://github.com/urza/editor/releases/tag/desktop-latest">Desktop builds</a>
   &nbsp;·&nbsp;
   <a href="server/README.md">Sync server</a>
+  &nbsp;·&nbsp;
+  <a href="https://urza.github.io/editor/docs/how-it-works.html">How it works</a>
 </p>
 
 ![vrtti with notes and a folder in the sidebar, and a Czech spelling suggestion open in a travel note](docs/screenshots/hero.png)
@@ -38,17 +40,19 @@ habit and removes what got in the way:
 
 - Press `+` (or Alt+N) and type. The first line is the title until you rename the note.
 - Each note is saved to the browser's IndexedDB 300 ms after you stop typing. A crash or a reboot loses nothing.
-- Closing a note never asks. The note moves to **Recent**, and one click opens it again.
+- Closing a note never asks. The note moves to **Recent** and stays there with no time limit, and one click opens it again. Which notes are open vs. in Recent is local to each window and never syncs.
 - A note you leave empty is dropped, so the sidebar does not fill with blank tabs.
 
 ### Files and folders
 
-- Open a single file or a whole folder. A folder shows as a tree in the sidebar, and its files open next to your notes.
-- Save a scratch note to disk at any time. From then on the file holds the text, and vrtti is one of its editors.
+- Open a single file or a whole folder. A folder shows as a tree in the sidebar (or in its own window in the desktop app), and its files open next to your notes.
+- Saving a scratch note to disk is optional. Once you save it to disk, the file holds the only copy of the text, and vrtti is one of its editors.
 - A change made by another program appears when the window gets focus. If you also have unsaved text, vrtti keeps it in a separate note.
 - In the desktop app you can drop a file on the window, or use the system's "Open with" menu.
 
 Files and folders need Chrome or Edge on a desktop (File System Access API), or the desktop app. Firefox and phones get everything else.
+
+![How local storage works: scratch notes in IndexedDB, optional save to disk into files, and folders opening in their own window](docs/diagrams/where-notes-live.jpg)
 
 ### Find in files
 
@@ -110,6 +114,8 @@ into the whole note when nothing is selected. Each one is a single undo step.
 
 The menu of a note (**⋯**) has the two commands too, for the whole note.
 
+![Offline English and Czech spellcheck on the device compared with the optional vLLM diacritics command](docs/diagrams/spellcheck-and-vllm.jpg)
+
 ### Emoji
 
 Emoji draw as [Twemoji](https://github.com/jdecked/twemoji) graphics, so they
@@ -118,14 +124,16 @@ The text in the note keeps the normal emoji characters.
 
 ### Sync to your own server (optional)
 
-- The server is small: an ASP.NET Core API with one SQLite file. A Docker image is ready (see [server/README.md](server/README.md)).
-- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. On a phone, new notes sync by default.
+![Devices with their own keys syncing through a blind relay server, with colored spaces and a paper recovery key](docs/diagrams/spaces-and-sync.jpg)
+
+- The server is small: an ASP.NET Core API with one SQLite file, acting as a blind relay. A Docker image is ready (see [server/README.md](server/README.md)).
+- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. On a phone, new notes sync by default. A note that does not sync sits in no space and stays on its device.
+- A synced note lives in one **space**. Think of a space as a colored notebook (`personal`, `work`, `ideas`) whose cover lists the devices that can open it: one note belongs to one space, while a device can belong to many spaces, one, or none. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in `work` never gets a note of `personal`, not even a title.
+- **Move to <space>** in a note's menu moves one note to another space and re-encrypts it for that space's members. A device that loses a note (a move away, or its removal from a space) keeps its copy in the local trash.
+- Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
-- When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Trash** restores it. A wrong or forged delete from the server cannot wipe a note.
-- A synced note lives in a **space**. A space is a group of your devices, like a group chat: only its members get its notes and can read them. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in the space `dev-work` never gets a note of `personal`, not even a title.
-- **Move to <space>** in a note's menu lends one note to another space. A device that loses a note (a move away, or its removal from a space) keeps its copy in the local trash.
-- Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
+- When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Storage › Deleted notes** restores it. A wrong or forged delete from the server cannot wipe a note.
 - **Back up to a folder** (Settings › Sync) writes each note of a space into a folder, as plain text or as `.age` files.
 
 ![The history of a synced note with three revisions](docs/screenshots/history.png)
@@ -133,11 +141,13 @@ The text in the note keeps the normal emoji characters.
 ### Encryption
 
 - Each synced note is encrypted for the devices of its space and for your recovery key. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage). The server refuses plain text and holds no readable title.
-- Each device has its own key. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
-- The first device shows a recovery key one time. Keep it offline, on paper or in a password manager.
+- Each device has its own key, and the key never leaves the device. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
+- The first device shows a recovery key one time. Keep it offline, on paper or in a password manager. It opens every note if all devices are lost.
 - A new device joins with an invite: **Invite a device** on a device you use shows it, and the new device pastes it in Settings › Sync. The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The URL and the code also work typed by hand. The server cannot add a reader: the member list of a space is a log of entries that your devices sign.
-- A file on disk can become `name.age`, and the `age` command line tool can decrypt it. The app is never the only way to read your notes.
+- A file on disk can become `name.md.age` (or `name.age`), and the `age` command line tool can decrypt it. A synced note saved to disk always saves as `.age`. The app is never the only way to read your notes.
 - **Lock with PIN** in a note's menu keeps a note off the screen until the 4-digit PIN of the device. It is a guard for the screen, not encryption.
+
+![Inviting a device in one paste, signed member lists, and safety rules for conflicts and 30-day Local Trash](docs/diagrams/invites-and-safety.jpg)
 
 ![The settings panel](docs/screenshots/settings.png)
 
@@ -269,7 +279,7 @@ src-tauri/      the desktop shell (Tauri, Rust)
 server/         the sync server (ASP.NET Core, SQLite)
 design/icons/   icon sources and the icons that were not picked
 crypto-proto/   the age prototype that came before the real code
-docs/           README screenshots
+docs/           the "How it works" page, README screenshots and diagrams (deployed to GitHub Pages under docs/)
 ```
 
 ## Run it locally
