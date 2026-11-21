@@ -53,6 +53,13 @@ public static class IntroductionApi
                 return Results.BadRequest(new ErrorResponse("device is not a registered device"));
             }
 
+            // The clients refuse an entry where a device vouches for itself
+            // (checkIntroduction); the table keeps none either.
+            if (deviceId == context.Caller().Id)
+            {
+                return Results.BadRequest(new ErrorResponse("a device cannot introduce itself"));
+            }
+
             // The first entry for a pair stays: an entry never changes (only grows).
             using var cmd = Db.Command(conn, """
                 INSERT OR IGNORE INTO introductions (device, by, replaces, sig, created)

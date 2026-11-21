@@ -65,6 +65,8 @@ public class IntroductionsTests
         using var longKey = await phone.Http.PostAsJsonAsync("/api/introductions",
             new { device = KeyOf("desktop") + new string('x', 4096), by = KeyOf("phone"), sig = "c2ln" });
         Assert.Equal(HttpStatusCode.BadRequest, longKey.StatusCode);
+        using var self = await Vouch(phone, "phone");
+        Assert.Equal(HttpStatusCode.BadRequest, self.StatusCode);
         Assert.Empty((await phone.Http.GetFromJsonAsync<List<Introduction>>("/api/introductions"))!);
     }
 

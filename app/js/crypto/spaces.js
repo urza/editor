@@ -134,9 +134,12 @@ function isEntry(e) {
  * still sign entries, but it cannot place one before its removal.
  * @param {string[]} log  The entry texts, in seq order.
  * @param {string} creator  The pinned entry key of the space's creator.
+ * @param {string} name  The space this log must be. The server picks which
+ *   log it serves under a name; without this check it could serve another
+ *   space of the same creator, where this device is a member too.
  * @returns {SpaceState}
  */
-export function replay(log, creator) {
+export function replay(log, creator, name) {
   /** @type {SpaceState} */
   const state = { seq: 0, members: [], known: [], color: PALETTE[0], creator };
   /** @type {string | null} */
@@ -156,6 +159,7 @@ export function replay(log, creator) {
       if (e.prev !== null) return fail("a first entry has no prev");
       if (e.op !== "create" || e.device !== e.by) return fail("the first entry is a create of its author");
       if (e.by !== creator) return fail("not the pinned creator");
+      if (e.space !== name) return fail("another space");
       space = e.space;
     } else {
       if (e.prev !== hashEntry(log[i - 1])) return fail("prev does not match");

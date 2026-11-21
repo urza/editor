@@ -126,6 +126,9 @@ function newToken() {
  * @property {'off' | 'idle' | 'syncing' | 'error' | 'offline'} state
  * @property {string} [message]
  * @property {number} [lastSyncAt]
+ * @property {boolean} [directoryMissing]  The server has no device directory.
+ *   In the status because only the leader pulls, and every window's Settings
+ *   shows the note.
  */
 
 /**
@@ -257,7 +260,7 @@ export function createSyncClient({ store, keyring }) {
   function rebuild() {
     const next = dict();
     for (const [space, entry] of Object.entries(logs)) {
-      const state = replay(entry.log, entry.creator);
+      const state = replay(entry.log, entry.creator, space);
       if (state.error) console.log("[vrtti] space log of", space, "stops at", state.error);
       next[space] = state;
     }
@@ -404,7 +407,7 @@ export function createSyncClient({ store, keyring }) {
       return false;
     }
     if (typeof creator !== "string") return false;
-    const state = replay(log, creator);
+    const state = replay(log, creator, space);
     if (!state.members.includes(me)) return false;
     const trusted = knownSet();
     // Only the replayed part: there each signature is checked.
@@ -459,7 +462,7 @@ export function createSyncClient({ store, keyring }) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const text = await nextEntry(entry.log, { ...what, space }, keyring.ownKey(), keyring.signer);
       // Checked here first, so a refused change says why before the server.
-      const after = replay([...entry.log, text], entry.creator);
+      const after = replay([...entry.log, text], entry.creator, space);
       if (after.error) throw new SyncError(after.error.replace(/^entry \d+: /, ""));
       const res = await request("/api/spaces/" + encodeURIComponent(space) + "/log", {
         method: "POST",
@@ -683,6 +686,8 @@ export function createSyncClient({ store, keyring }) {
     /** @type {import("../crypto/spaces.js").Introduction[]} */
     const fresh = [];
     for (const row of Array.isArray(rows) ? rows : []) {
+      // Before pairOf(): one bad row from the server must not stop the round.
+      if (!row || typeof row !== "object" || typeof row.device !== "string" || typeof row.by !== "string") continue;
       const pair = pairOf(row);
       // Checked once, when it arrived; the same signature again needs no check.
       if (have.has(pair)) {
@@ -1288,6 +1293,7 @@ export function createSyncClient({ store, keyring }) {
         setStatus({
           state: "idle",
           lastSyncAt,
+          directoryMissing,
           message: joined
             ? undefined
             : keyring.signer
@@ -1326,6 +1332,12 @@ export function createSyncClient({ store, keyring }) {
 
   /** @param {Config | null} next */
   async function saveConfig(next) {
+    // Another server (or none) has none of this device's introductions,
+    // and may have a directory where the old one had none.
+    if (next?.url !== config?.url) {
+      sent.clear();
+      directoryMissing = false;
+    }
     config = next;
     if (next) await putSetting(CONFIG_KEY, next);
     else await deleteSetting(CONFIG_KEY);
@@ -1693,7 +1705,7 @@ export function createSyncClient({ store, keyring }) {
     disconnect,
     // The server has no device directory: Settings › Sync asks for an update.
     get directoryMissing() {
-      return directoryMissing;
+      return started ? directoryMissing : status.directoryMissing === true;
     },
     get isJoining() {
       return joining !== null;
