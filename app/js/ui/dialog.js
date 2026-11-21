@@ -284,12 +284,21 @@ export function showSecret(opts) {
 }
 
 /**
- * Pick one of a small set of options.
- * @param {{title?: string, options: {id: string, label: string, hint?: string}[]}} opts
+ * Pick one of a small set of options. `text` is a paragraph above them.
+ * `cancel: false` leaves out the Cancel button, for a dialog whose options
+ * are its only answers (Escape still closes it, with null).
+ * @param {{title?: string, text?: string, cancel?: boolean,
+ *          options: {id: string, label: string, hint?: string}[]}} opts
  * @returns {Promise<string | null>} The chosen id, or null when cancelled.
  */
 export function choose(opts) {
   const { dialog, body, actions } = shell(opts.title ?? "Choose");
+  if (opts.text) {
+    const text = document.createElement("p");
+    text.className = "settings-hint";
+    text.textContent = opts.text;
+    body.appendChild(text);
+  }
   for (const option of opts.options) {
     const el = document.createElement("button");
     el.type = "submit";
@@ -306,7 +315,7 @@ export function choose(opts) {
     }
     body.appendChild(el);
   }
-  actions.append(cancelButton(dialog));
+  if (opts.cancel !== false) actions.append(cancelButton(dialog));
   const ids = new Set(opts.options.map((o) => o.id));
   return openModal(dialog, (value) => (ids.has(value) ? value : null));
 }
@@ -440,16 +449,10 @@ export function askInvite(opts) {
     hint.textContent = opts.hint;
     body.appendChild(hint);
   }
-  const error = errorLine(body);
   actions.append(cancelButton(dialog), button(opts.confirm, "ok", true));
+  // No tick is a valid answer: an invite for no space joins the device to
+  // the server, and the grid in Settings › Devices adds it to spaces later.
   const picked = () => rows.filter((r) => !r.box || r.box.checked);
-  form.addEventListener("submit", (event) => {
-    if (opts.tickable && !picked().length) {
-      event.preventDefault();
-      error.textContent = "Tick at least one space.";
-      error.hidden = false;
-    }
-  });
   const read = () => ({
     name: nameInput ? nameInput.value.trim() : "",
     spaces: Object.fromEntries(picked().map((r) => [r.id, /** @type {"tab" | "list"} */ (r.select.value)])),

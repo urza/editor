@@ -55,7 +55,9 @@ public static partial class DeviceApi
             var caller = context.Caller();
             if (request.Slot is not { } slot || !SlotRule().IsMatch(slot)
                 || request.Verifier is not { Length: > 0 and <= 256 } verifier
-                || request.Spaces is not { Length: > 0 } spaces)
+                // An empty list is a join to the server only: the member adds the
+                // device to spaces later with plain add entries.
+                || request.Spaces is not { } spaces)
             {
                 return Results.BadRequest(new ErrorResponse("slot, verifier and spaces are required"));
             }

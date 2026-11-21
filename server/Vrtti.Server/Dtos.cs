@@ -108,6 +108,16 @@ public record PendingJoin(string Slot, string[] Spaces, string DeviceId, string 
 /// <summary>The member's reply to a join; both null while the member has not answered.</summary>
 public record JoinReply(string? Reply, string? Mac);
 
+/// <summary>One entry of the device directory: <c>By</c> vouches for <c>Device</c>.</summary>
+/// <remarks>
+/// Both are entry keys. <c>Sig</c> is the signature of <c>By</c> over the text that
+/// app/js/crypto/spaces.js (vouchText) builds; only the clients check it.
+/// </remarks>
+public record Introduction(string Device, string By, bool Replaces, string Sig);
+
+/// <summary>Body of <c>POST /api/introductions</c>.</summary>
+public record IntroductionRequest(string? Device, string? By, bool? Replaces, string? Sig);
+
 /// <summary>Body of <c>POST /api/model/diacritics</c>: one paragraph.</summary>
 public record DiacriticsRequest(string? Text);
 

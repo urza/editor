@@ -203,6 +203,74 @@ export function nextColor(used) {
   return PALETTE.find((c) => !used.includes(c)) ?? PALETTE[used.length % PALETTE.length];
 }
 
+// ---- The device directory -------------------------------------------------
+//
+// One list of introductions on the server: device `by` vouches for device
+// `device`, signed by `by` (architecture.md §27). It gives no space. Each
+// device follows the introductions from the devices it knows already, so a
+// device it shares no space with can still show in its grid. The list only
+// grows, and each entry stands alone: no order and no chain.
+
+/**
+ * @typedef {{device: string, by: string, replaces: boolean, sig: string}} Introduction
+ *   `replaces`: the introduction of a passphrase switch; `by` is the old key.
+ */
+
+/**
+ * The bytes an introduction's signature covers. The label keeps a space log
+ * signature from passing as an introduction, and the other way around.
+ * @param {string} device @param {string} by @param {boolean} replaces
+ */
+export function vouchText(device, by, replaces) {
+  return "vrtti-vouch\n" + device + "\n" + by + "\n" + (replaces ? "replaces" : "");
+}
+
+/**
+ * `by` vouches for `device`.
+ * @param {string} device @param {string} by
+ * @param {import("./sign.js").Signer} signer  The signer of `by`.
+ * @param {boolean} [replaces]
+ * @returns {Promise<Introduction>}
+ */
+export async function vouch(device, by, signer, replaces = false) {
+  return { device, by, replaces, sig: await sign(vouchText(device, by, replaces), signer) };
+}
+
+/**
+ * Whether an introduction is well formed and signed by its `by`. Only the
+ * clients check this; the server stores what devices send.
+ * @param {any} e @returns {e is Introduction}
+ */
+export function checkIntroduction(e) {
+  if (!e || typeof e !== "object" || typeof e.sig !== "string" || typeof e.replaces !== "boolean") return false;
+  const author = parseEntryKey(e.by);
+  if (!author || !parseEntryKey(e.device) || e.device === e.by) return false;
+  return verify(e.sig, vouchText(e.device, e.by, e.replaces), author.signKey);
+}
+
+/**
+ * The known devices: the start set (this device, the members of its space
+ * logs), and each device an introduction from a known device names, until
+ * nothing changes. The introductions must be checked already
+ * (checkIntroduction); a cycle ends because a key is added once.
+ * @param {Iterable<string>} start @param {Introduction[]} introductions
+ * @returns {Set<string>}
+ */
+export function knownDevices(start, introductions) {
+  const known = new Set(start);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const e of introductions) {
+      if (known.has(e.by) && !known.has(e.device)) {
+        known.add(e.device);
+        grew = true;
+      }
+    }
+  }
+  return known;
+}
+
 // ---- The join code --------------------------------------------------------
 //
 // Ten characters of Crockford base32, shown as `K7MQ2-XWD4P`. The first three

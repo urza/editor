@@ -137,6 +137,7 @@ api.MapGet("/version", () => Results.Ok(new { build }));
 
 DeviceApi.Map(api);
 SpaceApi.Map(api);
+IntroductionApi.Map(api);
 
 // Behind the token, unlike /version: whether a model exists is nobody else's business.
 // "diacritics" says only that a model is set, and the app shows "Add diacritics (vllm)"

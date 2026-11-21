@@ -138,6 +138,8 @@ token) and `POST /api/joins/redeem` (no token). Request bodies are limited to 10
 | `GET`    | `/api/joins`                      | `[{ slot, spaces, deviceId, entry, proof }]`: the caller's used joins that wait for a reply. |
 | `POST`   | `/api/joins/{slot}/reply`         | `{ reply, mac }`, 204. From the member that made the join. |
 | `GET`    | `/api/joins/{slot}/reply`         | `{ reply, mac }` for the device that joined; both null while it waits. |
+| `GET`    | `/api/introductions`              | `[{ device, by, replaces, sig }]`: the whole device directory, for every device. See Device directory. |
+| `POST`   | `/api/introductions`              | `{ device, by, replaces, sig }`, 201, or 200 for a pair the server has (no change). See Device directory. |
 | `POST`   | `/api/docs/{id}/revisions`        | 201 `{ rev, seq }`. 409 `{ current }` when `baseRev` is a number and is not the current revision. |
 | `GET`    | `/api/docs/{id}`                  | The current revision, or 404.                         |
 | `GET`    | `/api/docs/{id}/revisions`        | History, newest first, without content.               |
@@ -281,6 +283,20 @@ are the slot, a public id; the server never sees the rest.
    to the spaces, and posts its reply.
 4. The new device reads the reply from `GET /api/joins/{slot}/reply`.
 
+A join may give no space (`spaces: []`): the device joins the server only.
+
+## Device directory
+
+One list of introductions: device `by` vouches for device `device` (both entry keys).
+The clients sign and check each entry; the server does not check signatures. An entry
+gives no space.
+
+- Every registered device reads all entries.
+- A device writes only as itself: the device id in `by` must be the caller (else 403).
+  The device id in `device` must be a registered device (else 400).
+- `device` and `by` are at most 4096 characters, `sig` at most 256 (else 400).
+- An entry for a pair the server has changes nothing: the first entry stays.
+
 ## Migration
 
 The server migrates the database at start, with no manual step.
@@ -290,8 +306,8 @@ The server migrates the database at start, with no manual step.
 2. A database from before device spaces gets the `prev_space` column, and the old
    readable fields `title`, `lang`, `langSource` and `spellOff` leave the `meta` of each row. The rows
    and their history stay.
-3. The tables `devices`, `members`, `space_log` and `joins`, and the indexes, are created
-   when they are missing.
+3. The tables `devices`, `members`, `space_log`, `joins` and `introductions`, and the
+   indexes, are created when they are missing.
 
 A second start finds the columns and changes nothing. After the upgrade no space has a
 member: the first device registers with the server token and claims the old spaces.

@@ -211,3 +211,44 @@ test("an invite survives the round trip, and a bad one is null", () => {
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, url: "javascript:alert(1)" })), null);
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, code: "short" })), null);
 });
+
+// ---- The device directory (introductions) ---------------------------------
+
+test("an introduction checks with its author's key and nothing else", async () => {
+  const good = await spaces.vouch(dev.key, desk.key, desk.signer);
+  assert.equal(spaces.checkIntroduction(good), true);
+  // A bad signature: signed by another device than `by`.
+  const forged = { ...good, sig: (await spaces.vouch(dev.key, desk.key, phone.signer)).sig };
+  assert.equal(spaces.checkIntroduction(forged), false);
+  // A wrong label: a space log signature over the same keys does not pass.
+  const wrongLabel = { ...good, sig: await sign.sign(["vrtti-space-log", dev.key, desk.key, ""].join("\n"), desk.signer) };
+  assert.equal(spaces.checkIntroduction(wrongLabel), false);
+  // Swapped device and by: the signature covers the order.
+  assert.equal(spaces.checkIntroduction({ ...good, device: desk.key, by: dev.key }), false);
+  // The flag is signed too: a plain vouch does not turn into a replace.
+  assert.equal(spaces.checkIntroduction({ ...good, replaces: true }), false);
+  assert.equal(spaces.checkIntroduction(await spaces.vouch(dev.key, desk.key, desk.signer, true)), true);
+  // A device does not vouch for itself.
+  assert.equal(spaces.checkIntroduction(await spaces.vouch(desk.key, desk.key, desk.signer)), false);
+});
+
+test("the known devices follow a chain, skip unknown authors, and end on a cycle", async () => {
+  const tablet = await device("tablet");
+  const stranger = await device("stranger");
+  const attacker = await device("attacker");
+  const list = [
+    await spaces.vouch(desk.key, phone.key, phone.signer),
+    await spaces.vouch(dev.key, desk.key, desk.signer),
+    await spaces.vouch(tablet.key, dev.key, dev.signer),
+    // An author nobody known vouches for: its entry does not count.
+    await spaces.vouch(attacker.key, stranger.key, stranger.signer),
+    // A cycle back to the start.
+    await spaces.vouch(phone.key, tablet.key, tablet.signer),
+  ];
+  const known = spaces.knownDevices([phone.key], list);
+  assert.deepEqual([...known].sort(), [desk.key, dev.key, phone.key, tablet.key].sort());
+  // From the middle of the chain, the devices before it come in through the cycle.
+  assert.equal(spaces.knownDevices([dev.key], list).size, 4);
+  // Nothing known: only the start.
+  assert.deepEqual([...spaces.knownDevices([attacker.key], list)], [attacker.key]);
+});
