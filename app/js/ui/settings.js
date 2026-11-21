@@ -346,39 +346,6 @@ const SECTIONS = [
     ],
   },
   {
-    title: "Storage",
-    status: async () => ((await isPersisted()) ? "persistent" : "not persistent"),
-    items: [
-      {
-        type: "info",
-        key: "persisted",
-        label: "Persistent storage",
-        hint: "Without it the browser may delete your notes when disk space runs low.",
-        value: async () => ((await isPersisted()) ? "granted" : "not granted"),
-      },
-      {
-        type: "info",
-        key: "usage",
-        label: "Used",
-        value: async () => {
-          const estimate = await storageEstimate();
-          if (!estimate) return "unknown";
-          return formatBytes(estimate.usage) + " of " + formatBytes(estimate.quota);
-        },
-      },
-      {
-        type: "action",
-        key: "request-persist",
-        label: "Request persistent storage",
-        hint: "Chrome grants it silently to an installed app; other browsers ask.",
-        button: "request",
-        // Pointless once the grant exists, so the row disappears with it.
-        visible: async () => !(await isPersisted()),
-        act: () => run("storage.persist"),
-      },
-    ],
-  },
-  {
     title: "Sync",
     status: () => syncStateWord(),
     items: [
@@ -529,7 +496,7 @@ const SECTIONS = [
         label: "Set up this device",
         hint:
           "This device gets a key and a name. Your first device also makes a recovery key; " +
-          "every other device joins with a code.",
+          "every other device joins with an invite.",
         button: "set up",
         visible: () => !keyring?.isSetUp,
         act: () => run("device.setup"),
@@ -625,17 +592,49 @@ const SECTIONS = [
     ],
   },
   {
-    title: "Trash",
-    status: () => {
-      const count = store?.trashed().length ?? 0;
-      return count === 1 ? "1 note" : count + " notes";
+    // The trash lives here too: it is where this device keeps what other
+    // devices deleted (§22), so it belongs with what the device stores.
+    title: "Storage",
+    status: async () => {
+      const word = (await isPersisted()) ? "persistent" : "not persistent";
+      const deleted = store?.trashed().length ?? 0;
+      return deleted ? word + " · " + deleted + " deleted" : word;
     },
     items: [
+      {
+        type: "info",
+        key: "persisted",
+        label: "Persistent storage",
+        hint: "Without it the browser may delete your notes when disk space runs low.",
+        value: async () => ((await isPersisted()) ? "granted" : "not granted"),
+      },
+      {
+        type: "info",
+        key: "usage",
+        label: "Used",
+        value: async () => {
+          const estimate = await storageEstimate();
+          if (!estimate) return "unknown";
+          return formatBytes(estimate.usage) + " of " + formatBytes(estimate.quota);
+        },
+      },
+      {
+        type: "action",
+        key: "request-persist",
+        label: "Request persistent storage",
+        hint: "Chrome grants it silently to an installed app; other browsers ask.",
+        button: "request",
+        // Pointless once the grant exists, so the row disappears with it.
+        visible: async () => !(await isPersisted()),
+        act: () => run("storage.persist"),
+      },
       {
         type: "list",
         key: "trash",
         label: "Deleted notes",
-        hint: "A note deleted on another device waits here for 30 days. Restore puts it back into Recent, with sync off.",
+        hint:
+          "A note that another device deleted, or that left this device with its space, waits here for 30 days. " +
+          "Restore puts it back into Recent, with sync off.",
         visible: () => (store?.trashed().length ?? 0) > 0,
         rows: () =>
           (store?.trashed() ?? []).map((record) => ({
@@ -1178,6 +1177,9 @@ export function mountSettings(deps = {}) {
     for (const entry of entries) {
       if (entry === current) entry.item.setAttribute("aria-current", "true");
       else entry.item.removeAttribute("aria-current");
+      // The stripe in the document (app.css), also on a phone, where the
+      // rail is hidden and this is the only mark.
+      entry.element.classList.toggle("is-current", entry === current);
     }
   }
 
@@ -1206,8 +1208,8 @@ export function mountSettings(deps = {}) {
       });
     }
     // A row's visible() answers in a microtask; the sections are judged
-    // after that. A section whose rows are all hidden (the Trash while it
-    // is empty, §22) hides with them, heading and rail entry included.
+    // after that. A section whose rows are all hidden hides with them,
+    // heading and rail entry included.
     setTimeout(() => {
       for (const entry of entries) {
         const rows = [...entry.element.children].filter((el) => el.tagName !== "H3");

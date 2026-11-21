@@ -1152,6 +1152,19 @@ body {
   color: var(--st-sidebar-heading);
 }
 
+/* The rail's half of the section stripe: the same orange line on the left. */
+.settings-rail-item { position: relative; }
+.settings-rail-item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--st-caret);
+}
+
 .settings-rail-status {
   display: block;
   font-size: var(--ui-sm);
@@ -1160,10 +1173,12 @@ body {
 
 .settings-rail-status:empty { display: none; }
 
+/* The left padding is the lane of the section stripe below. */
 .settings-main {
   flex: 1 1 auto;
   min-width: 0;
   max-width: calc(600px * var(--ui-scale));
+  padding-left: 14px;
 }
 
 /* Below this width the rail would squeeze the document under 400px, so the
@@ -1177,8 +1192,33 @@ body {
    on the next one. A sticky heading stays inside its section's box, so with a
    margin there would be 36px of scroll with no heading pinned at all; this
    way the next heading pushes the current one out directly. */
-.settings-section { padding-bottom: calc(36px * var(--ui-scale)); }
+.settings-section {
+  position: relative;
+  padding-bottom: calc(36px * var(--ui-scale));
+}
 .settings-section:first-child { margin-top: 14px; }
+
+/* Where the section the reader is in starts and ends: a 2px orange line down
+   its left side, in the lane of .settings-main, the same orange as the open
+   Recent bar. It stops above the bottom padding, so two sections never touch.
+   Always drawn, transparent when not current, so the class change only fades
+   a color and moves nothing. markCurrent() in settings.js sets the class. */
+.settings-section::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 0;
+  bottom: calc(36px * var(--ui-scale));
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background-color 0.2s;
+}
+.settings-section.is-current::before { background: var(--st-caret); }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-section::before { transition: none; }
+}
 
 /* One strong rule under the heading, weak rules between the rows: two levels
    of structure, no boxes.
