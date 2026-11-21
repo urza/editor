@@ -89,7 +89,7 @@ import { on, post } from "./channel.js";
  * verified space logs and the settings); the store only asks, the same way it
  * asks `syncDefault`.
  * @typedef {Object} SpacesDep
- * @property {() => string | null} defaultSpace  null: the device is in no space.
+ * @property {() => string | null} defaultSpace  The "New notes" space; null: Local only (§27).
  * @property {(space: string) => SpaceMode} modeOf
  * @property {(space: string) => string[]} recipients  The members' recipients,
  *   from the verified log; empty for a space this device does not know.

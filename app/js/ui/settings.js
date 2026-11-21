@@ -181,6 +181,28 @@ function spaceRows() {
   }));
 }
 
+// The texts of the "New notes" guidance (§27), in Settings › Sync and in the
+// one-time dialog of buffer.new (main.js). The exact words come from the plan.
+const GUIDANCE_NO_SPACE =
+  "Notes on this device exist only in this browser. Clearing the site data or losing the device deletes them. " +
+  "To keep a copy on your sync server, make a space in Settings › Devices.";
+const GUIDANCE_LOCAL =
+  "New notes stay only in this browser until you sync them from the note menu. To sync every new note, " +
+  "pick a space here.";
+
+/**
+ * The guidance for "New notes", or "" when there is none (§27). Only on a
+ * device with no disk (a phone, a browser with no File System Access API),
+ * where the browser storage is the only copy of a local note, and only while
+ * new notes are Local only. It informs and does not push: Local only with a
+ * space is a valid choice.
+ * @param {ReturnType<typeof import("../sync/client.js").createSyncClient> | null | undefined} client
+ */
+export function newNotesGuidance(client) {
+  if (hasDisk || !client?.isConfigured || client.defaultSpace()) return "";
+  return client.mySpaces().length ? GUIDANCE_LOCAL : GUIDANCE_NO_SPACE;
+}
+
 /**
  * The grid of Settings › Devices (§27): this device's spaces as columns, the
  * devices their logs name as rows, a tick where a device is a member. A
@@ -377,6 +399,14 @@ const SECTIONS = [
         value: () => syncStatusText(),
       },
       {
+        type: "note",
+        key: "sync-directory-missing",
+        text:
+          "Update the sync server. This server has no device directory, so a device shows in " +
+          "Settings › Devices only when it shares a space with this device.",
+        visible: () => Boolean(sync?.isConfigured && sync.directoryMissing),
+      },
+      {
         type: "action",
         key: "sync-test",
         label: "Test connection",
@@ -401,39 +431,44 @@ const SECTIONS = [
       },
       {
         type: "list",
-        key: "sync-default-space",
-        label: "Default space",
-        hint: "The space a note joins when you turn sync on, and where new notes go.",
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        key: "sync-new-notes",
+        label: "New notes",
+        hint:
+          "Where a new note goes: one of your spaces, or Local only. With Local only, you sync a note " +
+          "from its menu. Only you change this; a new space does not.",
+        visible: () => Boolean(sync?.isConfigured),
         rows: () => {
           const client = /** @type {NonNullable<typeof sync>} */ (sync);
           return [
             {
-              key: "default-space",
-              label: "New notes go to",
+              key: "new-notes",
+              label: "New notes",
               value: "",
               select: {
                 value: client.defaultSpace() ?? "",
-                options: client.mySpaces().map((space) => ({ value: space, label: space })),
-                set: (value) => run("sync.defaultSpace", value),
+                options: [
+                  { value: "", label: "Local only" },
+                  ...client.mySpaces().map((space) => ({ value: space, label: space })),
+                ],
+                set: (value) => run("sync.newNotes", value || null),
               },
             },
           ];
         },
       },
+      // The guidance of a device with no disk (§27): two rows, one for each
+      // text, because a note row paints its text once.
       {
-        type: "toggle",
-        key: "sync-default",
-        label: "Sync new notes",
-        hint:
-          "Every new note syncs from the start, to the default space. Off " +
-          "means you turn sync on per note, from its menu. A phone starts " +
-          "with this on, because sync is its only backup there.",
-        // Hidden until a space exists: before that the switch could only
-        // store a choice for a sync that does not run.
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
-        get: () => Boolean(sync?.syncDefaultOn()),
-        set: () => run("sync.defaultToggle"),
+        type: "note",
+        key: "sync-guidance-no-space",
+        text: GUIDANCE_NO_SPACE,
+        visible: () => newNotesGuidance(sync) === GUIDANCE_NO_SPACE,
+      },
+      {
+        type: "note",
+        key: "sync-guidance-local",
+        text: GUIDANCE_LOCAL,
+        visible: () => newNotesGuidance(sync) === GUIDANCE_LOCAL,
       },
       {
         type: "action",
@@ -441,7 +476,7 @@ const SECTIONS = [
         label: "Sync every open note",
         hint:
           "Turns on sync for each note in this window's Open list, into the " +
-          "default space. Notes in Recent and files stay as they are.",
+          "New notes space, or a space you pick when that is Local only. Notes in Recent and files stay as they are.",
         button: "sync all",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("sync.all"),
@@ -524,10 +559,12 @@ const SECTIONS = [
         key: "device-invite",
         label: "Invite a device",
         hint:
-          "You tick the spaces it gets and how it opens them. This device shows an invite, and the new device " +
-          "pastes it in Settings › Sync.",
+          "You tick the spaces it gets and how it opens them, or none. This device shows an invite, and the new " +
+          "device pastes it in Settings › Sync.",
         button: "invite",
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        // Also with no space: the new device joins the server, and the grid
+        // adds it once this device has a space.
+        visible: () => Boolean(sync?.isConfigured),
         act: () => run("device.invite"),
       },
       {

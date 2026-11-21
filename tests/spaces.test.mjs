@@ -43,7 +43,7 @@ test("create, add and remove give the member list", async () => {
   await append(log, phone, "add", desk);
   await append(log, desk, "add", dev);
   await append(log, dev, "remove", phone);
-  const state = spaces.replay(log, phone.key);
+  const state = spaces.replay(log, phone.key, "personal");
   assert.equal(state.error, undefined);
   assert.equal(state.seq, 4);
   assert.deepEqual(state.members, [desk.key, dev.key]);
@@ -53,7 +53,7 @@ test("create, add and remove give the member list", async () => {
 
 test("the first entry counts only for the pinned creator", async () => {
   const log = await append([], dev, "create", dev);
-  const state = spaces.replay(log, phone.key);
+  const state = spaces.replay(log, phone.key, "personal");
   assert.match(state.error ?? "", /pinned creator/);
   assert.deepEqual(state.members, []);
   assert.equal(state.seq, 0);
@@ -62,7 +62,7 @@ test("the first entry counts only for the pinned creator", async () => {
 test("a create of another device is refused", async () => {
   const log = [];
   log.push(await spaces.nextEntry(log, { op: "create", space: "personal", device: dev.key }, phone.key, phone.signer));
-  assert.match(spaces.replay(log, phone.key).error ?? "", /create of its author/);
+  assert.match(spaces.replay(log, phone.key, "personal").error ?? "", /create of its author/);
 });
 
 test("a forged signature stops the replay there", async () => {
@@ -73,7 +73,7 @@ test("a forged signature stops the replay there", async () => {
     (m) => sign.sign(m, dev.signer)
   ));
   await append(log, phone, "add", desk);
-  const state = spaces.replay(log, phone.key);
+  const state = spaces.replay(log, phone.key, "personal");
   assert.match(state.error ?? "", /entry 2: bad signature/);
   assert.deepEqual(state.members, [phone.key]);
   assert.equal(state.seq, 1);
@@ -85,12 +85,12 @@ test("a broken prev or a gap in seq stops the replay", async () => {
     { seq: 2, prev: "00".repeat(32), op: "add", space: "personal", device: desk.key, by: phone.key },
     (m) => sign.sign(m, phone.signer)
   );
-  assert.match(spaces.replay([...log, badPrev], phone.key).error ?? "", /prev does not match/);
+  assert.match(spaces.replay([...log, badPrev], phone.key, "personal").error ?? "", /prev does not match/);
   const gap = await spaces.makeEntry(
     { seq: 3, prev: spaces.hashEntry(log[0]), op: "add", space: "personal", device: desk.key, by: phone.key },
     (m) => sign.sign(m, phone.signer)
   );
-  assert.match(spaces.replay([...log, gap], phone.key).error ?? "", /wrong seq/);
+  assert.match(spaces.replay([...log, gap], phone.key, "personal").error ?? "", /wrong seq/);
 });
 
 test("a removed member's entries do not count, also with an old seq", async () => {
@@ -101,41 +101,41 @@ test("a removed member's entries do not count, also with an old seq", async () =
   // dev appends after its removal.
   const late = [...log];
   await append(late, dev, "add", desk);
-  assert.match(spaces.replay(late, phone.key).error ?? "", /author is not a member/);
+  assert.match(spaces.replay(late, phone.key, "personal").error ?? "", /author is not a member/);
   // dev writes an entry for the position of its removal, to undo it: it does
   // not replace the real entry 3, and a log that holds it instead of the real
   // one makes dev's entry the third, which removes nobody.
   const forked = log.slice(0, 2);
   await append(forked, dev, "add", desk);
-  const state = spaces.replay(forked, phone.key);
+  const state = spaces.replay(forked, phone.key, "personal");
   assert.equal(state.error, undefined);
   assert.deepEqual(state.members, [phone.key, dev.key, desk.key]);
   // A server that shows the real log shows the removal; dev's fork shares
   // entries 1 and 2, but its entry 3 cannot follow the real entry 3.
   const mixed = [...log, forked[2]];
-  assert.match(spaces.replay(mixed, phone.key).error ?? "", /entry 4/);
+  assert.match(spaces.replay(mixed, phone.key, "personal").error ?? "", /entry 4/);
 });
 
 test("the last member cannot remove itself", async () => {
   const log = await append([], phone, "create", phone);
   await append(log, phone, "remove", phone);
-  assert.match(spaces.replay(log, phone.key).error ?? "", /last member/);
+  assert.match(spaces.replay(log, phone.key, "personal").error ?? "", /last member/);
 });
 
 test("an add of a member and a remove of a non-member do not count", async () => {
   const log = await append([], phone, "create", phone);
   await append(log, phone, "add", phone);
-  assert.match(spaces.replay(log, phone.key).error ?? "", /already a member/);
+  assert.match(spaces.replay(log, phone.key, "personal").error ?? "", /already a member/);
   const log2 = await append([], phone, "create", phone);
   await append(log2, phone, "remove", desk);
-  assert.match(spaces.replay(log2, phone.key).error ?? "", /not a member/);
+  assert.match(spaces.replay(log2, phone.key, "personal").error ?? "", /not a member/);
 });
 
 test("a color entry changes the color and nothing else", async () => {
   const log = await append([], phone, "create", phone, "#6699CC");
   await append(log, phone, "add", desk);
   await append(log, desk, "color", desk, "#EC5F67");
-  const state = spaces.replay(log, phone.key);
+  const state = spaces.replay(log, phone.key, "personal");
   assert.equal(state.color, "#EC5F67");
   assert.deepEqual(state.members, [phone.key, desk.key]);
   assert.equal(spaces.nextColor(["#6699CC", "#F9AE58"]), "#99C794");
@@ -144,7 +144,14 @@ test("a color entry changes the color and nothing else", async () => {
 test("an entry of another space is refused", async () => {
   const log = await append([], phone, "create", phone);
   await append(log, phone, "add", desk, undefined, "work");
-  assert.match(spaces.replay(log, phone.key).error ?? "", /another space/);
+  assert.match(spaces.replay(log, phone.key, "personal").error ?? "", /another space/);
+});
+
+test("a log served under another name is refused", async () => {
+  const log = [];
+  await append(log, phone, "create", phone);
+  await append(log, phone, "add", desk);
+  assert.match(spaces.replay(log, phone.key, "work").error ?? "", /entry 1: another space/);
 });
 
 test("re-encryption follows the log position", () => {
@@ -210,4 +217,45 @@ test("an invite survives the round trip, and a bad one is null", () => {
   assert.equal(spaces.decodeInvite("vrtti-invite:!!!"), null);
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, url: "javascript:alert(1)" })), null);
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, code: "short" })), null);
+});
+
+// ---- The device directory (introductions) ---------------------------------
+
+test("an introduction checks with its author's key and nothing else", async () => {
+  const good = await spaces.vouch(dev.key, desk.key, desk.signer);
+  assert.equal(spaces.checkIntroduction(good), true);
+  // A bad signature: signed by another device than `by`.
+  const forged = { ...good, sig: (await spaces.vouch(dev.key, desk.key, phone.signer)).sig };
+  assert.equal(spaces.checkIntroduction(forged), false);
+  // A wrong label: a space log signature over the same keys does not pass.
+  const wrongLabel = { ...good, sig: await sign.sign(["vrtti-space-log", dev.key, desk.key, ""].join("\n"), desk.signer) };
+  assert.equal(spaces.checkIntroduction(wrongLabel), false);
+  // Swapped device and by: the signature covers the order.
+  assert.equal(spaces.checkIntroduction({ ...good, device: desk.key, by: dev.key }), false);
+  // The flag is signed too: a plain vouch does not turn into a replace.
+  assert.equal(spaces.checkIntroduction({ ...good, replaces: true }), false);
+  assert.equal(spaces.checkIntroduction(await spaces.vouch(dev.key, desk.key, desk.signer, true)), true);
+  // A device does not vouch for itself.
+  assert.equal(spaces.checkIntroduction(await spaces.vouch(desk.key, desk.key, desk.signer)), false);
+});
+
+test("the known devices follow a chain, skip unknown authors, and end on a cycle", async () => {
+  const tablet = await device("tablet");
+  const stranger = await device("stranger");
+  const attacker = await device("attacker");
+  const list = [
+    await spaces.vouch(desk.key, phone.key, phone.signer),
+    await spaces.vouch(dev.key, desk.key, desk.signer),
+    await spaces.vouch(tablet.key, dev.key, dev.signer),
+    // An author nobody known vouches for: its entry does not count.
+    await spaces.vouch(attacker.key, stranger.key, stranger.signer),
+    // A cycle back to the start.
+    await spaces.vouch(phone.key, tablet.key, tablet.signer),
+  ];
+  const known = spaces.knownDevices([phone.key], list);
+  assert.deepEqual([...known].sort(), [desk.key, dev.key, phone.key, tablet.key].sort());
+  // From the middle of the chain, the devices before it come in through the cycle.
+  assert.equal(spaces.knownDevices([dev.key], list).size, 4);
+  // Nothing known: only the start.
+  assert.deepEqual([...spaces.knownDevices([attacker.key], list)], [attacker.key]);
 });

@@ -3244,7 +3244,8 @@ The user's words: a space works like a group chat for devices.
 
 It replaces §21 and §26 (trust for each device, approvals, pairing codes),
 the presets of §5, and from §25 the one token, the mode "Not here" and the
-detach of a note that moved away.
+detach of a note that moved away. "New notes" (below, 2026-11-21) replaces
+the default space of §25 and the phone default "Sync new notes" of §13.6.
 
 ### Keys of a device (`crypto/keyring.js`, `crypto/sign.js`)
 
@@ -3270,8 +3271,12 @@ detach of a note that moved away.
   the next start. A note leaves the list when it is encrypted again (in the
   window that owns its tab, for a `.age` file once it can be read), and the
   old keys go with the last one.
-- The grid hides a device that a switch change replaced: its log shows the
-  old key adding the new one, and the new one removing the old key.
+- The grid hides a device that a switch change replaced. The old key signs
+  a `replaces` introduction for the new key (the device directory, below),
+  so a device with no space in common shows one row too. A switch from
+  before the directory has no such entry; there the log shape hides the old
+  key (the old key adds the new one, the new one removes the old key). The
+  grid never hides this device or a member of one of its spaces.
 - A row from before (`v: 1`) asks its old passphrase once at start; where
   the browser can, the X25519 secret becomes a stored key, the Ed25519 key
   is made fresh (no log names the old one yet), and the device never asks
@@ -3292,8 +3297,9 @@ detach of a note that moved away.
   again. The switch names the step that failed. No import is tested: an
   import is a step iOS Safari may refuse, and only the upgrade needs one,
   for the X25519 key (it falls back to the passphrase).
-- The keyring record (§13.3) stays, as a directory of device entries for
-  names only. It decides nothing.
+- The keyring record (§13.3) stays, as a list of device entries for names
+  only. It decides nothing. Nothing signs it, so the device directory
+  (below) and not this record decides which devices a grid shows.
 
 ### The space log (`crypto/spaces.js`)
 
@@ -3341,8 +3347,8 @@ and refuses an entry whose `by` is not the caller.
   of its newest row: a later edit in the new space must not put it behind a
   page boundary that the next call starts after.
 - The migration adds `prev_space`, removes `title`, `lang`, `langSource` and
-  `spellOff` from the meta of old rows, and creates `devices`, `members`, `space_log`
-  and `joins`.
+  `spellOff` from the meta of old rows, and creates `devices`, `members`, `space_log`,
+  `joins` and `introductions`.
 
 ### Join (`sync/client.js`)
 
@@ -3370,6 +3376,64 @@ open, the member syncs every 3 seconds, so the join ends while the user
 watches. The invite holds the code, so it is a secret for the code's ten
 minutes. The URL and the code still work typed by hand.
 
+**No space, and a later add (2026-11-21).** An invite may tick no space:
+the device joins the server only. Both ends vouch for the other in the
+device directory (below): the member after the proof check, the new device
+after the MAC check. Before this, a device learned a space only by making
+it or from its join reply, so a grid add never reached the added device.
+Now `pullLogs` looks at each space the server lists with no log here
+(`adopt`): it pulls the log, replays it from the creator in its first
+entry, and takes the space only when a known device signed the add of this
+device. That signature covers the hash of the entry before it, so it fixes
+the chain back to the creator; a log the server made up has no such
+signature. An adopted space starts as Titles only. A device that knows no
+one in the chain refuses the space, and the user adds it from a device it
+knows.
+
+### Device directory and New notes (2026-11-21)
+
+The server holds one list of introductions, `{device, by, replaces, sig}`
+(table `introductions`, `GET` and `POST /api/introductions`): device `by`
+vouches for `device`. `sig` is the signature of `by` over `vrtti-vouch`,
+`device`, `by` and `replaces` or "", one per line (`vouch`,
+`checkIntroduction` in `crypto/spaces.js`). The list only grows. Every
+device reads all of it; a device writes only as itself, and only for a
+registered device. The server does not check signatures; each client drops
+an entry that does not verify. The known devices of a device are itself,
+every device its space logs name, and each device that an introduction
+from a known device names, until nothing changes (`knownDevices`). The
+grid rows are the known devices, and `adopt` trusts them. A device vouches
+at a join (both ends), for each member of its space logs after a pull
+(this also moves an older install onto the directory), and at a
+passphrase switch (`replaces`, signed by the old key and sent while the
+device still has the old token). It stores its introductions in
+`sync.introductions` first and sends them later, so a join member stays
+known while the send fails. A locked device writes none, and a join reply
+waits in `sync.joining` until the unlock. After a switch, the new key
+also vouches for the old key, so a device in no space still knows the
+devices its old key knew. The order of a sync round is: the join reply,
+the introductions, the logs (with `adopt`), the joins of this device's
+invites, the end of a switch, then the send. An introduction gives no space: a
+known device gets the notes of a space only when a member adds it there.
+A stolen device stays in the directory; the user removes it from each
+space. A server with no `/api/introductions` (an older build) works as
+before, and Settings › Sync asks for an update of the server.
+
+"New notes" (`sync.newNotes`, `{space: string | null}`) is one setting for
+each device: Local only (`null`) or one of its spaces. With nothing stored,
+new notes stay local, and `defaultSpace()` has no fallback. Only the user
+changes it; a join, an adopted space and a new space do not, so a space
+another device adds this one to never takes its new notes. When the device
+leaves that space, the setting goes back to Local only. An install from
+before keeps what it had: the space that "Sync new notes" sent new notes
+to, else Local only. The "Sync to" items of a note's menu list the New
+notes space first. "Sync every open note" with Local only asks for a space
+in a dialog. On a device with no disk (a phone, a browser with no File
+System Access API), Settings › Sync explains under New notes, while it is
+Local only, that a local note lives only in this browser. The first note
+that the user makes there with `buffer.new` shows the same text once, in a
+dialog with "Open Settings" and "OK".
+
 ### Notes (`model/docs.js`)
 
 - `enc.preset` is `space` for every synced note, with `spaceSeq`, the log
@@ -3394,8 +3458,8 @@ minutes. The URL and the code still work typed by hand.
   (`store.trash`, the whole job: copy of unsent text, tab, active note).
 - "Move to <space>" encrypts the note for the new members and pushes it with
   the new space.
-- A device in no space makes local notes; a default space it lost falls back
-  to its first space.
+- A device in no space makes local notes. A device whose New notes space is
+  Local only, or a space it left, makes local notes too.
 
 ### Look, PIN, backup
 
@@ -3462,8 +3526,12 @@ it over.
   stores that string too until then, so a restart cannot lose the notes it
   alone opens.
 - The keyring record is written by every device, a removed one too. It
-  gives names only: a device of a space this device is not in shows the
-  name the record says.
+  gives names only: a device that no known device names shows the name the
+  record says.
+- A device that someone takes over can vouch for any key. That key shows
+  in the grids of the user's devices, and it gets no space until a member
+  adds it. The server can hide introductions; then a device does not show
+  in a grid, and no device gets a space.
 
 ### Gate
 

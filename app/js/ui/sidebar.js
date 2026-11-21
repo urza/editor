@@ -307,7 +307,7 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
-   * "Sync to <space>" for an unsynced note, the default space first (§25),
+   * "Sync to <space>" for an unsynced note, the New notes space first (§27),
    * and for a synced one "Move to <space>" for each other space of this
    * device, then "Stop syncing" with its space in the hint (§27). The origin
    * device is the hint of a move: it is what tells a lent note from one of
@@ -340,11 +340,12 @@ export function mountSidebar(store, folders, sync) {
         },
       ];
     }
-    const target = sync.defaultSpace();
-    if (!target) {
+    if (!mine.length) {
       return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Devices first" }];
     }
-    return [target, ...mine.filter((name) => name !== target)].map((name) => ({
+    // The New notes space first; with Local only, no space is first (§27).
+    const first = sync.defaultSpace();
+    return [...(first ? [first] : []), ...mine.filter((name) => name !== first)].map((name) => ({
       label: "Sync to " + name,
       act: () => run("doc.sync.on", { id: record.id, space: name }),
     }));

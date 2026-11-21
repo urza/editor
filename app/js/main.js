@@ -60,7 +60,7 @@ import {
   showSecret,
 } from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
-import { mountSettings } from "./ui/settings.js";
+import { mountSettings, newNotesGuidance } from "./ui/settings.js";
 import { mountSidebar } from "./ui/sidebar.js";
 import { mountStatusbar } from "./ui/statusbar.js";
 import { mountTitle } from "./ui/title.js";
@@ -80,6 +80,8 @@ import { openDirectoryPicker } from "./storage/fsa.js";
 
 /** Wrong passphrases the unlock prompt tolerates before it gives up. */
 const UNLOCK_ATTEMPTS = 3;
+// The "New notes" dialog of buffer.new showed once (§27).
+const NEW_NOTES_NOTICE_KEY = "notice.newNotes";
 
 /**
  * A first guess at the device name, so the user usually just presses Enter.
@@ -207,11 +209,51 @@ async function start() {
       .catch((err) => console.log("[vrtti] root prune failed", err));
   }
 
+  /**
+   * The "New notes" guidance as a dialog, once (§27): on a device with no
+   * disk whose new notes are Local only. A dialog and not `#notice`, which
+   * shows on phones only and takes no taps. Only from buffer.new, never for
+   * the first note store.start() makes at the first start.
+   */
+  async function newNotesNotice() {
+    const text = newNotesGuidance(sync);
+    if (!text || (await getSetting(NEW_NOTES_NOTICE_KEY))) return;
+    // Stored first: the dialog never shows again, also when the app closes
+    // on it. A user who chose to sync by hand is not asked twice.
+    await putSetting(NEW_NOTES_NOTICE_KEY, true);
+    const answer = await choose({
+      title: "New notes",
+      text,
+      cancel: false,
+      options: [
+        { id: "settings", label: "Open Settings" },
+        { id: "ok", label: "OK" },
+      ],
+    });
+    if (answer === "settings") await run("settings.open");
+  }
+
+  /**
+   * One of this device's spaces, picked in a dialog, for a sync with no
+   * space given while "New notes" is Local only. Null: cancelled or no space.
+   * @param {string} title @returns {Promise<string | null>}
+   */
+  async function pickSpace(title) {
+    const spaces = sync.mySpaces();
+    if (!spaces.length) return null;
+    return choose({ title, options: spaces.map((space) => ({ id: space, label: space })) });
+  }
+
   register({
     id: "buffer.new",
     title: "New buffer",
     keys: "Alt+KeyN",
-    run: () => store.create(),
+    run: async () => {
+      const record = await store.create();
+      // Not awaited: the caller gets its note while the dialog is open.
+      void newNotesNotice().catch((err) => console.log("[vrtti] new notes notice failed", err));
+      return record;
+    },
   });
   register({
     id: "buffer.close",
@@ -642,6 +684,7 @@ async function start() {
       invite = decodeInvite(text);
       if (!invite) message = "That is not an invite.";
     }
+    const spaces = Object.entries(invite.spaces).map(([id, mode]) => ({ id, mode }));
     const answer = await askInvite({
       title: "Join with an invite",
       confirm: "Join",
@@ -649,8 +692,10 @@ async function start() {
       name: keyring.isSetUp
         ? null
         : { value: invite.name || defaultDeviceName(), hint: "Your other devices show this name. It cannot change later." },
-      spaces: Object.entries(invite.spaces).map(([id, mode]) => ({ id, mode })),
-      hint: "Titles only lists the notes of a space under From server in the sidebar. Open as tabs opens every note.",
+      spaces,
+      hint: spaces.length
+        ? "Titles only lists the notes of a space under From server in the sidebar. Open as tabs opens every note."
+        : "The invite gives no space. Your other device adds this one to spaces in Settings › Devices.",
     });
     if (!answer) return false;
     if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: false, deviceName: answer.name || defaultDeviceName() }))) {
@@ -667,9 +712,11 @@ async function start() {
     busy.close();
     await showNote({
       title: "Joined",
-      text:
-        "This device joined the server. Your other device adds it to the spaces in a few seconds " +
-        "while its invite is open, or else at its next sync.",
+      text: spaces.length
+        ? "This device joined the server. Your other device adds it to the spaces in a few seconds " +
+          "while its invite is open, or else at its next sync."
+        : "This device joined the server. Your other device shows it in Settings › Devices at its next sync, " +
+          "and adds it to spaces there.",
     });
     return true;
   }
@@ -757,8 +804,9 @@ async function start() {
     id: "device.invite",
     title: "Invite a device",
     run: async () => {
+      // A device in no space can invite too: the new device joins the
+      // server, and the grid in Settings › Devices adds it to spaces later.
       const spaces = sync.mySpaces();
-      if (!spaces.length) return false;
       // Titles only by default: an invite with every space as tabs would open
       // every note on the new device at its first sync.
       const answer = await askInvite({
@@ -772,8 +820,10 @@ async function start() {
         tickable: true,
         spaces: spaces.map((id) => ({ id, mode: "list", checked: true })),
         hint:
-          "The new device gets the spaces you tick. Titles only lists their notes under From server " +
-          "in its sidebar; Open as tabs opens every note. The new device can change the modes.",
+          (spaces.length
+            ? "The new device gets the spaces you tick. Titles only lists their notes under From server " +
+              "in its sidebar; Open as tabs opens every note. The new device can change the modes. "
+            : "") + "With no space ticked, the device joins the server only. Add it to spaces later in the grid.",
       });
       if (!answer) return false;
       const busy = showBusy("Making an invite…");
@@ -1102,7 +1152,7 @@ async function start() {
     id: "doc.sync.on",
     title: "Sync this note",
     // No arg means the active buffer, like buffer.close. `{ id, space }` is
-    // the row menu's "Sync to" (§25); a bare id goes to the default space.
+    // the row menu's "Sync to" (§25); a bare id goes to the New notes space.
     run: async (arg) => {
       const { id, space } = typeof arg === "object" && arg ? arg : { id: arg, space: undefined };
       const target = id ?? store.activeId;
@@ -1114,6 +1164,9 @@ async function start() {
         console.log("[vrtti] sync: no server configured");
         return false;
       }
+      // A bare id goes to the New notes space; with Local only, the user picks.
+      const into = space ?? sync.defaultSpace() ?? (await pickSpace("Sync to which space?"));
+      if (!into) return false;
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
       const record = store.get(target);
       // A synced note is encrypted (§27), and a file holds what the device
@@ -1132,7 +1185,7 @@ async function start() {
         if (answer !== "yes") return false;
       }
       try {
-        await store.setSync(target, true, space);
+        await store.setSync(target, true, into);
       } catch (err) {
         console.log("[vrtti] sync on failed", err);
         statusbar.notice("sync failed");
@@ -1177,10 +1230,13 @@ async function start() {
     title: "Sync every open note",
     // The bulk switch of architecture.md §3: it only sets the per-document
     // flag, one document at a time. There is no second kind of sync target.
+    // With "New notes" Local only, the user picks the space in a dialog.
     run: async () => {
-      if (!sync.isConfigured || !sync.defaultSpace()) return false;
+      if (!sync.isConfigured) return false;
+      const space = sync.defaultSpace() ?? (await pickSpace("Sync every open note to"));
+      if (!space) return false;
       for (const record of store.openBuffers()) {
-        if (!record.sync && !record.file) await store.setSync(record.id, true).catch(() => {});
+        if (!record.sync && !record.file) await store.setSync(record.id, true, space).catch(() => {});
       }
       return true;
     },
@@ -1227,16 +1283,10 @@ async function start() {
     run: ({ space, mode }) => sync.setSpaceMode(space, mode),
   });
   register({
-    id: "sync.defaultSpace",
-    title: "Set where new notes sync to",
-    run: (name) => sync.setDefaultSpace(name),
-  });
-  register({
-    id: "sync.defaultToggle",
-    title: "Sync new notes",
-    // Stores an explicit boolean, which is what takes this device off the
-    // platform default for good (architecture.md §13.6).
-    run: () => sync.toggleSyncDefault(),
+    id: "sync.newNotes",
+    title: "Set where new notes go",
+    // A space name, or null for Local only (§27). Only the user runs this.
+    run: (space) => sync.setNewNotes(space ?? null),
   });
   register({
     id: "doc.history",
@@ -1521,6 +1571,11 @@ async function start() {
   // The panel covers the editor, so whatever opens a document from the
   // sidebar (a row, a search hit, the "+") closes it first, or the document
   // opens behind it.
+  register({
+    id: "settings.open",
+    title: "Open settings",
+    run: () => settings.open(),
+  });
   register({
     id: "settings.close",
     title: "Close settings",

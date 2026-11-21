@@ -148,6 +148,19 @@ public sealed class Db
               reply     TEXT,
               mac       TEXT
             );
+
+            -- The device directory: device B vouches for device D, signed by B. The list
+            -- only grows. replaces marks a passphrase switch (by is the old key, device the
+            -- new one); it is stored because the signature covers it. The clients check
+            -- the signatures; the server never does.
+            CREATE TABLE IF NOT EXISTS introductions (
+              device   TEXT    NOT NULL,
+              by       TEXT    NOT NULL,
+              replaces INTEGER NOT NULL DEFAULT 0,
+              sig      TEXT    NOT NULL,
+              created  INTEGER NOT NULL,
+              PRIMARY KEY (device, by)
+            );
             """);
     }
 

@@ -134,9 +134,12 @@ function isEntry(e) {
  * still sign entries, but it cannot place one before its removal.
  * @param {string[]} log  The entry texts, in seq order.
  * @param {string} creator  The pinned entry key of the space's creator.
+ * @param {string} name  The space this log must be. The server picks which
+ *   log it serves under a name; without this check it could serve another
+ *   space of the same creator, where this device is a member too.
  * @returns {SpaceState}
  */
-export function replay(log, creator) {
+export function replay(log, creator, name) {
   /** @type {SpaceState} */
   const state = { seq: 0, members: [], known: [], color: PALETTE[0], creator };
   /** @type {string | null} */
@@ -156,6 +159,7 @@ export function replay(log, creator) {
       if (e.prev !== null) return fail("a first entry has no prev");
       if (e.op !== "create" || e.device !== e.by) return fail("the first entry is a create of its author");
       if (e.by !== creator) return fail("not the pinned creator");
+      if (e.space !== name) return fail("another space");
       space = e.space;
     } else {
       if (e.prev !== hashEntry(log[i - 1])) return fail("prev does not match");
@@ -201,6 +205,74 @@ export function needsReencrypt(encSeq, applied) {
 /** The first palette color no space uses yet; the palette repeats after seven. @param {string[]} used */
 export function nextColor(used) {
   return PALETTE.find((c) => !used.includes(c)) ?? PALETTE[used.length % PALETTE.length];
+}
+
+// ---- The device directory -------------------------------------------------
+//
+// One list of introductions on the server: device `by` vouches for device
+// `device`, signed by `by` (architecture.md §27). It gives no space. Each
+// device follows the introductions from the devices it knows already, so a
+// device it shares no space with can still show in its grid. The list only
+// grows, and each entry stands alone: no order and no chain.
+
+/**
+ * @typedef {{device: string, by: string, replaces: boolean, sig: string}} Introduction
+ *   `replaces`: the introduction of a passphrase switch; `by` is the old key.
+ */
+
+/**
+ * The bytes an introduction's signature covers. The label keeps a space log
+ * signature from passing as an introduction, and the other way around.
+ * @param {string} device @param {string} by @param {boolean} replaces
+ */
+export function vouchText(device, by, replaces) {
+  return "vrtti-vouch\n" + device + "\n" + by + "\n" + (replaces ? "replaces" : "");
+}
+
+/**
+ * `by` vouches for `device`.
+ * @param {string} device @param {string} by
+ * @param {import("./sign.js").Signer} signer  The signer of `by`.
+ * @param {boolean} [replaces]
+ * @returns {Promise<Introduction>}
+ */
+export async function vouch(device, by, signer, replaces = false) {
+  return { device, by, replaces, sig: await sign(vouchText(device, by, replaces), signer) };
+}
+
+/**
+ * Whether an introduction is well formed and signed by its `by`. Only the
+ * clients check this; the server stores what devices send.
+ * @param {any} e @returns {e is Introduction}
+ */
+export function checkIntroduction(e) {
+  if (!e || typeof e !== "object" || typeof e.sig !== "string" || typeof e.replaces !== "boolean") return false;
+  const author = parseEntryKey(e.by);
+  if (!author || !parseEntryKey(e.device) || e.device === e.by) return false;
+  return verify(e.sig, vouchText(e.device, e.by, e.replaces), author.signKey);
+}
+
+/**
+ * The known devices: the start set (this device, the members of its space
+ * logs), and each device an introduction from a known device names, until
+ * nothing changes. The introductions must be checked already
+ * (checkIntroduction); a cycle ends because a key is added once.
+ * @param {Iterable<string>} start @param {Introduction[]} introductions
+ * @returns {Set<string>}
+ */
+export function knownDevices(start, introductions) {
+  const known = new Set(start);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const e of introductions) {
+      if (known.has(e.by) && !known.has(e.device)) {
+        known.add(e.device);
+        grew = true;
+      }
+    }
+  }
+  return known;
 }
 
 // ---- The join code --------------------------------------------------------

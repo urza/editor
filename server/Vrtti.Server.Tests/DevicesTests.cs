@@ -163,6 +163,21 @@ public class DevicesTests
     }
 
     [Fact]
+    public async Task A_join_with_no_space_registers_the_device_only()
+    {
+        using var app = new TestApp();
+        var phone = await app.Register("phone");
+
+        using var created = await CreateJoin(phone, "FFF", []);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        using var redeemed = await Redeem(app, "FFF", Verifier, "dev", NewToken());
+        Assert.Equal(HttpStatusCode.Created, redeemed.StatusCode);
+
+        var pending = Assert.Single((await phone.Http.GetFromJsonAsync<List<PendingJoin>>("/api/joins"))!);
+        Assert.Empty(pending.Spaces);
+    }
+
+    [Fact]
     public async Task Five_wrong_verifiers_end_the_join()
     {
         using var app = new TestApp();
