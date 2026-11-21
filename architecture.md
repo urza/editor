@@ -2571,7 +2571,9 @@ file as the only survivor. The trash keeps the record for 30 days.
   good. No manual "empty trash" in this unit.
 - **Settings › Trash** lists the trashed notes (title, deleted when) with
   a "restore" button each, through the `list` row of §21; the section
-  hides while the trash is empty. The row count follows the store's
+  hides while the trash is empty. **Since 2026-11-21** the list is the last
+  row of Settings › Storage, and only the row hides; the Storage status
+  adds the count ("persistent · 2 deleted"). The row count follows the store's
   "change" event while the panel is open.
 - **Other windows** learn of a trash or a restore through the ordinary
   `buffer` message: the record travels with its `trashedAt`.
