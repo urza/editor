@@ -65,11 +65,11 @@ export function mountThumb() {
 
   newButton.addEventListener("click", () => {
     set(false);
-    // The path of the sidebar "+": settings close before the new note takes
-    // the focus, the note list after. The user is about to type.
+    // Settings and the note list close before the new note activates, so the
+    // editor sees the list is already gone and takes focus for typing.
     run("settings.close");
-    run("buffer.new");
     run("sidebar.autoclose");
+    run("buffer.new");
   });
 
   listButton.addEventListener("click", () => {
@@ -93,9 +93,9 @@ export function mountThumb() {
 
   settingsButton.addEventListener("click", () => {
     set(false);
-    // The list first: it sits above the settings panel, and the panel would
-    // open behind it.
-    run("sidebar.autoclose");
+    // On a phone the settings panel sits above the note list (app.css,
+    // z-index 25 over 20), so the list stays open behind it and closing
+    // Settings returns to whichever screen the user came from.
     run("settings.toggle");
   });
 

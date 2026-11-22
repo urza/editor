@@ -36,6 +36,7 @@ import {
 } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { run } from "../commands/registry.js";
+import { phoneListOpen } from "../ui/shell.js";
 import { multipleCursors, selectAllOccurrences, splitSelectionIntoLines } from "./cursors.js";
 import { twemoji } from "./emoji.js";
 import { marks } from "./markdown.js";
@@ -552,7 +553,10 @@ export function mountEditor(host, store) {
     // not show the text (the lock event drops it too, this is the guard).
     if (store.isPinLocked(id)) {
       placeholderId = id;
-      askPin(id);
+      // Keep the locked placeholder quiet behind the phone note list (cold
+      // start onto the list, or swipe-closing the active note); tapping the
+      // row closes the list first and re-activates it with the PIN pad.
+      if (!phoneListOpen()) askPin(id);
       return createLockedState(PIN_TEXT);
     }
     const cached = states.get(id);
@@ -585,7 +589,7 @@ export function mountEditor(host, store) {
         placeholderId = null;
         view.setState(state);
         restoreScroll(id);
-        view.focus();
+        if (!phoneListOpen()) view.focus();
         // The document is finally up, so a search hit can be selected in it.
         runPendingReveal(id);
       },
@@ -617,7 +621,7 @@ export function mountEditor(host, store) {
           }
           return;
         }
-        askUnlock(id);
+        if (!phoneListOpen()) askUnlock(id);
       }
     );
     // Blank while a plain file is read: "Locked." would be a false claim for
@@ -690,7 +694,9 @@ export function mountEditor(host, store) {
     }
     view.setState(stateFor(id));
     if (placeholderId !== id) restoreScroll(id);
-    view.focus();
+    // Do not focus a hidden editor behind the phone note list: it steals focus
+    // from the list and can pull up the on-screen keyboard.
+    if (!phoneListOpen()) view.focus();
     runPendingReveal(id);
   });
 

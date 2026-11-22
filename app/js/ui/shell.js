@@ -8,17 +8,38 @@
 // Phone mode (the class `phone` on <html>, set by the inline script in
 // index.html) is the narrow layout drawn another way: the drawer fills the
 // screen as the note list, and the thumb button replaces both hamburgers
-// (ui/thumb.js). The state and every command below are the same, which is
-// why nothing in this file asks which of the two is on screen.
+// (ui/thumb.js). The state and every command below are the same; only
+// phone-location persistence (vrtti.phoneListOpen) and Android Back
+// (watchBack) branch on phoneMode().
 //
 // The CSS defaults match the breakpoint default (open when wide, closed when
-// narrow) with no class present, so the first paint is already right and the
-// mount below never causes a flash.
+// narrow), and an inline script right after <div id="app"> in index.html
+// replays `sidebar-open` in phone mode when vrtti.phoneListOpen is "1", so
+// the first paint is already right and the mount below never causes a flash.
 
-import { register } from "../commands/registry.js";
+import { register, run } from "../commands/registry.js";
 
 const NARROW = "(max-width: 700px)";
 const OPEN_KEY = "vrtti.sidebarOpen";
+const PHONE_LIST_KEY = "vrtti.phoneListOpen";
+
+/** @param {string} key */
+function readStored(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null; // private mode can throw on access
+  }
+}
+
+/** @param {string} key @param {string} value */
+function writeStored(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Private mode: the choice still applies for this session.
+  }
+}
 
 /**
  * Is the phone layout on? Read from the class each time, never kept: the
@@ -28,6 +49,15 @@ const OPEN_KEY = "vrtti.sidebarOpen";
  */
 export function phoneMode() {
   return document.documentElement.classList.contains("phone");
+}
+
+/**
+ * Is the full-screen phone note list covering the editor right now? Read
+ * from the DOM classes, like phoneMode() above, so callers never hold a
+ * stale copy and need no reference to the mounted shell controller.
+ */
+export function phoneListOpen() {
+  return phoneMode() && Boolean(document.getElementById("app")?.classList.contains("sidebar-open"));
 }
 
 /**
@@ -97,9 +127,16 @@ export function mountShell() {
 
   const narrow = () => window.matchMedia(NARROW).matches;
 
-  // The stored preference is a desktop one. A phone always starts on the
-  // editor: restoring an open drawer would hide the text the app is for.
-  let open = narrow() ? false : localStorage.getItem(OPEN_KEY) !== "0";
+  // Wide screens remember their docked sidebar preference (OPEN_KEY). Phone
+  // mode remembers whether the user left on the full-screen note list or on a
+  // note (PHONE_LIST_KEY, defaulting to the editor on a fresh install). Narrow
+  // desktop windows stay on the temporary drawer and always start closed so a
+  // drawer never hides the text on launch.
+  let open = phoneMode()
+    ? readStored(PHONE_LIST_KEY) === "1"
+    : narrow()
+      ? false
+      : readStored(OPEN_KEY) !== "0";
 
   function paint() {
     app.classList.toggle("sidebar-open", open);
@@ -111,26 +148,41 @@ export function mountShell() {
     for (const button of toggles) button.setAttribute("aria-expanded", String(open));
   }
 
-  // Back closes the open note list on a phone (watchBack above). Every way
-  // the list opens or closes goes through set(), so this is the one place.
+  // One-step Android Back between the note list and the editor (watchBack
+  // above). Never armed at cold start (Back exits the app) and never armed
+  // when Back itself made the switch (a second Back exits the app). Every
+  // path that opens or closes the list goes through set(), so this is the
+  // one place.
   let stopBack = () => {};
 
-  /** @param {boolean} next */
-  function set(next) {
+  /** @param {boolean} next @param {{fromBack?: boolean}} [opts] */
+  function set(next, { fromBack = false } = {}) {
     if (open === next) return;
+    const previous = open;
     open = next;
-    if (!narrow()) localStorage.setItem(OPEN_KEY, open ? "1" : "0");
+    if (phoneMode()) writeStored(PHONE_LIST_KEY, open ? "1" : "0");
+    else if (!narrow()) writeStored(OPEN_KEY, open ? "1" : "0");
     paint();
     stopBack();
-    stopBack = open ? watchBack(() => set(false)) : () => {};
+    stopBack =
+      !fromBack && phoneMode() ? watchBack(() => set(previous, { fromBack: true })) : () => {};
+    if (fromBack && phoneMode()) {
+      // Returning to the list scrolls the active row into view and moves focus
+      // off the hidden editor; returning to the note moves focus to the thumb
+      // button rather than the editor so the keyboard does not pop up.
+      if (open) run("sidebar.focus");
+      else document.getElementById("new-fab")?.focus();
+    }
   }
 
   function toggle() {
     set(!open);
   }
 
-  // Called by the sidebar after a row opens a document. On a phone the drawer
-  // covers the editor, so leaving it open would hide the file just opened.
+  // Called before opening a document from the sidebar, search, or thumb menu.
+  // On narrow screens the drawer or full-screen note list covers the editor,
+  // so closing it first lets the editor see it is visible when the note
+  // activates.
   function closeIfNarrow() {
     if (narrow()) set(false);
   }

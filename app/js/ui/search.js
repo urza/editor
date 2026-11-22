@@ -477,6 +477,10 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     // element it was taken from, which would undo the editor's own focus.
     run("settings.close");
     if (id) {
+      // On a phone the note list covers the editor, so close it before
+      // activating so the editor sees it is visible (focus and PIN prompt).
+      // A no-op on a PC.
+      run("sidebar.autoclose");
       // Reopen, not activate: the rows are a snapshot, and the tab may have
       // been closed since the search ran. reopen activates an open tab, puts
       // a Recent buffer back into the tabs, and for a buffer another window
@@ -491,6 +495,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       // The results outlived their run (a folder closed, a new search): the
       // row is stale and there is nothing to open.
       if (!handle) return;
+      run("sidebar.autoclose");
       const folderName = folders.folders.get(folderId)?.name ?? "";
       // The same path string the sidebar builds, which is also the dedupe key
       // above: the two must agree or a file would be searched twice.
@@ -505,9 +510,6 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       if (workspaces.ownerOf(record.id) !== workspaces.id) return;
       if (at) editor.reveal(record.id, at);
     }
-    // On a phone the sidebar is a drawer over the editor, so it has to get out
-    // of the way of the line it just opened. A no-op on a PC.
-    run("sidebar.autoclose");
   }
 
   // One delegated listener, not one per row: a run can put a thousand rows on

@@ -67,7 +67,7 @@ import { mountTitle } from "./ui/title.js";
 import { mountShortcuts } from "./ui/shortcuts.js";
 import { closeWorkspaceWindow, mountDesktop, openWorkspaceWindow } from "./ui/desktop.js";
 import { mountResizer } from "./ui/resizer.js";
-import { mountShell } from "./ui/shell.js";
+import { mountShell, phoneMode } from "./ui/shell.js";
 import { mountTextSize } from "./ui/textsize.js";
 import { mountZoom } from "./ui/zoom.js";
 import { mountWordWrap } from "./ui/wordwrap.js";
@@ -1595,7 +1595,7 @@ async function start() {
 
   // Before the sidebar: its rows dispatch sidebar.autoclose, and before
   // mountShortcuts, which snapshots the chord table once.
-  mountShell();
+  const shell = mountShell();
   mountNewButton();
   mountThumb();
   mountSidebar(store, folders, sync);
@@ -1625,6 +1625,10 @@ async function start() {
   mountResizer();
 
   await store.start();
+  // When phone mode starts back on the note list, focus the active row the
+  // same way the thumb menu's list button does (scrolls it into view and
+  // keeps focus off the editor underneath).
+  if (phoneMode() && shell.isOpen()) run("sidebar.focus");
   folders.start();
   workspaces.start({ isDesktop });
   // After the store is up and listening to the keyring: an answer flips the
