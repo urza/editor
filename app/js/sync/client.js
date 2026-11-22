@@ -1676,6 +1676,7 @@ export function createSyncClient({ store, keyring }) {
     revision,
     syncDefaultOn,
     // Spaces (architecture.md §25, §27).
+    isMine,
     modeOf,
     defaultSpace,
     recipients,

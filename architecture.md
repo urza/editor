@@ -468,6 +468,11 @@ every icon file from one of them.
 
 ### Recent (user decision, 2026-09-24, shipped)
 
+**Partly replaced by §28 (2026-11-22).** `Recent` now holds closed local notes
+and local file links only, expires after 30 days, and lives in the bottom icon
+bar's shared drawer instead of its own stacked `#recent` block. The empty-close
+discard rule below stays.
+
 The sidebar stays simple; the only organization change for now is what
 Recent does.
 
@@ -2571,6 +2576,12 @@ stale recovery self-approval.
 
 ## 22. Local trash (agreed 2026-09-24)
 
+**Extended and moved to the sidebar by §28 (2026-11-22).** Trash now also
+catches explicit user deletes (`Move to trash`) and 30-day expired local
+`Recent` notes, supports `Restore to <space>` with a fresh `docId` (or offline
+in-place undo), and moved out of Settings › Storage into the sidebar bottom
+icon bar.
+
 A `deleted` tombstone from the server removed the record on every device
 at once. A forged tombstone (a server in the wrong hands, §21's threat
 list) or a mistaken one therefore wiped a note everywhere, with the disk
@@ -3017,7 +3028,8 @@ encryption, and the VM is simply never paired into the keyring.
   one addition to the `list` row of §21. "New notes go to" is a text
   row; a name typed there that the server has not seen is a new space.
   Both rows show only when a server is configured, like Test connection.
-- **The sidebar block.** `#fromserver` sits between `#recent` and the
+- **The sidebar block.** (Replaced by per-space bottom bar drawers and Space
+  Windows in §28.) `#fromserver` sits between `#recent` and the
   settings button, the same shape and rules as Recent (§9): pinned,
   closed at start in every window, nothing persists the state, capped at
   half the sidebar with its own scroll, hidden while empty and under
@@ -3576,3 +3588,164 @@ device without a PIN; the upgrade from a v1 keyring and a server-token config
 with plain rows, an encrypted row the device never held, and a dev machine
 that joins only `dev-work`. 82 checks, all green on 2026-11-20. The scripts lived in
 the session scratchpad and die with the sandbox.
+
+## 28. Note lifecycle, sidebar redesign, and Space Windows (agreed 2026-11-22)
+
+Closing a tab used to leave every note in `Recent` forever, mixed local and
+synced notes together, offered no explicit delete action for non-empty notes,
+and kept opened `Titles only` notes on disk permanently. Trash sat inside
+Settings › Storage, and all `Titles only` spaces shared one `From server` list.
+
+This change separates close from delete, splits `Recent` from per-space
+drawers, adds zero-confirmation delete workflows on desktop, brings Trash into
+the sidebar, adapts phone mode (Mode B), and adds dedicated desktop Space
+Windows. No server (`server/`), Tauri shell (`src-tauri/`), or IndexedDB schema
+version changes are required (IndexedDB remains v8 with optional record fields).
+
+### Data model additions (`storage/idb.js`, `model/lifecycle.js`)
+
+- `BufferRecord.closedAt?`: timestamp stamped in `close()` and on dissolve of
+  local tabs; cleared in `reopen()`, `restore()`, and `clearClosedAt()`.
+- `BufferRecord.originSpace?`: space name recorded whenever a synced note
+  enters Trash (explicit `Move to trash`, remote `deleted`, or `loseSpace`).
+- `SyncState.priorDirty?`: whether unsent local edits existed before an offline
+  user trash queued `tombstone: "deleted"`.
+- `SyncState.forget?`: internal marker on a `detached` tombstone produced by
+  `Remove from list` on a synced file so `afterPush()` removes the hidden row.
+- `RemoteStub.pin?`: PIN lock mark kept on stubs so stub rows render 🔒 and
+  never leak a first line.
+- `WorkspaceRecord.space?`: space name owned by a dedicated desktop Space
+  Window.
+- `model/lifecycle.js` holds pure helpers (`RECENT_KEEP`, `TRASH_KEEP`,
+  `spaceBadge`, `isRecentExpired`, `stubTitle`, `daysLeft`).
+
+### Lifecycle rules (`model/docs.js`)
+
+- **Close (`Ctrl+W` / `Alt+W`, `×`, phone swipe-left):** always local and
+  instant. Empty scratch notes still discard immediately. Local scratch notes
+  and local files stamp `closedAt` and enter `Recent` (`recentBuffers()`).
+  Synced notes leave `Recent` and appear in their space drawer
+  (`closedSpaceBuffers(space)`).
+- **30-day `Recent` expiry (`expireOldRecent`):** runs once at startup before
+  `emptyOldTrash()` so existing notes older than 30 days (`closedAt ??
+  updatedAt`) enter 30-day Trash instead of deleting outright. Clean closed
+  local file links older than 30 days forget their IndexedDB record and handle
+  without touching disk. Any record with `file.unwritten` is skipped.
+- **`Titles only` body drop (`demoteToStub`):** closing or dissolving a clean
+  non-file synced note in a `list` space writes its `RemoteStub` first and then
+  forgets the local buffer record. Dirty notes stay cached until `afterPush()`
+  lands, then demote automatically.
+- **PIN stub privacy:** `stubTitle({ title, line, pin })` returns only an
+  explicit user `title` (or `""`) when `pin` is true. `applyStub()`,
+  `unsealPending()`, and `demoteToStub()` all call `stubTitle()` and preserve
+  `stub.pin`, so a PIN-locked note never leaks its first line even when closed
+  while the PIN is unlocked.
+- **Explicit `Move to trash` / `Remove from list` (`trashBuffer`, `trashRemoteStub`):**
+  no confirmation dialog; 30-day Trash is the safety net.
+  - Local scratch notes set `trashedAt` and close their tab.
+  - Synced notes set `trashedAt`, `originSpace`, `sync.priorDirty`, and
+    `sync.tombstone = "deleted"`, keeping a 30-day Trash copy on the deleting
+    device and on member devices holding a local record; `Titles only` devices
+    holding only a stub drop the stub.
+  - Unopened `Titles only` stubs fetch the document while online so the
+    deleting device keeps a 30-day Trash copy before pushing `deleted`; offline
+    refuses with a status notice.
+  - File-backed notes never delete files on disk. `Remove from list` forgets
+    the record and handle (pushing `detached` first if synced). Records with
+    `file.unwritten` are blocked everywhere (`rowMenu`, Delete mode,
+    `Shift+click ×`, `doc.trash`) with `"Unsaved text is not on disk; reconnect
+    or Unlink file first"`.
+  - Trashing or permanently deleting a PIN-locked note asks the PIN first.
+
+### Offline sync state machine and Restore (`model/docs.js`)
+
+`docs.js` separates `emptyDiscard` (`tombstone === "deleted" && !trashedAt`)
+from `userTrashed` (`tombstone === "deleted" && trashedAt`):
+
+- `dirtyRecords()` includes `userTrashed` tombstones. When `afterPush()` lands
+  a `deleted` tombstone, `userTrashed` strips `record.sync` and stays in 30-day
+  Trash, while `emptyDiscard` (including offline `Delete permanently`) calls
+  `forget()`.
+- Concurrent remote `deleted` on a `userTrashed` record skips conflict forking
+  and settles the record into local 30-day Trash.
+- Concurrent newer remote `text` on a `userTrashed` record wins over the unsent
+  offline delete: clears `trashedAt` and `originSpace`, adopts the remote
+  revision, and routes the note back to its live Space Window, `Open` (`tab`),
+  or space stub (`list`).
+- Settled local Trash (`trashedAt && !sync`) ignores incoming remote changes.
+- **`Restore to <space>` (`restore(id, { toSpace: true })`):** while offline
+  (`userTrashed`), cancels the pending tombstone in place and restores
+  `sync.dirty = priorDirty`. Once settled (`!record.sync`), decrypts the copy,
+  mints a fresh UUID `docId`, calls `sealForSpace()`, opens it in `Open`, and
+  forgets the old trashed id. Minting a fresh `docId` eliminates the 409 loop
+  against the old server tombstone.
+- **`Restore as local` / `Restore` (`toSpace: false`):** writes a fresh UUID
+  local copy into `Recent` (so a later `Sync to <space>` pushes cleanly without
+  409). If an offline `deleted` tombstone was still pending, the old record
+  becomes a hidden empty tombstone so the delete still reaches the server.
+- **`Delete permanently` (`deleteForever`):** removes settled Trash immediately
+  or converts an offline pending delete into a hidden empty tombstone.
+
+### Desktop sidebar redesign (`index.html`, `app.css`, `ui/menu.js`, `ui/sidebar.js`, `ui/settings.js`)
+
+- **Top `#open-actions` (6 buttons):** `search`, `file`, `folder`, `window`,
+  `view`, `delete` (trash-can icon). Labels collapse to icons via `@container`.
+- **Zero-shift Delete mode:** clicking `#act-del` adds `#sidebar.delete-mode`
+  (2px inset red edge), shows `#delete-pill` inside the fixed-height
+  `.heading-row`, and swaps `Open` row `×` buttons for same-sized red trash
+  icons (0px layout shift). Clicking a trash icon or pressing `Ctrl+W` /
+  `Alt+W` moves the note to Trash. Exits on `Escape`, second toggle click, pill
+  click, editor text edits (`editorEvents` `docChanged`), or reload.
+- **`Shift+click ×`:** holding `Shift` tints `×` red on hover and moves the
+  clicked row to Trash instead of closing.
+- **Stay-open `View` space filter:** per-window in-memory filter over `Local &
+  files` and spaces, with checkboxes, open counts, hover `only`, and header
+  `Show all`. Highlights `#act-view` in caret orange and shows `(visible/total)`
+  beside `Open`. Creating, reopening, moving, or restoring a note in a hidden
+  space auto-unhides it. Closing or trashing the active tab prefers the next
+  visible tab (`store.setVisibleFilter`).
+- **Bottom icon bar and single shared drawer:** replaces stacked `#recent`,
+  `#fromserver`, and `#sidebar-settings` with `#bottom-bar` (`Recent` |
+  colored space initial badges from `spaceBadge()` | `Trash`, `Settings`) and
+  one `#bottom-drawer` capped at 50% height with a 2px accent border. Empty
+  `Recent`, empty spaces, and empty `Trash` hide from the bar. Drawer rows
+  offer hover trash (in `Recent`/space drawers) or hover `↩` restore (in
+  `Trash`), plus `⋯` menus on all rows including stubs and trashed notes.
+  Trashed notes have no read-only editor preview. `Deleted notes` is removed
+  from `Settings › Storage`.
+
+### Phone Mode B (`app.css`, `ui/sidebar.js`)
+
+- Swipe-left on `Open` remains Close only. Delete mode, `View`, `Settings` gear
+  in the bottom bar, and Space Windows stay hidden on phone.
+- `#bottom-bar` sits directly above `--list-bar` with 44px touch targets and
+  count badges for non-empty `Recent`, space badges, and `Trash`.
+- Tapping a bottom bar icon switches `#sidebar-scroll` full-screen into
+  `#phone-view` with a `← Open` header button and arms `watchBack` so Android
+  Back returns to `Open` before closing the note list. Unopened server stubs
+  render as single-line rows tagged `server` and fetch on tap; tapping a Trash
+  row opens its `⋯` restore/delete menu.
+
+### Dedicated Space Windows (desktop only; `model/workspace.js`, `model/docs.js`, `main.js`, `ui/desktop.js`, `ui/title.js`, `ui/sidebar.js`)
+
+- Clicking the space drawer's `Open in new window` icon runs
+  `workspace.openSpace(space)`. If a live window already owns `space`
+  (`workspaces.spaceOwner(space)`), it focuses that window instead of opening a
+  second one.
+- Otherwise the caller flushes edits and calls `store.releaseTabs()` on its
+  open tabs for `space` before calling `workspaces.create({ space, tabs })`,
+  preventing `resolveDoubleTake` from stripping tabs off the new window.
+- On boot, the Space Window calls `store.fetchSpaceStubs()` to pull remaining
+  server stubs of `space` into its tabs before `store.start()` picks an active
+  note (notifying if offline).
+- Inside a Space Window: the sidebar shows `#space-banner` and hides `#act-view`;
+  the window title reads `<buffer> (<space>) - vrtti`; `+` / `Ctrl+N` creates
+  notes in `workspace.space` (overriding `New notes`); `Ctrl+Shift+F` searches
+  every tab of the space; incoming remote changes for `space` route straight to
+  the live Space Window even for `Titles only` spaces.
+- Closing the Space Window dissolves the workspace (`finishDissolve`), returning
+  notes to the space drawer and demoting clean `Titles only` notes back to
+  stubs without cluttering Main. Quitting the desktop app keeps the workspace
+  record; `ui/desktop.js` guards `reopenAtLaunch()` with `!record.space` so a
+  Space Window is never dissolved for starting with blank tabs. Losing a space
+  in `loseSpace()` dissolves and closes its Space Window.

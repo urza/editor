@@ -14,21 +14,24 @@ import { setWindowTitle } from "./desktop.js";
 
 /**
  * @param {ReturnType<typeof import("../model/docs.js").createDocStore>} store
- * @param {{secondary?: boolean}} [options] secondary: this window is not main.
+ * @param {{secondary?: boolean, space?: string}} [options]
+ *   secondary: this window is not main. space: dedicated Space Window name (§28).
  */
-export function mountTitle(store, { secondary = false } = {}) {
-  const app = secondary ? "vrtti session" : "vrtti";
+export function mountTitle(store, { secondary = false, space = "" } = {}) {
+  const app = space ? "vrtti" : secondary ? "vrtti session" : "vrtti";
   let last = "";
 
   function render() {
     const record = store.activeId ? store.get(store.activeId) : undefined;
-    let text = app;
+    let text = space ? "(" + space + ") - " + app : app;
     if (record) {
-      // The folder-relative path, when the file came from a folder; the
-      // absolute path is not available to a page (architecture.md §2).
-      const place = record.file?.path && record.file.path !== record.file.name
-        ? " (" + record.file.path + ")"
-        : "";
+      // A Space Window always marks its space name; elsewhere show the
+      // folder-relative path when the file came from a folder (§2, §28).
+      const place = space
+        ? " (" + space + ")"
+        : record.file?.path && record.file.path !== record.file.name
+          ? " (" + record.file.path + ")"
+          : "";
       text = titleOf(record) + place + " - " + app;
     }
     // Every keystroke emits "change"; only a changed title reaches the shell.

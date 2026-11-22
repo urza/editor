@@ -28,6 +28,7 @@ import {
 } from "./model/capabilities.js";
 import { createDocStore, KEYRING_ID, titleOf } from "./model/docs.js";
 import { createFolderStore } from "./model/folders.js";
+import { on, post } from "./model/channel.js";
 import { deviceId } from "./model/device.js";
 import { createWorkspaces, workspaceIdFromUrl } from "./model/workspace.js";
 import { register, run } from "./commands/registry.js";
@@ -244,14 +245,22 @@ async function start() {
     return choose({ title, options: spaces.map((space) => ({ id: space, label: space })) });
   }
 
+  // Declared here and assigned when the sidebar mounts below. Commands run
+  // long after startup, so the controller is always present when they execute.
+  /** @type {ReturnType<typeof mountSidebar> | undefined} */
+  let sidebar;
+
   register({
     id: "buffer.new",
     title: "New buffer",
     keys: "Alt+KeyN",
     run: async () => {
       const record = await store.create();
+      sidebar?.unhideFor(record);
       // Not awaited: the caller gets its note while the dialog is open.
-      void newNotesNotice().catch((err) => console.log("[vrtti] new notes notice failed", err));
+      if (!workspaces.current().space) {
+        void newNotesNotice().catch((err) => console.log("[vrtti] new notes notice failed", err));
+      }
       return record;
     },
   });
@@ -259,10 +268,13 @@ async function start() {
     id: "buffer.close",
     title: "Close buffer",
     keys: "Alt+KeyW",
-    // No arg means the active buffer (the shortcut path).
+    // No arg means the active buffer (the shortcut path). While desktop
+    // Delete mode is active, Ctrl+W / Alt+W trashes instead of closing (§28).
     run: (id) => {
       const target = id ?? store.activeId;
-      if (target) return store.close(target);
+      if (!target) return;
+      if (id === undefined && sidebar?.isDeleteMode()) return run("doc.trash", target);
+      return store.close(target);
     },
   });
   // Ctrl+S in the desktop shell (desktop-wrapper-tauri-vs-wails.md §11). The
@@ -289,7 +301,11 @@ async function start() {
   register({
     id: "buffer.reopen",
     title: "Reopen buffer",
-    run: (id) => store.reopen(id),
+    run: (id) => {
+      const record = store.get(id);
+      if (record) sidebar?.unhideFor(record);
+      return store.reopen(id);
+    },
   });
   // The sidebar drag (architecture.md §9). `before` null puts the buffer last.
   register({
@@ -298,8 +314,8 @@ async function start() {
     run: ({ id, before }) => store.moveTab(id, before),
   });
 
-  // Windows (architecture.md §14): a workspace is one window's context. The
-  // browser opens a tab for it; the shell opens a native window (unit 14.4).
+  // Windows (architecture.md §14, §28): a workspace is one window's context.
+  // The browser opens a tab for it; the shell opens a native window (unit 14.4).
   // The command ids say workspace, the labels say window (§14, Naming).
   register({
     id: "workspace.new",
@@ -307,6 +323,37 @@ async function start() {
     keys: "Alt+Shift+KeyN",
     run: async () => {
       const workspace = await workspaces.create();
+      openWorkspaceWindow(workspace.id);
+      return workspace;
+    },
+  });
+  register({
+    id: "workspace.openSpace",
+    title: "Open space in new window",
+    run: async (space) => {
+      if (!space || !sync.isMine(space)) return null;
+      const existing = workspaces.spaceOwner(space);
+      if (existing) {
+        const live = await workspaces.liveSet();
+        if (live.has(existing)) {
+          if (existing !== workspaces.id) post("focus", { ws: existing });
+          return existing;
+        }
+        await workspaces.dissolve(existing);
+      }
+      // Flush pending edits and release this window's tabs of `space` BEFORE
+      // creating the Space Window record so resolveDoubleTake never strips
+      // tabs from the newly opened window (§28).
+      await store.flushAll();
+      const moved = store
+        .openBuffers()
+        .filter((b) => b.sync?.space === space && !b.trashedAt && !b.sync.tombstone)
+        .map((b) => b.id);
+      if (moved.length) await store.releaseTabs(moved);
+      const closed = store.closedSpaceBuffers(space).map((b) => b.id);
+      const tabs = [...new Set([...moved, ...closed])];
+      if (tabs.length) await store.clearClosedAt(tabs);
+      const workspace = await workspaces.create({ space, tabs });
       openWorkspaceWindow(workspace.id);
       return workspace;
     },
@@ -1186,6 +1233,7 @@ async function start() {
       }
       try {
         await store.setSync(target, true, into);
+        sidebar?.unhideFor(store.get(target));
       } catch (err) {
         console.log("[vrtti] sync on failed", err);
         statusbar.notice("sync failed");
@@ -1203,6 +1251,7 @@ async function start() {
       const target = id ?? store.activeId;
       if (!target) return false;
       await store.setSync(target, false);
+      sidebar?.unhideFor(store.get(target));
       return true;
     },
   });
@@ -1212,12 +1261,102 @@ async function start() {
     run: async ({ id, space }) => {
       if (!keyring.isUnlocked && !(await run("crypto.unlock"))) return false;
       try {
-        return await store.move(id, space);
+        const ok = await store.move(id, space);
+        if (ok) sidebar?.unhideFor(store.get(id));
+        return ok;
       } catch (err) {
         console.log("[vrtti] move failed", err);
         statusbar.notice("move failed");
         return false;
       }
+    },
+  });
+  // Explicit Trash, Restore, Delete permanently, and unopened stub trash (§28).
+  register({
+    id: "doc.trash",
+    title: "Move note to trash",
+    run: async (id) => {
+      const target = id ?? store.activeId;
+      const record = target ? store.get(target) : undefined;
+      if (!record || !target) return false;
+      if (record.kind === "file" && record.file?.unwritten) {
+        statusbar.notice("Unsaved text is not on disk; reconnect or Unlink file first");
+        return false;
+      }
+      if (store.isPinLocked(target) && !(await pin.allow("Moving a locked note needs the PIN"))) {
+        return false;
+      }
+      const isFile = record.kind === "file";
+      const ok = await store.trashBuffer(target);
+      if (!ok) return false;
+      statusbar.notice(isFile ? "removed from list" : "moved to trash");
+      return true;
+    },
+  });
+  register({
+    id: "doc.restore",
+    title: "Restore note from trash",
+    run: async (arg) => {
+      const { id, toSpace = false } =
+        typeof arg === "object" && arg ? arg : { id: arg, toSpace: false };
+      if (!id) return false;
+      const record = store.get(id);
+      if (!record || !record.trashedAt) return false;
+      const needsKey = Boolean(record.enc || (toSpace && !record.sync));
+      if (needsKey && keyring.isSetUp && !keyring.isUnlocked && !(await run("crypto.unlock"))) {
+        return false;
+      }
+      const targetSpace = toSpace ? record.originSpace : undefined;
+      try {
+        const restored = await store.restore(id, { toSpace });
+        if (!restored) return false;
+        if (toSpace) sidebar?.unhideFor(restored);
+        statusbar.notice(
+          toSpace && targetSpace ? "restored to " + targetSpace : "restored to Recent"
+        );
+        return restored;
+      } catch (err) {
+        console.log("[vrtti] restore failed", err);
+        statusbar.notice("restore failed");
+        return false;
+      }
+    },
+  });
+  register({
+    id: "doc.deleteForever",
+    title: "Delete note permanently",
+    run: async (id) => {
+      if (!id) return false;
+      if (store.isPinLocked(id) && !(await pin.allow("Deleting a locked note needs the PIN"))) {
+        return false;
+      }
+      const ok = await store.deleteForever(id);
+      if (ok) statusbar.notice("deleted permanently");
+      return ok;
+    },
+  });
+  register({
+    id: "remote.trash",
+    title: "Move server note to trash",
+    run: async (id) => {
+      if (!id || !sync.isConfigured) return false;
+      const stub = store.remotes().find((s) => s.id === id);
+      if (!stub) return false;
+      if (stub.pin && !pin.isOpen && !(await pin.allow("Moving a locked note needs the PIN"))) {
+        return false;
+      }
+      if (keyring.isSetUp && !keyring.isUnlocked && !(await run("crypto.unlock"))) {
+        return false;
+      }
+      const result = await store.trashRemoteStub(id, (docId) => sync.fetchDoc(docId));
+      if (!result.ok) {
+        if (result.reason === "offline") {
+          statusbar.notice("offline: cannot trash unopened server note");
+        }
+        return false;
+      }
+      statusbar.notice(result.alreadyGone ? "already removed on server" : "moved to trash");
+      return true;
     },
   });
   register({
@@ -1273,6 +1412,7 @@ async function start() {
         return true;
       }
       await store.createFromChange(change, workspaces.id);
+      sidebar?.unhideFor(store.get(id));
       await run("buffer.activate", id);
       return true;
     },
@@ -1598,7 +1738,7 @@ async function start() {
   const shell = mountShell();
   mountNewButton();
   mountThumb();
-  mountSidebar(store, folders, sync);
+  sidebar = mountSidebar(store, folders, sync, workspaces);
   const statusbar = mountStatusbar(store, sync, zoom, editor.view);
   const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
   // After the status bar exists: autoUpdate reports through it.
@@ -1606,7 +1746,10 @@ async function start() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") autoUpdate();
   });
-  mountTitle(store, { secondary: workspaces.id !== MAIN_WORKSPACE });
+  mountTitle(store, {
+    secondary: workspaces.id !== MAIN_WORKSPACE,
+    space: workspaces.current().space,
+  });
   mountShortcuts();
   mountDesktop({
     workspaces,
@@ -1623,6 +1766,28 @@ async function start() {
     },
   });
   mountResizer();
+
+  // Losing membership in a Space Window's space closes that window (§28).
+  store.events.addEventListener("space-window-close", () => {
+    closeWorkspaceWindow(workspaces.id);
+  });
+  on("close-window", ({ ws }) => {
+    if (ws === workspaces.id) closeWorkspaceWindow(workspaces.id);
+  });
+
+  // On Space Window boot, fetch any remaining server stubs of that space into
+  // this window's tabs before store.start() picks an active buffer (§28).
+  const ownSpace = workspaces.current().space;
+  if (ownSpace && sync.isConfigured) {
+    const fetched = await store.fetchSpaceStubs(ownSpace, (id) => sync.fetchDoc(id));
+    if (fetched.failed > 0) {
+      statusbar.notice(
+        fetched.failed === 1
+          ? "offline: 1 note could not be fetched"
+          : "offline: " + fetched.failed + " notes could not be fetched"
+      );
+    }
+  }
 
   await store.start();
   // When phone mode starts back on the note list, focus the active row the
@@ -1715,7 +1880,12 @@ async function start() {
     run,
     dirtyRecords: () => store.dirtyRecords(),
     trashed: () => store.trashed(),
-    restore: (id) => store.restore(id),
+    restore: (id, opts) => store.restore(id, opts),
+    trashBuffer: (id) => store.trashBuffer(id),
+    deleteForever: (id) => store.deleteForever(id),
+    expireOldRecent: (now) => store.expireOldRecent(now),
+    emptyOldTrash: (now) => store.emptyOldTrash(now),
+    sidebar,
     settings: { get: getSetting, put: putSetting },
     // Spellcheck surface for the checks (architecture.md §11): the language
     // the last pass found, and the detector itself for table-driven cases.

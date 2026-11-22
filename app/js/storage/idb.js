@@ -66,21 +66,29 @@
  *                           encryption for the current members, which every
  *                           member makes on its own. A 409 on such a push
  *                           forks nothing (model/docs.js applyRemote).
+ * @property {boolean} [priorDirty]  Whether `dirty` was true before a user
+ *                           trash set `tombstone = "deleted"`, so an offline
+ *                           Restore to space keeps unsent edits (§28).
+ * @property {true} [forget]  Remove the record once a pending `detached`
+ *                           tombstone lands (Remove from list on a synced file).
  */
 
 /**
- * A From server entry (architecture.md §25): a note of a `list` space that
- * this device has not fetched. A stub, not a record, so it is in no list,
- * no search and no trash, and it dies when a record with its id appears.
+ * A From server entry (architecture.md §25, §28): a note of a `list` space that
+ * this device has not fetched (or closed and demoted back to a stub). A stub,
+ * not a record, so it is in no search and no trash, and it dies when a record
+ * with its id appears.
  *
  * @typedef {Object} RemoteStub
  * @property {string} id  The document id, the same as the record's would be.
  * @property {string} space
  * @property {string} title  `meta.title`, else the first line of the text at
- *                           stub time; "" for an encrypted note without a title.
+ *                           stub time; "" for an encrypted or PIN-locked note
+ *                           without an explicit user title (§28).
  * @property {number} rev  The newest revision seen, so a re-delivered older
  *                           row does not overwrite a newer title.
  * @property {true} [enc]  The note is encrypted.
+ * @property {true} [pin]  Locked with the device PIN: never stores first line.
  * @property {number} [spaceSeq]  `meta.enc.spaceSeq`, for the re-encryption of
  *                           a note this device holds as a title only (§27).
  * @property {string} [sealed]  `meta.sealed`, kept while the device is locked,
@@ -118,10 +126,14 @@
  *                            never overwritten by detection (architecture.md §9).
  * @property {string[]} [spellOff]  The spellcheck languages ("cs", "en") that are off
  *                            for this note. Absent or empty means both are on.
- * @property {number} [trashedAt]  Set when a `deleted` tombstone reached this
- *                            record (architecture.md §22), or the device lost
- *                            the note (§27): out of every list, restorable for
- *                            thirty days, then removed.
+ * @property {number} [trashedAt]  Set when a note enters Trash (user trash,
+ *                            a remote `deleted` tombstone, 30-day Recent expiry,
+ *                            or losing a space; architecture.md §22, §28): out
+ *                            of every live list, restorable for 30 days.
+ * @property {number} [closedAt]  Timestamp when the note was closed; cleared on
+ *                            reopen and restore, used by 30-day Recent expiry (§28).
+ * @property {string} [originSpace]  Space name remembered when a synced note
+ *                            enters Trash, enabling Restore to <space> (§28).
  * @property {string} [firstLine]  The first line of an encrypted note's text,
  *                            set by the device whenever it reads or writes the
  *                            text, so the row has a title while the text stays
@@ -159,6 +171,7 @@
  *                            workspace is in Recent.
  * @property {string | null} activeId
  * @property {string[]} folderIds  Directory handle ids from the handles store.
+ * @property {string} [space]  Space name owned by a dedicated Space Window (§28).
  * @property {number} createdAt
  * @property {number} updatedAt
  */

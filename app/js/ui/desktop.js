@@ -194,7 +194,7 @@ export function mountDesktop({ workspaces, folders, isBlankBuffer }) {
     const live = await workspaces.liveSet();
     for (const record of workspaces.all()) {
       if (record.id === MAIN_WORKSPACE || live.has(record.id)) continue;
-      if (record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
+      if (!record.space && record.folderIds.length === 0 && record.tabs.every(isBlankBuffer)) {
         void workspaces.dissolve(record.id);
         continue;
       }

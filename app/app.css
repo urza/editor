@@ -17,6 +17,9 @@
   --st-sidebar-label:    #CCCCCC;
   --st-sidebar-heading:  #E6E6E6;
   --st-text-fg:          #D9D9D9;
+  --st-danger:           #EC5F67;
+  --st-danger-bg:        rgba(236, 95, 103, 0.16);
+  --st-danger-border:    rgba(236, 95, 103, 0.6);
 
   --st-mono: Consolas, Menlo, "DejaVu Sans Mono", "Cascadia Mono", monospace;
 
@@ -132,36 +135,43 @@ body {
   #sidebar { transition: none; }
 }
 
+#sidebar.delete-mode {
+  /* Inset red edge: 0px layout shift when Delete mode toggles (§28). */
+  box-shadow: inset 2px 0 0 0 var(--st-danger);
+}
+
+#space-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  background: #1C2024;
+  border-bottom: 1px solid #30363E;
+  border-left: 3px solid var(--space-win-color, var(--st-caret));
+  font-size: var(--ui-xs);
+  color: var(--st-sidebar-heading);
+}
+#space-banner[hidden] { display: none; }
+#space-banner-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-banner-hint {
+  font-size: calc(10px * var(--ui-scale));
+  color: var(--st-gutter-fg);
+}
+
 #sidebar-scroll {
   flex: 1;
   min-height: 0;  /* without it the flex item refuses to shrink and never scrolls */
   overflow-y: auto;
   padding-bottom: 8px;
-}
-
-/* Quiet by design: settings is the least-used control in the chrome, so it
-   reads like the "file"/"folder" row, not like the big "+". */
-#sidebar-settings {
-  flex: 0 0 auto;
-  margin: 4px 8px 8px;
-  padding: 0 8px;
-  height: var(--ui-row-h);
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--st-sidebar-label);
-  font: inherit;
-  font-size: var(--ui-sm);
-  line-height: 1;
-  text-align: left;
-  cursor: pointer;
-  opacity: 0.75;
-}
-
-#sidebar-settings:hover {
-  background: var(--st-sidebar-selected);
-  color: var(--st-sidebar-heading);
-  opacity: 1;
 }
 
 .sidebar-heading {
@@ -173,65 +183,237 @@ body {
   color: var(--st-sidebar-heading);
 }
 
-/* Recent is a disclosure pinned under the scroller, above settings (user
-   decision, 2026-09-24): closed buffers stay out of sight until expanded, and
-   the heading never scrolls away behind a long list of tabs. Expanded, the
-   list scrolls inside the block; the cap keeps the Open list in view. */
-#recent {
-  flex: 0 1 auto;
+/* Fixed-height Open heading row so showing #delete-pill causes 0px vertical shift (§28). */
+.heading-row {
   display: flex;
-  flex-direction: column;
-  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
-  max-height: 50%;
+  align-items: center;
+  gap: 6px;
+  height: calc(20px * var(--ui-scale));
+  margin: 8px 8px 4px 10px;
 }
-#recent[hidden] { display: none; }  /* the display: flex above would beat the attribute */
-#recent-heading { cursor: pointer; }
-#recent-list {
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* From server (architecture.md §25) copies Recent's rules, so the two pinned
-   blocks behave alike: closed until clicked, the list scrolls inside the
-   block, and the cap keeps the Open list in view. */
-#fromserver {
-  flex: 0 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;  /* same reason as #sidebar-scroll: without it the list never scrolls */
-  max-height: 50%;
-}
-#fromserver[hidden] { display: none; }  /* the display: flex above would beat the attribute */
-#fromserver-heading { cursor: pointer; }
-#fromserver-list {
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* The two disclosure headings as full-width bars (user choice, 2026-11-20).
-   With Open scrolled to its end and Recent expanded, the rows of the two
-   lists met with only a small heading between them, and the eye read one
-   long list. The bar marks the edge and also looks like the toggle it is.
-   margin 0: the bar must reach both sides of the sidebar.
-   The line on top turns caret orange while the list is open (user choice,
-   2026-11-20: grey was not enough with two long lists, and orange on a
-   closed bar was too loud). Orange is already the app's one accent, so the
-   edge adds no new color. 2px in both states, or the bar would move by a
-   pixel on every toggle. ui/sidebar.js sets aria-expanded. */
-#recent-heading,
-#fromserver-heading {
+.heading-row .sidebar-heading {
+  flex: 1;
+  min-width: 0;
   margin: 0;
-  padding: 7px 10px 6px;
-  background: var(--st-ui-bg);
-  border-top: 2px solid #3A4048;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
 }
-#recent-heading[aria-expanded="true"],
-#fromserver-heading[aria-expanded="true"] { border-top-color: var(--st-caret); }
-#recent-list,
-#fromserver-list { padding-top: 2px; }
 
-/* The name of a space over its rows in From server, when more than one space
-   lists there. A label, not a row: no pointer, no hover, nothing to click. */
+.filter-pill {
+  font-size: calc(10px * var(--ui-scale));
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--st-caret);
+  white-space: nowrap;
+}
+.filter-pill[hidden] { display: none; }
+
+.delete-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: calc(18px * var(--ui-scale));
+  padding: 0 6px;
+  border: 1px solid var(--st-danger-border);
+  border-radius: 3px;
+  background: var(--st-danger-bg);
+  color: #F4A5A9;
+  font: inherit;
+  font-size: calc(10px * var(--ui-scale));
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.delete-pill[hidden] { display: none; }
+.delete-pill:hover { background: rgba(236, 95, 103, 0.28); color: #FFFFFF; }
+
+.empty-hint {
+  padding: 8px 12px;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  line-height: 1.5;
+}
+.empty-hint[hidden] { display: none; }
+.empty-hint button {
+  margin-top: 4px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: var(--ui-xs);
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.empty-hint button:hover { background: var(--st-sidebar-selected); }
+
+/* Shared expandable drawer directly above the bottom icon bar (desktop only; §28). */
+#bottom-drawer {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 50%;
+  background: var(--st-sidebar-bg);
+  border-top: 2px solid var(--drawer-accent, var(--st-caret));
+}
+#bottom-drawer[hidden] { display: none; }
+
+#drawer-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px 5px 10px;
+  background: var(--st-ui-bg);
+}
+
+.drawer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  background: var(--drawer-accent, var(--st-caret));
+}
+.drawer-dot[hidden] { display: none; }
+
+#drawer-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--ui-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--st-sidebar-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#drawer-sub {
+  flex: 0 0 auto;
+  font-size: calc(10px * var(--ui-scale));
+  color: var(--st-gutter-fg);
+}
+#drawer-sub[hidden] { display: none; }
+
+.drawer-btn {
+  flex: 0 0 auto;
+  width: calc(22px * var(--ui-scale));
+  height: calc(20px * var(--ui-scale));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-base);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.72;
+}
+.drawer-btn[hidden] { display: none; }
+.drawer-btn:hover { opacity: 1; background: var(--st-sidebar-selected); color: var(--st-sidebar-heading); }
+#drawer-open-win:hover { color: var(--st-caret); }
+
+#drawer-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 3px 0 4px;
+}
+
+/* Compact bottom icon bar: Recent | Space badges | Trash + Settings (§28). */
+#bottom-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 6px;
+  background: #1D2024;
+  border-top: 1px solid #32373E;
+}
+
+.bar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.bar-spaces {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.bar-spaces::-webkit-scrollbar { display: none; }
+
+.bar-sep {
+  width: 1px;
+  height: calc(16px * var(--ui-scale));
+  background: #333940;
+  flex: 0 0 auto;
+  margin: 0 2px;
+}
+.bar-sep[hidden] { display: none; }
+
+.bar-btn {
+  flex: 0 0 auto;
+  height: calc(26px * var(--ui-scale));
+  min-width: calc(26px * var(--ui-scale));
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  position: relative;
+  opacity: 0.82;
+}
+.bar-btn[hidden] { display: none; }
+.bar-btn:hover { background: var(--st-sidebar-selected); color: var(--st-sidebar-heading); opacity: 1; }
+.bar-btn.active {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+  box-shadow: inset 0 2px 0 0 var(--btn-accent, var(--st-caret));
+}
+
+.space-badge {
+  min-width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--btn-accent, var(--st-caret));
+  color: #1A1E22;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px * var(--ui-scale));
+  font-weight: 700;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+/* Count badges on bottom bar buttons are phone-only; desktop uses hover tooltips. */
+.bar-count { display: none; }
+
+/* Phone Mode B full-screen subview is hidden outside html.phone. */
+#phone-view { display: none; }
+
 .buffer-subheading {
   padding: 4px 10px 1px;
   font-size: var(--ui-xs);
@@ -413,7 +595,7 @@ body {
    a file is a secondary action next to creating a scratch buffer. */
 #open-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   margin: 0 8px 8px;
 }
 
@@ -424,12 +606,13 @@ body {
 
 #open-actions button {
   flex: 1;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
   height: calc(22px * var(--ui-scale));
-  padding: 0 4px;
+  padding: 0 3px;
   border: 0;
   border-radius: 3px;
   background: var(--st-ui-bg);
@@ -439,10 +622,9 @@ body {
   line-height: 1;
   cursor: pointer;
   opacity: 0.85;
-  /* Each button measures itself, not the sidebar: the row holds two buttons
-     in Firefox and four in Chrome, and only the button's own width says
-     whether its label still fits. The containment costs nothing here, the
-     button's width comes from flex: 1 and never from its contents. */
+  /* Each button measures itself, not the sidebar: the row holds up to six
+     buttons on desktop, and only the button's own width says whether its
+     label still fits. */
   container: action / inline-size;
 }
 
@@ -454,6 +636,20 @@ body {
 #open-actions button:hover {
   background: var(--st-sidebar-selected);
   color: var(--st-sidebar-heading);
+  opacity: 1;
+}
+
+#open-actions button.active-accent {
+  color: var(--st-caret);
+  background: rgba(249, 174, 88, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(249, 174, 88, 0.55);
+  opacity: 1;
+}
+
+#open-actions button.active-danger {
+  color: var(--st-danger);
+  background: var(--st-danger-bg);
+  box-shadow: inset 0 0 0 1px var(--st-danger-border);
   opacity: 1;
 }
 
@@ -544,6 +740,7 @@ body {
 
 .buffer-row:hover { background: #2A2F34; }
 .buffer-row.active { background: var(--st-sidebar-selected); }
+#sidebar.delete-mode #open-list .buffer-row:hover { background: rgba(236, 95, 103, 0.10); }
 
 /* The space of a synced note (architecture.md §27): a thin bar in the
    space's color at the left edge. A ::before, not a box-shadow or a border:
@@ -563,7 +760,7 @@ body {
   pointer-events: none;
 }
 
-/* The same color as a small square, before a space's name in Settings. */
+/* The same color as a small square, before a space's name in Settings and menus. */
 .space-swatch {
   display: inline-block;
   width: 0.7em;
@@ -572,6 +769,11 @@ body {
   border-radius: 2px;
   background: var(--space-color);
   vertical-align: baseline;
+  flex: 0 0 auto;
+}
+.space-swatch.local {
+  background: transparent;
+  border: 1px solid var(--st-gutter-fg);
 }
 
 /* Reorder by drag (ui/sidebar.js). The row under the pointer fades, and a
@@ -681,11 +883,14 @@ body {
    block of the scroller; the class below hides the lists while it is open, so
    the results take the whole column instead of sitting on top of it. */
 #sidebar.searching #sidebar-scroll > .sidebar-heading,
+#sidebar.searching #open-heading-row,
 #sidebar.searching #open-actions,
 #sidebar.searching #open-list,
+#sidebar.searching #open-empty,
 #sidebar.searching #folder-sections,
-#sidebar.searching #recent,
-#sidebar.searching #fromserver {
+#sidebar.searching #phone-view,
+#sidebar.searching #bottom-drawer,
+#sidebar.searching #bottom-bar {
   display: none;
 }
 
@@ -873,13 +1078,30 @@ body {
   font-size: var(--ui-md);
 }
 
+.buffer-age {
+  flex: 0 0 auto;
+  font-size: calc(10px * var(--ui-scale));
+  color: var(--st-gutter-fg);
+}
+.buffer-age.soon { color: var(--st-caret); }
+
+/* Tag shown on unopened server stubs in phone mode; hidden on desktop. */
+.buffer-tag { display: none; }
+
 .buffer-close,
 .buffer-more,
+.buffer-trash,
+.buffer-restore,
 .folder-close {
   flex: 0 0 auto;
-  width: calc(16px * var(--ui-scale));
-  text-align: center;
+  width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 0;
+  border-radius: 3px;
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
@@ -889,7 +1111,18 @@ body {
 }
 
 .buffer-close:hover,
-.buffer-more:hover { opacity: 1; }
+.buffer-more:hover { opacity: 1; background: rgba(255, 255, 255, 0.07); }
+
+.buffer-trash { color: var(--st-danger); opacity: 0.78; }
+.buffer-trash:hover { opacity: 1; background: var(--st-danger-bg); }
+.buffer-trash .action-icon,
+.buffer-restore .action-icon {
+  width: calc(13px * var(--ui-scale));
+  height: calc(13px * var(--ui-scale));
+}
+
+.buffer-restore { color: var(--st-caret); opacity: 0.8; }
+.buffer-restore:hover { opacity: 1; background: rgba(249, 174, 88, 0.16); }
 
 .folder-close { opacity: 0; }
 .folder-head:hover .folder-close { opacity: 0.7; }
@@ -902,15 +1135,32 @@ body {
    the focus to the ⋯ (ui/menu.js). Hover devices only, see below. */
 @media (hover: hover) {
   .buffer-row:not(:hover, .active, :has(button:focus-visible, [aria-expanded="true"]))
-    :is(.buffer-close, .buffer-more) { display: none; }
+    :is(.buffer-close, .buffer-more, .buffer-trash, .buffer-restore) { display: none; }
+
+  #sidebar.delete-mode #open-list .buffer-row .buffer-trash {
+    display: inline-flex;
+    opacity: 0.55;
+  }
+  #sidebar.delete-mode #open-list .buffer-row:hover .buffer-trash,
+  #sidebar.delete-mode #open-list .buffer-row.active .buffer-trash {
+    opacity: 1;
+  }
 }
 
-/* The row menu button is a touch device's only way to reach rename, sync and
-   encryption, and a finger has no hover, so it never hides there. The × goes
-   the other way: the menu carries Close, and two small targets side by side on
-   a phone are two chances to close the wrong buffer. */
+/* Shift+click × companion gesture on desktop: tint × red while Shift is held (§28). */
+body.shift-held #open-list .buffer-row:hover .buffer-close {
+  color: var(--st-danger);
+  background: var(--st-danger-bg);
+  opacity: 1;
+}
+
+/* The row menu button is a touch device's only way to reach rename, sync,
+   encryption and delete, and a finger has no hover, so it never hides there.
+   Hover-only row action buttons stay hidden on touch. */
 @media (hover: none) {
-  .buffer-close { display: none; }
+  .buffer-close,
+  .buffer-trash,
+  .buffer-restore { display: none; }
 }
 
 /* Row menu (ui/menu.js). Fixed, body-level, above the drawer (20) and its
@@ -954,9 +1204,97 @@ body {
   outline: none;
 }
 
+.menu-item.danger { color: var(--st-danger); }
+.menu-item.danger:hover:not(:disabled),
+.menu-item.danger:focus {
+  background: var(--st-danger-bg);
+  color: #FF878E;
+}
+
 .menu-item:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+.menu-head {
+  padding: 4px 8px 3px;
+  font-size: calc(10px * var(--ui-scale));
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--st-gutter-fg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.menu-head button {
+  border: 0;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: calc(10px * var(--ui-scale));
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.menu-head button:hover { text-decoration: underline; }
+
+/* Stay-open View space filter checklist row with quick "only" button (§28). */
+.filter-row {
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+}
+.filter-row:hover {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+.filter-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ui-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.filter-toggle:focus { outline: none; }
+.filter-row:has(.filter-toggle:focus-visible) {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+}
+.filter-toggle .space-swatch { margin-right: 0; }
+.filter-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-only {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-gutter-fg);
+  font: inherit;
+  font-size: calc(10px * var(--ui-scale));
+  cursor: pointer;
+  opacity: 0;
+}
+.filter-row:hover .filter-only,
+.filter-only:focus-visible { opacity: 1; }
+.filter-only:hover {
+  background: rgba(249, 174, 88, 0.16);
+  color: var(--st-caret);
 }
 
 /* Empty on a plain item, so every label starts at the same x. */
@@ -972,8 +1310,18 @@ body {
 }
 
 .menu-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   line-height: 1.4;
+}
+.menu-label .space-swatch { margin-right: 0; }
+
+.menu-count {
+  margin-left: auto;
+  font-size: var(--ui-xs);
+  color: var(--st-gutter-fg);
+  font-variant-numeric: tabular-nums;
 }
 
 .menu-hint {
@@ -1779,12 +2127,21 @@ html.phone #sidebar {
 
 html.phone #app.sidebar-open #sidebar { display: flex; }
 
-/* The drawer's furniture. #app in the selector is there for its weight: the
-   drawer rule that shows the scrim counts two ids. */
+/* The drawer's furniture and desktop-only lifecycle controls (§28). #app in
+   the selector is there for its weight: the drawer rule that shows the scrim
+   counts two ids. */
 html.phone #app #sidebar-scrim,
 html.phone #sidebar-open,
 html.phone #sidebar-top,
-html.phone #sidebar-settings {
+html.phone #space-banner,
+html.phone #act-view,
+html.phone #act-del,
+html.phone #delete-pill,
+html.phone #open-filter-pill,
+html.phone #open-empty,
+html.phone #bottom-drawer,
+html.phone #drawer-open-win,
+html.phone #bar-settings {
   display: none;
 }
 
@@ -1797,8 +2154,49 @@ html.phone #editor-host { padding-left: 0; }
 html.phone #editor-host .cm-content { padding-top: var(--top-clear); }
 
 html.phone #sidebar-scroll { padding-top: var(--top-clear); }
+html.phone .heading-row {
+  height: auto;
+  margin: 12px 16px 6px;
+}
 html.phone .sidebar-heading { margin: 12px 16px 6px; }
+html.phone .heading-row .sidebar-heading { margin: 0; }
 html.phone .buffer-subheading { padding: 8px 16px 2px; }
+
+/* Phone Mode B full-screen subview inside #sidebar-scroll (§28). */
+html.phone #phone-view:not([hidden]) { display: block; }
+html.phone #sidebar.phone-subview #open-heading-row,
+html.phone #sidebar.phone-subview #open-list,
+html.phone #sidebar.phone-subview #open-empty,
+html.phone #sidebar.phone-subview #folder-sections {
+  display: none;
+}
+html.phone .phone-view-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 16px 6px;
+}
+html.phone .phone-view-head .sidebar-heading {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.phone .heading-back {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 2px 10px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--st-caret);
+  font: inherit;
+  font-size: var(--ui-xs);
+  cursor: pointer;
+}
+html.phone .heading-back:active { background: var(--st-sidebar-selected); }
 
 /* A row is two lines: marks, title and time on the first, the preview on
    the second. Wrapping does it, so makeRow's flat markup stays as it is; the
@@ -1876,8 +2274,27 @@ html.phone li.buffer-row > .buffer-more {
   font-size: calc(18px * var(--ui-scale));
 }
 
-/* The menu carries Close; see the (hover: none) rule above. */
-html.phone .buffer-close { display: none; }
+/* The menu carries Close and Move to trash; hover row buttons stay hidden on phone. */
+html.phone .buffer-close,
+html.phone .buffer-trash,
+html.phone .buffer-restore,
+html.phone .buffer-age { display: none; }
+
+/* Title-only rows for unopened server stubs in phone Mode B (§28). */
+html.phone .buffer-row.stub-row {
+  min-height: calc(48px * var(--thumb-scale));
+  color: var(--st-sidebar-label);
+}
+html.phone .buffer-tag {
+  display: inline-block;
+  flex: 0 0 auto;
+  font-size: calc(10px * var(--ui-scale));
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #2C3138;
+  color: #8E9AA6;
+}
+html.phone .buffer-time.soon { color: var(--st-caret); }
 
 /* Swipe to close (ui/sidebar.js): a swipe to the left on a row of Open.
    pan-y is what makes it possible at all: the browser keeps the up and down
@@ -1947,14 +2364,61 @@ html.phone .buffer-row.swipe-armed::after {
 
 html.phone .tree-row { min-height: var(--tap); padding-left: 16px; }
 
-/* The two disclosures are buttons in all but name. */
-html.phone #recent-heading,
-html.phone #fromserver-heading {
-  display: flex;
+/* Phone bottom icon bar: 44px touch targets directly above --list-bar (§28). */
+html.phone #bottom-bar {
+  gap: 6px;
+  padding: 5px 12px;
+  min-height: calc(var(--tap) + 8px);
+}
+html.phone #bottom-bar.phone-empty { display: none; }
+html.phone .bar-spaces { gap: 6px; }
+html.phone .bar-sep { height: 22px; }
+html.phone .bar-btn {
+  min-width: var(--tap);
+  height: var(--tap);
+  padding: 0 6px;
+  border-radius: 10px;
+  opacity: 0.72;
+}
+html.phone .bar-btn.active {
+  background: var(--st-sidebar-selected);
+  color: var(--st-sidebar-heading);
+  opacity: 1;
+  box-shadow: inset 0 0 0 1.5px var(--btn-accent, var(--st-caret));
+}
+html.phone .bar-btn .action-icon {
+  width: calc(20px * var(--thumb-scale));
+  height: calc(20px * var(--thumb-scale));
+}
+html.phone .space-badge {
+  min-width: calc(26px * var(--thumb-scale));
+  height: calc(26px * var(--thumb-scale));
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: calc(12px * var(--ui-scale));
+}
+html.phone .bar-count {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #2C323A;
+  border: 1px solid #424B56;
+  color: #D8DEE9;
+  font-size: 9px;
+  font-weight: 600;
+  display: inline-flex;
   align-items: center;
-  min-height: var(--tap);
-  margin: 0;
-  padding: 0 16px;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+html.phone .bar-btn.active .bar-count {
+  background: var(--btn-accent, var(--st-caret));
+  border-color: transparent;
+  color: #181C20;
 }
 
 /* 16px, or iOS zooms the whole page the moment the field takes focus and

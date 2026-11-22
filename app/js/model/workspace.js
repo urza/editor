@@ -136,6 +136,18 @@ export function createWorkspaces({ id }) {
     return owner;
   }
 
+  /**
+   * The secondary workspace that owns a dedicated Space Window for `space`,
+   * or null when no window owns it (architecture.md §28).
+   * @param {string} space @returns {string | null}
+   */
+  function spaceOwner(space) {
+    for (const record of records.values()) {
+      if (record.id !== MAIN_WORKSPACE && record.space === space) return record.id;
+    }
+    return null;
+  }
+
   /** @param {string} bufferId @param {string} [wsId] */
   async function addTab(bufferId, wsId = id) {
     let record = get(wsId);
@@ -159,6 +171,22 @@ export function createWorkspaces({ id }) {
     if (index < 0) return;
     record.tabs.splice(index, 1);
     if (record.activeId === bufferId) record.activeId = null;
+    await save(record);
+  }
+
+  /**
+   * Remove multiple tabs from this workspace in one save. Used before handing
+   * tabs off to a new Space Window so resolveDoubleTake sees no overlap (§28).
+   * @param {string[]} bufferIds
+   */
+  async function removeTabs(bufferIds) {
+    if (bufferIds.length === 0) return;
+    const drop = new Set(bufferIds);
+    const record = current();
+    const next = record.tabs.filter((tab) => !drop.has(tab));
+    if (next.length === record.tabs.length) return;
+    record.tabs = next;
+    if (record.activeId && drop.has(record.activeId)) record.activeId = null;
     await save(record);
   }
 
@@ -211,12 +239,18 @@ export function createWorkspaces({ id }) {
 
   /**
    * A new workspace. Its window opens it (architecture.md §14.2). Empty,
-   * unless the caller hands it folders to list from the start: a folder
-   * asked for in main gets its window this way (§14.5).
-   * @param {{folderIds?: string[]}} [fields]
+   * unless the caller hands it folders, tabs, or a dedicated space (§14.5, §28).
+   * @param {{folderIds?: string[], tabs?: string[], space?: string}} [fields]
    */
-  async function create({ folderIds = [] } = {}) {
-    const record = { ...newRecord(crypto.randomUUID()), folderIds: [...folderIds] };
+  async function create({ folderIds = [], tabs = [], space } = {}) {
+    /** @type {WorkspaceRecord} */
+    const record = {
+      ...newRecord(crypto.randomUUID()),
+      folderIds: [...folderIds],
+      tabs: [...tabs],
+      activeId: tabs[0] ?? null,
+    };
+    if (space) record.space = space;
     await save(record);
     return record;
   }
@@ -264,8 +298,8 @@ export function createWorkspaces({ id }) {
     if (dropped.length > 0) emit("folders-dropped", { ids: dropped });
     emit("change", { id: wsId, foreign: true });
     // After the change: the doc store first moves its active buffer off the
-    // dropped tabs, then hears which tabs fell into Recent.
-    emit("dissolved", { tabs: record.tabs });
+    // dropped tabs, then hears which tabs fell into Recent or a space drawer.
+    emit("dissolved", { tabs: record.tabs, space: record.space });
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------
@@ -277,9 +311,15 @@ export function createWorkspaces({ id }) {
   });
 
   on("workspace-deleted", ({ id: wsId }) => {
+    const record = records.get(wsId);
     records.delete(wsId);
     if (wsId === id) dissolved = true;
     emit("change", { id: wsId, foreign: true });
+    // If a closing secondary window dissolved itself before dying, main runs
+    // the idempotent post-dissolve cleanup (empty discard, closedAt, stub demotion).
+    if (id === MAIN_WORKSPACE && record) {
+      emit("dissolved", { tabs: record.tabs, space: record.space });
+    }
   });
 
   on("focus", ({ ws }) => {
@@ -411,9 +451,11 @@ export function createWorkspaces({ id }) {
     ownerOf,
     hasFolder,
     folderOwner,
+    spaceOwner,
     liveSet,
     addTab,
     removeTab,
+    removeTabs,
     moveTab,
     setActive,
     addFolder,
