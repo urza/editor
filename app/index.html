@@ -102,6 +102,21 @@
 </head>
 <body>
   <div id="app">
+    <!-- Replays the phone note list state before the first paint, so cold
+         starts back onto the list never flash the editor first.
+         js/ui/shell.js owns the key and is the only writer. -->
+    <script>
+      try {
+        if (
+          document.documentElement.classList.contains("phone") &&
+          localStorage.getItem("vrtti.phoneListOpen") === "1"
+        ) {
+          document.getElementById("app").classList.add("sidebar-open");
+        }
+      } catch (err) {
+        // Private mode can throw on localStorage. The editor default then stands.
+      }
+    </script>
     <aside id="sidebar">
       <!-- Four-part column: the primary action on top, one scroller in the
            middle, Recent and settings pinned at the bottom (architecture.md

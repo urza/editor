@@ -507,11 +507,15 @@ layouts read it. The breakpoint is 700px, the one the settings panel uses.
   The strip is reserved, not overlaid, or the button covers the line numbers.
 - Command `sidebar.toggle` (Alt+B) and `sidebar.autoclose`, which is the
   drawer rule above and a no-op on a PC.
-- The default is open when wide, closed when narrow. Only a wide-screen
-  toggle persists (`vrtti.sidebarOpen`): a phone must start on the editor,
-  never behind a drawer it left open yesterday.
-- The CSS defaults match those defaults with no state class present, so the
-  first paint is already right and the mount causes no flash.
+- The default is open when wide, closed when narrow. Wide-screen toggles
+  persist in `vrtti.sidebarOpen`, and phone mode persists whether the user
+  left on the full-screen note list or on a note in `vrtti.phoneListOpen`
+  (defaulting to the editor on a fresh install). Narrow desktop drawers do
+  not persist and always start closed.
+- The CSS defaults match those defaults with no state class present, and a
+  short inline script right after `<div id="app">` in `index.html` adds
+  `sidebar-open` on `#app` when `html.phone` and `vrtti.phoneListOpen === "1"`,
+  so the first paint is already right and the mount causes no flash.
 - A collapsed sidebar is `inert`, so Tab cannot reach rows nobody can see.
 
 ### Row menu (agreed 2026-09-02, shipped)
@@ -826,9 +830,27 @@ puts every control at the bottom right and makes the list full screen.
   to the same place while the search view is open.
 - **Sizes.** Touch targets are 44px or more. They follow `--ui-scale` up
   and never down (`--thumb-scale`).
-- **Stacking**, low to high: settings panel 10, note list 20, scrim of the
+- **Remembered location on cold start.** In phone mode, `ui/shell.js`
+  stores whether the note list is open in `vrtti.phoneListOpen`
+  (`localStorage`, device-local; defaults to the editor when unset).
+  `workspaces.activeId` stays set behind the list so the active row stays
+  highlighted and the thumb menu's back arrow still returns to it. A tiny
+  inline script right after `<div id="app">` in `index.html` adds
+  `sidebar-open` to `#app` before the first paint when `html.phone` and
+  `vrtti.phoneListOpen === "1"`, avoiding any flash of the editor. While
+  the phone note list covers the editor (`phoneListOpen()` in
+  `ui/shell.js`), `editor/editor.js` skips `view.focus()`, `askPin()`, and
+  `askUnlock()` (leaving locked placeholders quiet underneath), and
+  `main.js` runs `sidebar.focus` after `store.start()` when booting onto
+  the list. Row taps, New, and Search hits run `sidebar.autoclose` before
+  activating the note so tapping an already-active locked row closes the
+  list first and triggers the PIN or unlock prompt.
+- **Stacking**, low to high: note list 20, settings panel 25, scrim of the
   round buttons 29, thumb button and round buttons 30, row menu 40. The
-  thumb button hides while the settings panel is open.
+  thumb button hides while the settings panel is open. Because the settings
+  panel sits above the note list in phone mode, `ui/thumb.js` leaves the
+  list open behind it, so closing Settings returns to whichever screen the
+  user came from (note or note list) and preserves `vrtti.phoneListOpen`.
 - **The date.** Each row shows the time of the last change at the right
   end of its first line (user decision, 2026-11-19): the clock for today,
   the weekday for the six days before, the day and month for older notes
@@ -856,14 +878,19 @@ puts every control at the bottom right and makes the list full screen.
   event of an animation, so a dropped animation cannot keep a note open.
   With reduced motion the close runs at once. Rows of Recent and From
   server do not swipe.
-- **Back closes a layer.** On Android, Back closes the newest of: a row
-  menu, the round buttons, the settings panel, the note list. Each layer
-  calls `watchBack` (`ui/shell.js`) when it opens, which makes a
-  `CloseWatcher`, and stops it when it closes in another way. No history
-  entry: with `pushState`, every path that closes a layer must remove its
-  entry, and a forgotten one is a Back that does nothing. Phone mode only,
-  because a watcher also takes Escape. A browser with no `CloseWatcher`
-  (Safari) gets nothing; an iPhone has no Back.
+- **Back closes a layer or undoes one screen switch.** On Android, Back
+  closes the newest of: a row menu, the round buttons, the settings panel,
+  or one switch between a note and the note list. Each layer calls
+  `watchBack` (`ui/shell.js`) when it opens, which makes a `CloseWatcher`,
+  and stops it when it closes in another way. `ui/shell.js` never arms
+  `watchBack` at cold start (so Back immediately after launching onto the
+  list or onto a note exits the app) and never arms it when Back itself
+  made the switch (so `List -> Note -> Back` returns to the list,
+  `Note -> List -> Back` returns to the note, and a second Back exits). No
+  history entry: with `pushState`, every path that closes a layer must
+  remove its entry, and a forgotten one is a Back that does nothing. Phone
+  mode only, because a watcher also takes Escape. A browser with no
+  `CloseWatcher` (Safari) gets nothing; an iPhone has no Back.
 - **No status bar.** Phone mode hides `#statusbar` (user decision,
   2026-11-19): its buttons are too small for a thumb. The Update section of
   the settings panel has the build stamp and the update check, and Sync and

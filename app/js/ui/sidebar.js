@@ -49,16 +49,17 @@ export function mountSidebar(store, folders, sync) {
   /**
    * Every gesture that opens a document goes through here, so the document
    * ends up visible: the settings panel covers the editor on a PC, and on a
-   * phone the drawer covers both. Settings close before the open, not after:
-   * closing hands focus back to where it was taken from (the Settings button,
-   * say), which would undo the focus the editor takes on "active". The drawer
-   * closes after; a no-op on a PC.
+   * phone the drawer covers both. Both close before the open, not after:
+   * closing settings hands focus back to where it was taken from (the
+   * Settings button, say), and closing the phone note list first lets the
+   * editor see it is visible so it takes focus and prompts for PIN/unlock
+   * when needed. `sidebar.autoclose` is a no-op on a PC.
    * @param {() => unknown} act
    */
   function open(act) {
     run("settings.close");
-    act();
     run("sidebar.autoclose");
+    act();
   }
 
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));

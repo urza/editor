@@ -1691,8 +1691,8 @@ img.twemoji {
 
    What the mode does: the drawer becomes a full-screen note list with rows a
    thumb can hit, and the floating "+" becomes the thumb button, which opens
-   three round buttons (ui/thumb.js). Stacking, low to high: the settings
-   panel (10), the note list (20), the scrim of the round buttons (29), the
+   three round buttons (ui/thumb.js). Stacking, low to high: the note list
+   (20), the settings panel (25), the scrim of the round buttons (29), the
    thumb button, the round buttons and the notice (30), a row menu (40). */
 
 /* Hidden by default: the parts only phone mode shows. Rows carry a preview
@@ -2053,8 +2053,13 @@ html.phone #settings-close {
 /* The head must hold that target. --ui-top-h follows --ui-scale down to
    34px, so it gets a floor here. Set on the panel and not on the row: the
    sticky offsets and the scroll padding read the same property (see
-   .settings-head), and all of them must agree. */
-html.phone #settings-panel { --ui-top-h: max(calc(48px * var(--ui-scale)), var(--tap)); }
+   .settings-head), and all of them must agree. z-index 25 sits above the
+   note list (20), so Settings opens over whichever screen the user came
+   from and closes back to that same screen (ui/thumb.js). */
+html.phone #settings-panel {
+  --ui-top-h: max(calc(48px * var(--ui-scale)), var(--tap));
+  z-index: 25;
+}
 
 /* ---- The thumb button and its round buttons ----------------------------- */
 
@@ -2169,7 +2174,7 @@ html.phone #app.sidebar-open #thumb-menu .thumb-icon-list { display: none; }
 html.phone #app.sidebar-open #thumb-menu .thumb-icon-back { display: block; }
 
 /* The settings panel is full screen on a phone and has its own ×. It sits
-   under the thumb button now (10 under 30), so the button has to step aside
+   under the thumb button now (25 under 30), so the button has to step aside
    by itself. On the `hidden` attribute, which is how ui/settings.js shows
    and hides the panel. */
 html.phone #editor-host:has(#settings-panel:not([hidden])) :is(#new-fab, #thumb-menu, #thumb-scrim) {
