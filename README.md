@@ -19,6 +19,8 @@
   <a href="server/README.md">Sync server</a>
   &nbsp;·&nbsp;
   <a href="https://urza.github.io/editor/docs/how-it-works.html">How it works</a>
+  &nbsp;·&nbsp;
+  <a href="https://urza.github.io/editor/docs/trust-model.html">Trust model</a>
 </p>
 
 ![vrtti with notes and a folder in the sidebar, and a Czech spelling suggestion open in a travel note](docs/screenshots/hero.png)
@@ -127,7 +129,7 @@ The text in the note keeps the normal emoji characters.
 ![Devices with their own keys syncing through a blind relay server, with colored spaces and a paper recovery key](docs/diagrams/spaces-and-sync.jpg)
 
 - The server is small: an ASP.NET Core API with one SQLite file, acting as a blind relay. A Docker image is ready (see [server/README.md](server/README.md)).
-- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. On a phone, new notes sync by default. A note that does not sync sits in no space and stays on its device.
+- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. **New notes** (Settings › Sync) sends every new note of a device to one space, or keeps it local. A device with no disk, such as a phone, explains that a space keeps a copy of its notes, but it never picks one for you. A note that does not sync sits in no space and stays on its device.
 - A synced note lives in one **space**. Think of a space as a colored notebook (`personal`, `work`, `ideas`) whose cover lists the devices that can open it: one note belongs to one space, while a device can belong to many spaces, one, or none. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in `work` never gets a note of `personal`, not even a title.
 - **Move to <space>** in a note's menu moves one note to another space and re-encrypts it for that space's members. A device that loses a note (a move away, or its removal from a space) keeps its copy in the local trash.
 - Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
@@ -143,7 +145,7 @@ The text in the note keeps the normal emoji characters.
 - Each synced note is encrypted for the devices of its space and for your recovery key. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage). The server refuses plain text and holds no readable title.
 - Each device has its own key, and the key never leaves the device. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
 - The first device shows a recovery key one time. Keep it offline, on paper or in a password manager. It opens every note if all devices are lost.
-- A new device joins with an invite: **Invite a device** on a device you use shows it, and the new device pastes it in Settings › Sync. The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The URL and the code also work typed by hand. The server cannot add a reader: the member list of a space is a log of entries that your devices sign.
+- A new device joins with an invite: **Invite a device** on a device you use shows it, and the new device pastes it in Settings › Sync. The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The URL and the code also work typed by hand. An invite can give no space: the device then joins the server only, and any device adds it to spaces later in Settings › Devices. The server cannot add a reader: the member list of a space is a log of entries that your devices sign, and your devices find each other through introductions that they sign. [The trust model](https://urza.github.io/editor/docs/trust-model.html) explains the signatures.
 - A file on disk can become `name.md.age` (or `name.age`), and the `age` command line tool can decrypt it. A synced note saved to disk always saves as `.age`. The app is never the only way to read your notes.
 - **Lock with PIN** in a note's menu keeps a note off the screen until the 4-digit PIN of the device. It is a guard for the screen, not encryption.
 
@@ -279,7 +281,7 @@ src-tauri/      the desktop shell (Tauri, Rust)
 server/         the sync server (ASP.NET Core, SQLite)
 design/icons/   icon sources and the icons that were not picked
 crypto-proto/   the age prototype that came before the real code
-docs/           the "How it works" page, README screenshots and diagrams (deployed to GitHub Pages under docs/)
+docs/           the "How it works" and trust model pages, README screenshots and diagrams (deployed to GitHub Pages under docs/)
 ```
 
 ## Run it locally
