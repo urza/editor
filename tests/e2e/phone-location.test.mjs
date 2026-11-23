@@ -1,7 +1,7 @@
 // Browser test for phone-mode remembered location, Settings return, locked
 // notes on cold start, and Android Back (CloseWatcher) behavior.
 //
-//   node --test tests/phone-location.test.mjs
+//   node --test tests/e2e/phone-location.test.mjs
 //
 // Plain Node + local Chromium via Chrome DevTools Protocol (no npm packages).
 // Skips cleanly when no Chromium binary is available on the host.
@@ -15,7 +15,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const APP_DIR = path.join(ROOT, "app");
 
 const MIME = {

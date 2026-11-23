@@ -2,7 +2,7 @@
 // phone Mode B, offline trash/restore state machine, PIN stub privacy, and
 // Space Windows against the real Vrtti.Server and headless Chromium.
 //
-//   node --test tests/note-lifecycle-e2e.test.mjs
+//   node --test tests/e2e/note-lifecycle-e2e.test.mjs
 //
 // Zero npm dependencies: plain Node 22 + local Chromium via CDP + local dotnet.
 // Skips cleanly when Chromium or dotnet is not installed on the host.
@@ -17,7 +17,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const APP_DIR = path.join(ROOT, "app");
 const SERVER_PROJ = path.join(ROOT, "server", "Vrtti.Server");
 
