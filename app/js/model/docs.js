@@ -840,9 +840,6 @@ export function createDocStore({
       if (record.kind === "file" && record.file) {
         fresh.kind = "file";
         fresh.file = { ...record.file };
-        // Detach the handle from the old trashed record BEFORE forget(record.id),
-        // or forget() would delete the shared handle row from IndexedDB.
-        delete record.file;
       }
       copyNoteMeta(fresh, record);
       await sealForSpace(fresh, space);
@@ -850,6 +847,11 @@ export function createDocStore({
       await persist({ ...fresh });
       await workspaces.addTab(fresh.id);
       activate(fresh.id);
+      // Detach the handle from the old trashed record right before forget(record.id):
+      // if sealForSpace above threw (e.g. lost write permission), record.file stays
+      // intact in memory for the next try, and here forget() leaves the shared
+      // handle row in IndexedDB.
+      delete record.file;
       await forget(record.id);
       emit("change");
       return fresh;
@@ -2900,24 +2902,74 @@ export function createDocStore({
   // in the user gesture without releasing tabs beforehand (§28).
   /** @type {Map<string, (from: string, moved: string[]) => void>} */
   const claimWaiters = new Map();
+  /** @type {string | null} */
+  let initialSpaceBlankId = null;
+  let claimedSpaceOnBoot = false;
 
-  on("claimed-space-tabs", ({ reqId, from, moved }) => {
-    claimWaiters.get(reqId)?.(from, moved);
+  /** @param {string} addedId @param {string | null} [explicitBlankId] */
+  async function dropInitialSpaceBlank(addedId, explicitBlankId = null) {
+    const blankId = explicitBlankId ?? initialSpaceBlankId;
+    if (!blankId || blankId === addedId) return;
+    if (initialSpaceBlankId === blankId) initialSpaceBlankId = null;
+    const blank = buffers.get(blankId);
+    if (!blank || !isEmpty(blank) || saveTimers.has(blankId)) return;
+    if (activeId === blankId) activate(addedId);
+    emit("evict", { id: blankId });
+    await workspaces.removeTab(blankId);
+    await discard(blank);
+  }
+
+  /**
+   * Adopt tabs whose holder answered `"claim-space-tabs"` after the 300 ms
+   * startup wait already expired (e.g., Main was flushing a slow disk write).
+   * Main released them right before posting, so adding them here keeps them
+   * open in the Space Window instead of stranding them in the space drawer (§28).
+   * @param {string[]} moved
+   */
+  async function adoptLateClaimedTabs(moved) {
+    const valid = moved.filter((tabId) => {
+      const b = buffers.get(tabId);
+      return Boolean(b && !b.trashedAt && !b.sync?.tombstone && workspaces.ownerOf(tabId) === null);
+    });
+    if (!valid.length) return;
+    await clearClosedAt(valid);
+    for (const tabId of valid) {
+      await workspaces.addTab(tabId);
+      await dropInitialSpaceBlank(tabId);
+    }
+    if (!activeId || !workspaces.current().tabs.includes(activeId)) {
+      activate(valid[0]);
+    }
+    emit("change");
+  }
+
+  on("claimed-space-tabs", ({ reqId, to, from, moved }) => {
+    const waiter = claimWaiters.get(reqId);
+    if (waiter) {
+      waiter(from, moved);
+      return;
+    }
+    if (to !== workspaces.id || workspaces.isDissolved || !Array.isArray(moved) || !moved.length) {
+      return;
+    }
+    void adoptLateClaimedTabs(moved);
   });
 
-  on("claim-space-tabs", ({ space, reqId }) => {
+  on("claim-space-tabs", ({ space, reqId, to }) => {
     if (workspaces.isDissolved || !space) return;
     const moved = openBuffers()
       .filter((b) => b.sync?.space === space && !b.trashedAt && !b.sync.tombstone)
       .map((b) => b.id);
     if (!moved.length) {
-      post("claimed-space-tabs", { reqId, from: workspaces.id, moved: [] });
+      post("claimed-space-tabs", { reqId, to, from: workspaces.id, moved: [] });
       return;
     }
     void (async () => {
       await flushAll();
+      // If the claiming Space Window dissolved while flushAll() ran, keep the tabs.
+      if (to && !workspaces.all().some((w) => w.id === to)) return;
       await releaseTabs(moved);
-      post("claimed-space-tabs", { reqId, from: workspaces.id, moved });
+      post("claimed-space-tabs", { reqId, to, from: workspaces.id, moved });
     })();
   });
 
@@ -3243,6 +3295,7 @@ export function createDocStore({
    * @returns {Promise<string[]>}
    */
   async function claimSpaceTabs(space) {
+    claimedSpaceOnBoot = true;
     const holders = workspaces
       .all()
       .filter(
@@ -3279,7 +3332,7 @@ export function createDocStore({
             pending.delete(from);
             if (pending.size === 0) finish();
           });
-          post("claim-space-tabs", { space, reqId });
+          post("claim-space-tabs", { space, reqId, to: workspaces.id });
         });
       }
     }
@@ -3306,14 +3359,9 @@ export function createDocStore({
 
     /** @param {string} addedId */
     const dropInitialBlankIfUntouched = async (addedId) => {
-      if (blankDropped || !initialBlankId || initialBlankId === addedId) return;
-      blankDropped = true;
-      const blank = buffers.get(initialBlankId);
-      if (!blank || !isEmpty(blank) || saveTimers.has(initialBlankId)) return;
-      if (activeId === initialBlankId) activate(addedId);
-      emit("evict", { id: initialBlankId });
-      await workspaces.removeTab(initialBlankId);
-      await discard(blank);
+      const explicit = !blankDropped ? initialBlankId : null;
+      if (explicit && explicit !== addedId) blankDropped = true;
+      await dropInitialSpaceBlank(addedId, explicit);
     };
 
     for (const stub of stubs) {
@@ -4250,15 +4298,20 @@ export function createDocStore({
     let first = openBuffers()[0];
     if (!first) {
       first = newBufferRecord();
+      if (claimedSpaceOnBoot) initialSpaceBlankId = first.id;
       const wsSpace = workspaces.current().space;
       if (wsSpace && spaces.modeOf(wsSpace) !== undefined && keyring.isUnlocked) {
         await sealForSpace(first, wsSpace).catch((err) => {
           console.log("[vrtti] space window initial note stays local:", err);
         });
       }
-      buffers.set(first.id, first);
-      await persist(first);
-      await workspaces.addTab(first.id);
+      if (claimedSpaceOnBoot && !initialSpaceBlankId) {
+        first = openBuffers()[0];
+      } else {
+        buffers.set(first.id, first);
+        await persist(first);
+        await workspaces.addTab(first.id);
+      }
     }
 
     const stored = workspaces.current().activeId;

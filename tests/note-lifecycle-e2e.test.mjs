@@ -1394,11 +1394,30 @@ describe(
       })()`);
       await syncAndWait(cdpA);
       const restoredFile = await cdpA.eval(`(async () => {
+        // First simulate a failed sealForSpace (e.g. failed seal/write before forget):
+        // the trashed record must NOT lose record.file in memory so retry works without reload!
+        window.vrtti.keyring.recipientsFor = () => {
+          throw new Error("simulated write/seal failure");
+        };
+        let threwOnFail = false;
+        try {
+          await window.vrtti.restore(${JSON.stringify(syncedFileId)}, { toSpace: true });
+        } catch {
+          threwOnFail = true;
+        } finally {
+          delete window.vrtti.keyring.recipientsFor;
+        }
+        const fileKeptAfterFailure = Boolean(
+          window.vrtti.store.get(${JSON.stringify(syncedFileId)})?.file?.handleId
+        );
+
         const res = await window.vrtti.run("doc.restore", { id: ${JSON.stringify(syncedFileId)}, toSpace: true });
         await window.vrtti.sync.syncNow();
         const rec = window.vrtti.store.get(res.id);
         const text = await window.vrtti.textOf(res.id);
         return {
+          threwOnFail,
+          fileKeptAfterFailure,
           newId: res?.id ?? null,
           kind: rec?.kind ?? null,
           hasFile: Boolean(rec?.file?.handleId),
@@ -1407,6 +1426,8 @@ describe(
           text,
         };
       })()`);
+      assert.equal(restoredFile.threwOnFail, true);
+      assert.equal(restoredFile.fileKeptAfterFailure, true, "failed sealForSpace must keep record.file in memory");
       assert.ok(restoredFile.newId && restoredFile.newId !== syncedFileId);
       assert.equal(restoredFile.kind, "file");
       assert.equal(restoredFile.hasFile, true);
@@ -1853,9 +1874,26 @@ describe(
       assert.ok(afterDissolve.stubs.includes(createdInSpace.id));
       assert.ok(afterDissolve.stubs.includes(remoteInfraId));
 
-      // Reopen Space Window, then verify loseSpace("infra") run FROM the Space Window
-      // itself dissolves it, trashes all infra notes, and never resurrects the workspace (Review #8)!
+      // Reopen Space Window while Main is slower than 300 ms answering claim-space-tabs
+      // (a slow 450 ms pending disk flush in Main), verifying T1 STILL lands open in the
+      // Space Window instead of falling into the closed space drawer; then verify loseSpace!
+      await cdpA.eval(`window.vrtti.run("remote.open", ${JSON.stringify(prep.t1)})`);
       const ws2 = await cdpA.eval(`(async () => {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle("slow-main-flush.md", { create: true });
+        const slowRec = await window.vrtti.store.createFromFile(fh);
+        const origCreateWritable = FileSystemFileHandle.prototype.createWritable;
+        FileSystemFileHandle.prototype.createWritable = async function (...args) {
+          await new Promise((r) => setTimeout(r, 450));
+          return origCreateWritable.apply(this, args);
+        };
+        window.__restoreCreateWritable = async () => {
+          FileSystemFileHandle.prototype.createWritable = origCreateWritable;
+          await window.vrtti.run("doc.trash", slowRec.id);
+        };
+        // Queue an unsaved edit in saveTimers so Main's flushAll() awaits the 450 ms write!
+        window.vrtti.store.updateContent(slowRec.id, "slow flush body");
+
         const origOpen = window.open;
         let url = null;
         window.open = (u) => { url = u; return {}; };
@@ -1867,6 +1905,11 @@ describe(
       await spaceTab2.cdp.waitFor(
         `window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.t1)})`
       );
+      await cdpA.eval(`window.__restoreCreateWritable()`);
+      const mainDroppedLateT1 = await cdpA.eval(
+        `!window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.t1)})`
+      );
+      assert.equal(mainDroppedLateT1, true, "slow (>300ms) Main claim must still transfer T1 cleanly");
       await spaceTab2.cdp.eval(`window.vrtti.store.loseSpace("infra")`);
       await new Promise((r) => setTimeout(r, 150));
       const afterLose = await cdpA.eval(`({
