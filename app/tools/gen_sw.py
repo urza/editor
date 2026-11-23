@@ -60,22 +60,27 @@ def write_version(stamp):
     (APP / "js" / "version.js").write_text(body)
 
 
-def is_excluded(rel):
-    if rel.parts[0] in EXCLUDE_DIRS or rel.name in EXCLUDE_FILES:
+def is_excluded_dir(rel):
+    if rel.parts[0] in EXCLUDE_DIRS:
         return True
-    posix = rel.as_posix()
-    return any(posix.startswith(tree + "/") for tree in EXCLUDE_TREES)
+    return rel.as_posix() in EXCLUDE_TREES
 
 
 def precache_files():
+    # Prune excluded directories in place during os.walk instead of rglob("*"):
+    # rglob descends into vendor/twemoji/ and stats ~4,000 SVGs before
+    # filtering them out, which costs seconds on slow or bind-mounted disks.
     files = []
-    for path in sorted(APP.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(APP)
-        if is_excluded(rel):
-            continue
-        files.append(rel)
+    for dirpath, dirnames, filenames in os.walk(APP):
+        rel_dir = Path(dirpath).relative_to(APP)
+        dirnames[:] = [d for d in dirnames if not is_excluded_dir(rel_dir / d)]
+        for name in filenames:
+            if name in EXCLUDE_FILES:
+                continue
+            rel = rel_dir / name
+            if (APP / rel).is_file():
+                files.append(rel)
+    files.sort()
     return files
 
 

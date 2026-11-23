@@ -1,0 +1,3 @@
+# Skip ~4,000 vendored Twemoji SVGs during code search (rg, fd, ag).
+# Kept out of .gitignore because these files are tracked in Git.
+/app/vendor/twemoji/
