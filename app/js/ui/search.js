@@ -473,8 +473,8 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       : null;
     const id = row.dataset.id;
     // The settings panel covers the editor; a hit opened behind it would be
-    // invisible. Before the open, not after: closing hands focus back to the
-    // element it was taken from, which would undo the editor's own focus.
+    // invisible. Close it before activating so the hit's selection and focus
+    // land last.
     run("settings.close");
     if (id) {
       // On a phone the note list covers the editor, so close it before

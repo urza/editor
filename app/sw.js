@@ -3,7 +3,7 @@
 // app files change. gen_sw.py also writes the version into the line below,
 // so this file changes with every build: an iPhone ignored a change of the
 // imported sw-precache.js alone and kept an old build. Do not drop the ?v=.
-importScripts("./sw-precache.js?v=3b9e2e34421a");
+importScripts("./sw-precache.js?v=a2accb75fd9f");
 
 const CACHE = "vrtti-" + self.__PRECACHE.version;
 
