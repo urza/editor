@@ -1741,7 +1741,7 @@ async function start() {
   mountNewButton();
   mountThumb();
   sidebar = mountSidebar(store, folders, sync, workspaces);
-  const statusbar = mountStatusbar(store, sync, zoom, editor.view);
+  const statusbar = mountStatusbar(store, sync, zoom, editor.view, keyring);
   const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
   // After the status bar exists: autoUpdate reports through it.
   setTimeout(autoUpdate, 3000);

@@ -4756,6 +4756,7 @@ name = "vrtti"
 version = "0.1.0"
 dependencies = [
  "fs-err",
+ "gethostname",
  "serde",
  "serde_json",
  "tauri",

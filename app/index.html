@@ -315,6 +315,11 @@
     </main>
   </div>
   <footer id="statusbar">
+    <!-- This device's name at the far left: sync name while sync is active,
+         else the desktop shell's machine hostname (ui/statusbar.js). Hidden
+         here and whenever neither is available, so a browser without sync
+         shows no blank gap. -->
+    <span id="status-device" hidden></span>
     <!-- "Line 12, Column 8 · 214 words", from ui/statusbar.js. -->
     <span id="status-pos"></span>
     <!-- Note zoom (ui/zoom.js). Hidden here and shown by ui/statusbar.js

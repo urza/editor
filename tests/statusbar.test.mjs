@@ -2,7 +2,7 @@
 // The texts of the status bar (.work/mixed-spellcheck/plan.md, step 8b).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countWords, positionText, readTime, stateSign } from "../app/js/ui/statustext.js";
+import { countWords, deviceLabel, positionText, readTime, stateSign } from "../app/js/ui/statustext.js";
 
 test("countWords counts letters and digits, with inner hyphens and apostrophes", () => {
   assert.equal(countWords("# Weekend in Prague\n\n- passport, 2 tickets"), 6);
@@ -54,4 +54,31 @@ test("readTime: short notices keep 1.5 s, long ones get time to read, 10 s at mo
   const long = "the model did not answer; 3 words changed, 1 word needs your choice (blue mark)";
   assert.ok(readTime(long) >= 5000, String(readTime(long)));
   assert.equal(readTime("x".repeat(1000)), 10000);
+});
+
+test("deviceLabel: sync name when sync is active, otherwise machine hostname", () => {
+  assert.deepEqual(
+    deviceLabel({ syncActive: true, syncName: "Work Laptop", hostname: "WIN-123" }),
+    { text: "Work Laptop", title: "This device (sync): Work Laptop" }
+  );
+  assert.deepEqual(
+    deviceLabel({ syncActive: true, syncName: "", hostname: "WIN-123" }),
+    { text: "WIN-123", title: "This device (hostname): WIN-123" }
+  );
+  assert.deepEqual(
+    deviceLabel({ syncActive: true, syncName: "this device", hostname: "WIN-123" }),
+    { text: "WIN-123", title: "This device (hostname): WIN-123" }
+  );
+  assert.deepEqual(
+    deviceLabel({ syncActive: true, syncName: "this device", hostname: "" }),
+    { text: "this device", title: "This device (sync): this device" }
+  );
+  assert.deepEqual(
+    deviceLabel({ syncActive: false, syncName: "Work Laptop", hostname: "WIN-123" }),
+    { text: "WIN-123", title: "This device (hostname): WIN-123" }
+  );
+  assert.deepEqual(
+    deviceLabel({ syncActive: false, syncName: null, hostname: "" }),
+    { text: "", title: "" }
+  );
 });
