@@ -682,9 +682,11 @@ export function mountEditor(host, store) {
   store.events.addEventListener("active", (event) => {
     const { id, previousId } = /** @type {CustomEvent} */ (event).detail;
     if (previousId === id) {
-      // The buffer on screen was clicked again. A document has nothing to do;
-      // a locked placeholder gets its unlock prompt back after a cancel.
+      // The buffer on screen was clicked again. A locked placeholder gets its
+      // unlock prompt back after a cancel; a live document still needs focus
+      // back from the sidebar row (or after Settings closed over it).
       if (placeholderId === id) reactivate(id);
+      else if (!phoneListOpen()) view.focus();
       return;
     }
     // Park the live state before swapping, so undo history survives the

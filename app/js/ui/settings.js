@@ -17,7 +17,7 @@ import { BUILD } from "../version.js";
 import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
 import { listRowsLong } from "./sidebar.js";
-import { watchBack } from "./shell.js";
+import { phoneMode, watchBack } from "./shell.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
 /**
@@ -1300,8 +1300,6 @@ export function mountSettings(deps = {}) {
     if (!panel.hidden) refresh();
   });
 
-  /** @type {Element | null} */
-  let returnFocus = null;
   // On a phone the panel is the whole screen, and Back must close it, not
   // leave the app (watchBack in ui/shell.js).
   let stopBack = () => {};
@@ -1322,7 +1320,6 @@ export function mountSettings(deps = {}) {
   function open() {
     refresh();
     panel.hidden = false;
-    returnFocus = document.activeElement;
     // Focus moves off the editor, so typing cannot land in a document hidden
     // behind the panel, and Escape has somewhere to arrive.
     panel.focus();
@@ -1332,11 +1329,23 @@ export function mountSettings(deps = {}) {
 
   function close() {
     if (panel.hidden) return;
+    // Read before hiding: setting panel.hidden = true drops focus from inside
+    // the panel onto document.body.
+    const active = document.activeElement;
+    const hadFocus =
+      !active ||
+      active === document.body ||
+      active === document.documentElement ||
+      panel.contains(active);
     panel.hidden = true;
     stopBack();
     window.removeEventListener("keydown", onKeydown, true);
-    if (returnFocus instanceof HTMLElement) returnFocus.focus();
-    returnFocus = null;
+    // Return focus to the editor on desktop instead of restoring the Settings
+    // button, which stayed invisibly focused after mouse clicks and re-opened
+    // Settings on a later Space or Enter (e.g. waking a sleeping display).
+    // Phone mode skips this so closing Settings never pops up the on-screen
+    // keyboard or closes the full-screen note list behind it.
+    if (hadFocus && !phoneMode()) run("editor.focus");
   }
 
   function toggle() {

@@ -151,10 +151,10 @@ export function mountSidebar(store, folders, sync, workspaces) {
    * Every gesture that opens a document goes through here, so the document
    * ends up visible: the settings panel covers the editor on a PC, and on a
    * phone the drawer covers both. Both close before the open, not after:
-   * closing settings hands focus back to where it was taken from (the
-   * Settings button, say), and closing the phone note list first lets the
-   * editor see it is visible so it takes focus and prompts for PIN/unlock
-   * when needed. `sidebar.autoclose` is a no-op on a PC.
+   * closing settings first keeps its focus handover ahead of the new note's
+   * activation, and closing the phone note list first lets the editor see it
+   * is visible so it takes focus and prompts for PIN/unlock when needed.
+   * `sidebar.autoclose` is a no-op on a PC.
    * @param {() => unknown} act
    */
   function open(act) {
@@ -181,6 +181,10 @@ export function mountSidebar(store, folders, sync, workspaces) {
   // buffer list never hides it (architecture.md §9, §28). Desktop only; phone
   // reaches Settings through the round thumb menu.
   barSettings.addEventListener("click", () => {
+    // Drop focus from the toggle button first: clicking a <button> focuses it
+    // before click runs, so toggling Settings closed would otherwise leave
+    // #bar-settings focused and let a later Space or Enter re-open Settings.
+    barSettings.blur();
     // On a narrow desktop window the drawer sits above the settings panel, so
     // it must close first or the panel opens behind it.
     run("sidebar.autoclose");
