@@ -14,6 +14,14 @@ export const hasFileSystemAccess = "showDirectoryPicker" in window;
 // build runs in a browser and in the shell.
 export const isDesktop = Boolean(/** @type {any} */ (window).vrttiDesktop);
 
+// Machine hostname reported by the desktop shell (src-tauri/src/lib.rs).
+// Empty in a browser (browsers do not expose the OS hostname) and in older
+// shell builds that predate this field.
+export const desktopHostname =
+  typeof /** @type {any} */ (window).vrttiDesktop?.hostname === "string"
+    ? /** @type {any} */ (window).vrttiDesktop.hostname.trim()
+    : "";
+
 // "Can this device open files and folders at all?" Every gate about disk asks
 // this one, because the shell reaches disk through Rust and needs no browser
 // API (architecture.md §17). hasFileSystemAccess stays the narrower fact, and

@@ -300,6 +300,27 @@ fn workspace_of(label: &str) -> &str {
     label.strip_prefix("ws-").unwrap_or(label)
 }
 
+/// This machine's hostname for `window.vrttiDesktop.hostname`, shown in the
+/// status bar when sync is off or has no device name.
+fn machine_hostname() -> String {
+    gethostname::gethostname()
+        .to_string_lossy()
+        .trim()
+        .to_string()
+}
+
+/// The initialization script that introduces the shell to the page before any
+/// page script runs. Written with serde_json so quotes, backslashes, or
+/// non-ASCII in a hostname cannot break out of the JS object literal.
+fn desktop_marker_js(platform: &str, version: &str, hostname: &str) -> String {
+    let desktop = serde_json::json!({
+        "platform": platform,
+        "version": version,
+        "hostname": hostname,
+    });
+    format!("window.vrttiDesktop = {desktop};\n{}", debug::RECORDER_JS)
+}
+
 /// The one window factory (desktop-wrapper-goose-patterns.md §2). A window
 /// that already exists for the workspace comes forward instead.
 fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Result<()> {
@@ -321,11 +342,12 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
     // The version is package_info's, never CARGO_PKG_VERSION: CI sets it
     // at build time (architecture.md §18) and Cargo.toml stays 0.1.0. The
     // page shows it, so it gets the short form Help > About shows.
-    let marker = format!(
-        "window.vrttiDesktop = {{ platform: '{}', version: '{}' }};\n{}",
+    // The hostname lets the status bar name this machine when sync is off.
+    let version = app.package_info().version.to_string();
+    let marker = desktop_marker_js(
         std::env::consts::OS,
-        update::display_version(&app.package_info().version.to_string()),
-        debug::RECORDER_JS
+        update::display_version(&version),
+        &machine_hostname(),
     );
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("vrtti")
@@ -771,6 +793,16 @@ mod tests {
         ];
         let paths = paths_from_args(args.iter(), &cwd);
         assert_eq!(paths, vec![cwd.join("notes.md"), absolute]);
+    }
+
+    #[test]
+    fn desktop_marker_js_writes_json_fields() {
+        let js = desktop_marker_js("windows", "26.11", "urza's \"pc\"\n");
+        assert!(js.starts_with("window.vrttiDesktop = {"));
+        assert!(js.contains(r#""platform":"windows""#));
+        assert!(js.contains(r#""version":"26.11""#));
+        assert!(js.contains(r#""hostname":"urza's \"pc\"\n""#));
+        assert!(js.lines().next().unwrap().ends_with(';'));
     }
 
     #[test]

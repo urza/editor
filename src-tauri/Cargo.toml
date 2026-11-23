@@ -35,6 +35,9 @@ fs-err = "3"
 # Shell auto-update (architecture.md §18). Used from Rust only, like the
 # dialog plugin: the page gets no updater permission in capabilities/.
 tauri-plugin-updater = "2"
+# Machine hostname for the status bar when sync is off or has no device name.
+# Already in Cargo.lock via x11rb; uses uname on Unix and GetComputerNameExW on Windows.
+gethostname = "1"
 uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

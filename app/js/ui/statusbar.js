@@ -1,9 +1,9 @@
 // @ts-check
 // Status bar (.work/mixed-spellcheck/plan.md, "The status bar on a PC"): the
-// cursor position and word count at the left; at the right the note zoom,
-// the spellcheck languages of the note, and one state sign for "saved and
-// synced". Phone mode hides the bar; its notices then show in #notice above
-// the thumb button.
+// device name, cursor position and word count at the left; at the right the
+// note zoom, the spellcheck languages of the note, and one state sign for
+// "saved and synced". Phone mode hides the bar; its notices then show in
+// #notice above the thumb button.
 //
 // The name of the note, the build stamp and the update button were here
 // before. The first line of a note already shows its name, and Settings shows
@@ -12,10 +12,11 @@
 // shell offer the same (user decision, 2026-11-20).
 
 import { run } from "../commands/registry.js";
+import { desktopHostname } from "../model/capabilities.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { editorEvents } from "../editor/editor.js";
 import { activeLangs } from "../editor/mixed.js";
-import { countWords, positionText, readTime, stateSign } from "./statustext.js";
+import { countWords, deviceLabel, positionText, readTime, stateSign } from "./statustext.js";
 import { ZOOM } from "./zoom.js";
 
 /**
@@ -40,8 +41,10 @@ const COUNT_DELAY = 250;
  * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
  * @param {ReturnType<import("./zoom.js").mountZoom>} zoom
  * @param {import("@codemirror/view").EditorView} view
+ * @param {import("../crypto/keyring.js").KeyRing} [keyring]
  */
-export function mountStatusbar(store, sync, zoom, view) {
+export function mountStatusbar(store, sync, zoom, view, keyring) {
+  const statusDevice = /** @type {HTMLElement} */ (document.getElementById("status-device"));
   const statusPos = /** @type {HTMLElement} */ (document.getElementById("status-pos"));
   const statusState = /** @type {HTMLElement} */ (document.getElementById("status-state"));
   const statusLang = {
@@ -52,6 +55,25 @@ export function mountStatusbar(store, sync, zoom, view) {
   // Phone mode hides the status bar, so a notice goes here too (app.css
   // shows it in phone mode only).
   const phoneNotice = /** @type {HTMLElement} */ (document.getElementById("notice"));
+
+  // ---- Device name ----------------------------------------------------------
+
+  function renderDevice() {
+    const label = deviceLabel({
+      syncActive: Boolean(sync?.isConfigured),
+      syncName: keyring?.deviceName,
+      hostname: desktopHostname,
+    });
+    statusDevice.hidden = !label.text;
+    statusDevice.textContent = label.text;
+    statusDevice.title = label.title;
+  }
+
+  // Follow sync connect/disconnect (including across windows) and keyring setup
+  // or changes so the displayed name switches without a reload.
+  sync?.events.addEventListener("status", renderDevice);
+  sync?.events.addEventListener("spaces", renderDevice);
+  keyring?.addEventListener("change", renderDevice);
 
   // ---- Position and words ---------------------------------------------------
 
@@ -234,6 +256,7 @@ export function mountStatusbar(store, sync, zoom, view) {
   statusZoom.addEventListener("click", () => run("view.zoomReset"));
   zoom.events.addEventListener("change", renderZoom);
 
+  renderDevice();
   renderPos();
   renderSpell();
   renderState();

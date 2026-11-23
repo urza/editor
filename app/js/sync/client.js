@@ -925,6 +925,9 @@ export function createSyncClient({ store, keyring }) {
     if (res.status === 409) throw new SyncError("this device is registered already", 409);
     if (!res.ok) throw httpError(res);
     await saveConfig({ url: base, token, v: 2 });
+    // Mirror disconnect() so statusbar and Settings see sync become active
+    // immediately, even before the first sync round runs.
+    setStatus({ state: "idle", lastSyncAt });
   }
 
   /**

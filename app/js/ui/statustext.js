@@ -18,7 +18,35 @@ export function countWords(text) {
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * The left part of the bar.
+ * The device name at the left of the status bar: the sync device name while
+ * sync is active and has one, else the machine's hostname (from the desktop
+ * shell's window.vrttiDesktop.hostname). Returns empty strings when neither
+ * is available so ui/statusbar.js hides the slot.
+ *
+ * KeyRing.setup() stores "this device" when the user leaves the name blank
+ * (crypto/keyring.js); a real machine hostname takes precedence over that
+ * placeholder.
+ *
+ * @param {{ syncActive: boolean, syncName?: string | null, hostname?: string | null }} info
+ * @returns {{ text: string, title: string }}
+ */
+export function deviceLabel({ syncActive, syncName, hostname }) {
+  const synced = syncActive ? (syncName ?? "").trim() : "";
+  const host = (hostname ?? "").trim();
+  if (synced && synced !== "this device") {
+    return { text: synced, title: "This device (sync): " + synced };
+  }
+  if (host) {
+    return { text: host, title: "This device (hostname): " + host };
+  }
+  if (synced) {
+    return { text: synced, title: "This device (sync): " + synced };
+  }
+  return { text: "", title: "" };
+}
+
+/**
+ * Cursor position and word count.
  * @param {{ line: number, column: number, words: number,
  *           selections: number, selected?: { lines: number, chars: number, words: number } }} at
  *   `selections` counts the selection ranges; `selected` describes the main

@@ -2021,6 +2021,21 @@ img.twemoji {
   user-select: none;
 }
 
+/* Device name on the far left of the status bar (ui/statusbar.js): sync name
+   while sync is active, else the desktop shell's machine hostname. Quiet grey
+   matching #status-state so it separates cleanly from the dimmer cursor
+   position; max-width + ellipsis keep a long hostname from crowding it. */
+#status-device {
+  flex: 0 1 auto;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9aa7b4;
+}
+
+#status-device[hidden] { display: none; }
+
 /* flex: 1 pushes everything else to the right edge. Tabular digits, so the
    text does not shift while the cursor moves. */
 #status-pos {
