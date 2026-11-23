@@ -119,6 +119,7 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
     <p class="meta">
       <span class="tag ok">mental model</span>
       <span><a href="trust-model.html">How vrtti trusts devices</a></span>
+      <span><a href="note-lifecycle.html">Where a note goes</a></span>
       <span><a href="https://urza.github.io/editor/">Open vrtti</a></span>
       <span><a href="https://github.com/urza/editor">GitHub repository</a></span>
     </p>
@@ -149,8 +150,8 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
         <ul>
           <li>Press <code>+</code> (or <kbd>Alt</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd>) and type. The first line is the title until you rename the note.</li>
           <li>The app writes the text to IndexedDB 300 ms after you stop typing. A crash or a reboot loses nothing.</li>
-          <li>Closing a note never asks for confirmation. The note moves to <b>Recent</b> and stays there without a time limit. Closing an empty scratch note drops it instead.</li>
-          <li>Which tabs are open and which sit in <b>Recent</b> is local to each window and never syncs across devices.</li>
+          <li>Closing a note never asks for confirmation. A local note moves to <b>Recent</b>, and a synced note moves to the drawer of its space. A local note that stays 30 days in Recent goes to Trash. Closing an empty scratch note drops it instead.</li>
+          <li>Tabs, <b>Recent</b>, and the space drawers belong to each device and never sync. <a href="note-lifecycle.html">Where a note goes</a> shows each case.</li>
         </ul>
       </div>
       <div class="callout ok">
@@ -225,7 +226,7 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
       <li><b>Devices find each other.</b> Each device signs an introduction for the devices it meets. Your other devices follow these signed introductions, so a device invited with no space still shows in <b>Settings › Devices</b> on every device, and any member can tick it into a space. <a href="trust-model.html">How vrtti trusts devices</a> explains the signatures.</li>
       <li><b>Move a note between spaces.</b> <b>Move to &lt;space&gt;</b> in a note's <code>⋯</code> menu re-encrypts that note for the target space's members.</li>
       <li><b>Conflict copies without prompts.</b> When two devices edit the same note offline, the newer server revision becomes current and your local edits stay right beside it as a separate note.</li>
-      <li><b>30-day Local Trash.</b> When a note is deleted on the server, moved to a space this device is not in, or when this device is removed from a space, the local copy moves to <b>Settings › Storage › Deleted notes</b> for 30 days. You can restore it as a local plain note at any time during those 30 days.</li>
+      <li><b>30-day Trash on each device.</b> When a note is deleted on the server, moved to a space this device is not in, or when this device is removed from a space, the local copy moves to <b>Trash</b> for 30 days. The trash can at the bottom of the sidebar opens it. <b>Restore to &lt;space&gt;</b> syncs the note again, and <b>Restore as local</b> keeps a copy on this device only. <a href="note-lifecycle.html">Where a note goes</a> shows each case.</li>
     </ul>
   </section>
 

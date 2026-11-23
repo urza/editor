@@ -36,7 +36,7 @@ jobs:
         run: python3 app/tools/gen_sw.py
 
       # The site is the app plus two sibling pages: the crypto prototype and
-      # the guides in docs/ ("How it works" and the trust model). Both are deliberately outside app/,
+      # the guides in docs/ ("How it works", the trust model, and "Where a note goes"). Both are deliberately outside app/,
       # so they never enter the service worker precache; sw.js also exempts
       # them from the app-shell fallback.
       - name: Stage site

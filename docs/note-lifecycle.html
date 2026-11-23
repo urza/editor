@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Where a note goes in vrtti · Recent and Trash</title>
+<style>
+/* Layout: one column. Words, then the four states and a diagram, then local actions, the
+   delete tools, Space Windows, a device A → device B table, and the reasons.
+   Single dark theme on purpose: it copies the editor's own Mariana chrome (app/app.css).
+   The other pages in docs/ use the light and dark doc template. This page keeps the
+   colors of the app, because its state colors match the app's sidebar. */
+:root {
+  --bg: #2E3238;
+  --panel: #22262A;
+  --raise: #393F46;
+  --rule: #647382;
+  --fg: #D9D9D9;
+  --head: #E6E6E6;
+  --dim: #8A96A3;
+  --orange: #F9AE58;
+  --green: #99C794;
+  --red: #EC5F67;
+  --blue: #6699CC;
+  --purple: #C695C6;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: Consolas, Menlo, "DejaVu Sans Mono", monospace;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.55; }
+img { max-width: 100%; }
+a { color: var(--blue); }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 32px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font-size: 22px; font-weight: 500; color: var(--head); margin: 0 0 6px; text-wrap: balance; }
+h2 { font-size: 13px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--head);
+  margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); }
+h3 { font-size: 14px; font-weight: 500; color: var(--head); margin: 0 0 8px; }
+p { margin: 0 0 10px; max-width: 72ch; }
+.lede { color: var(--dim); }
+code, kbd { font-family: var(--mono); font-size: 12.5px; color: var(--head); }
+kbd { background: var(--raise); border-radius: 3px; padding: 0 5px; }
+ul { margin: 6px 0 10px; padding-left: 20px; } li { margin-bottom: 5px; max-width: 72ch; }
+
+/* Header: the same brand row and links as how-it-works.html and trust-model.html */
+.brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.brand-row img { width: 32px; height: 32px; }
+.eyebrow { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; margin-top: 12px; }
+
+/* Words */
+.words { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+.words dt { color: var(--head); white-space: nowrap; }
+.words dd { margin: 0; color: var(--fg); max-width: 72ch; min-width: 0; }
+@media (max-width: 560px) { .words { grid-template-columns: 1fr; gap: 2px; } .words dd { margin-bottom: 10px; } }
+
+/* Places */
+.places { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.place { background: var(--panel); border-radius: 6px; padding: 14px; border-top: 2px solid var(--c); }
+.place b { display: block; color: var(--head); font-weight: 500; margin-bottom: 4px; }
+.place span { font-size: 13px; color: var(--dim); display: block; }
+.place .scope { margin-top: 8px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--c); }
+
+/* Diagram */
+.diagram { background: var(--panel); border-radius: 6px; padding: 12px; margin-top: 16px; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 720px; height: auto; }
+.diagram text { font-family: var(--sans); }
+.note { font-size: 13px; color: var(--dim); margin-top: 8px; }
+
+/* Tables */
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--raise); vertical-align: top; font-size: 13.5px; }
+th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); font-weight: 500; }
+td:first-child { color: var(--head); width: 30%; }
+tr.group td { color: var(--dim); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding-top: 18px; border-bottom-color: var(--rule); }
+.to { display: inline-block; font-size: 11.5px; padding: 1px 8px; border-radius: 9px; margin: 1px 4px 1px 0; white-space: nowrap;
+  background: color-mix(in srgb, var(--c) 20%, transparent); color: var(--c); }
+.t-open { --c: var(--blue); } .t-recent { --c: var(--green); } .t-trash { --c: var(--orange); }
+.t-gone { --c: var(--red); } .t-space { --c: var(--purple); } .t-none { --c: var(--dim); }
+td small { display: block; color: var(--dim); font-size: 12.5px; margin-top: 3px; }
+
+.callout { background: color-mix(in srgb, var(--orange) 10%, var(--panel)); border-radius: 6px; padding: 14px 16px; margin-top: 14px; }
+.callout b { color: var(--head); font-weight: 500; }
+.cases { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.case { background: var(--panel); border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.case b { display: block; color: var(--head); font-weight: 500; margin-bottom: 4px; }
+.case p, .case li { font-size: 13px; color: var(--dim); }
+.case p { margin: 0; }
+.case ul { margin: 0; padding-left: 18px; }
+.src { font-size: 12px; color: var(--dim); margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand-row">
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAABmJLR0QA/wD/AP+gvaeTAAAZIElEQVR4nO2df4wdV3XHv+feeW/X3rXjDThxYoJBVWI7DsEhJCGJCm6hQRARAsZJoSF2+0dUqGilSpWARiqoRQGJtn+0adWqqAEkBHLTlFQBRNomFEGcxHZix07WUAjkl53YWe/au+v39s09p3/cO2/mvd21Z96PXa/nfKznt2/fzL13Z8659/yaGUBRFEVRFEVRFEVRFEVRFEVRFEVRzkFosQdwOm6++RMj1WUDN1qDDQ6y0Rp7qRAuJGA5QVYKzHIiRIs9zjIjgpjA0wI6IcC0AY44dj83QqOOMTpzqv6Thx761vHFHud8nFUKsGXLlmjl6nUfrJjod0DybmPMJgAWAJgZM40GnHMQFrAwhGWRR6wAABmCIQMyBGstqpUKjDHJ146ZD5DgfxvCD1dl6ns7d+50izneLGeFAtx+x13vcI14hxj8LoFWiwjq9RnUanXU6jU0GjGcO2uOmZIDay0qlQiDA4MYHBzAwEAVRARmmXAcPxi7+F8f+vdvPbLY41xMBaBbb9u+zZL5HBmzWUQwfaqGqckp1Oo1sM7u5xTGEAYHBjE0PITlywZBRBCRp1j4nge+c9+/AViUE74YCkAf/tj2T0bWfp4I6+PY4cSJE5icmgYzL8JwlIXGGIPhoeVYuXIloshCBM855nv+Y+d931zosSyoAnx42+9fbkn+kYx590yjgRMnTmJqahoiOtuXleXLl2HVqvNQrVQgIruIzKfv//bXnlqo/hdEAbbs2DE4Mk1fITKfFnHR8eMTODk5uRBdK0uEFcPDGBk5D8aYhgjfe+rEis9+//t/V+93v31XgFtv3/4bFnYnCFdNTk5h7Pi4mjrKnBhjcP7IKgwPD0FEDjRi2faf99832s8+bT8bv2XrndutiR5kduuOHRvDxImTau4o8+IDIacwM9PAsmWDF0TWbl+/6W0vjh7ct79fffZNAW752J1fiCL7tzMzjYFXXzuG+sxMv7pSzjEacYypqWkMDFQHKlHlIxuu2Dw0evDph/vRVz8UgD562x/cawz92dTUNB099rqaPEphRART09OIooiq1eqNl23cvPbQs7c+BDzaUxOixwrwBXPrbeu+TUQ7Tp48idfHjmORwrvKOYE3iawxGBwcuHr9FWMbRg/uu7+XPfRUAT5y21v+wZDZPj4xgfHxiV42rZSYU7UaAGDZ4LIr1m+88pLRZ/c92Ku2e6YAH966/a/I0J9OnpxU4Vd6Tr1WhyHCwODgVRs2Xkmjz+57tBft9kQBbtl653ZrzV9PTU3T2NhZW/inLHFqtTqiKEJ1oPqeS9df+fOfPbfvmW7b7DoPcMu2O9Ybip6cqc+sePW1oxrmVPoKEeHCC1ajOlA9QQ2+5oEHvvGzbtozZ95kfrbs2DFIsDvZ8Ypjr4+p8Ct9R0Rw9NjrYMcrOaKdH/jAZwa6aa8rBVg5xV82RG97fWwMcRx305Si5MY5h7Gx4zBEV1aHxu/ppq2OTaAPbd2+yZLsnZyerqrdrywG558/guGh5Q2Bufq7O+/ryB/oeAUgI//khKsa8VEWi/HxCTjmConc22kbHSnAhz76iU8a4MaJiROa5VUWDWbGxMQJgOQ3P7T1jo930kYnCkDGRp9rNGJMTk510qei9IzJySk0GjEM0d3owKQvnAf44K0fvy0y9lPHj0+g0WgU3V1Reo6IYPmyZasvW79p/6HRZ54rsm/hFSAy0WcbjRinTp0ququi9IXp6VNoNGKQsZ8vum+hJeODWz95XQTadXx8XM2fghRdmzWjUozh4SGMrFoFQK558P5v7s67X6GbShnwDhHC9PQ09BTND837oYM2ModZj/j8TE9PY9V5K0GE7QByK0BuE+iuu+6qEJmtp2o1jfzMAWVerR8AgqQvEhBhnpe0bNvecFuzSgZmRq1ehwi2bdu2Lbdvm1sBXjo69X4SrPazv5LQIpDtQh+EPf3CAGJA8/yDGL9N2D6rFLPbV0VoZ2pqCkR0Ya1hbsq7T24FIOKbWBi1Wt8v1F8yzC/44ZeJsBPBEMEY+BfJ3K/m936fVCmCMsyjCIqnVquDheFg35d3n9w+gIF9T71e14K3ALX9QBBvx4h/EaXmkJHMdtSy9ywk2VYApuRHQnLYifxGguaXyVvpERE0ZhqoVCrvybtPrhXg5ps/MQLCpnpdL2wH2ux8eDPFz/jJbJ/M8oAhgMLMbg3BEiEy/mUNYA3Sz0Swxq8UZNDcP2mLEgUDhT7TcehK4KnX6yDC5ltv3bEqz/b5VgDLN0CMrddnSj/VUMvP4WBIYrIkJlCw6gkw4R0kzW0MSdiTWtpl8S1KWAZEACaBCPmFRQSc9MJp/wLSlSBQq81gxQqyDqeuB/D9M22fSwHI0uUANPOb0BbnTAXbfzZNwRd/y/CwQhiTLLmU2EIpwcZhAMz+OycEYm/uMAQsBEsACwBKzKLMSlB26QeaZflO7Ab0SgEAXCbMYC73Lcqz5juRZGx978ASvFxboowJIy2mTHOloFZpFUFz9ucg5JT9mQEyAhbfFrMfiwhAxBDxdhBJufXAuRjCDEvYkGf7XAogjMsacaPUB5YQzG94gZdg9gCpD2CIQMYLuQ3RnPSdfIDTpI5Xsr9kZn9hAgNwLGAROCaQAA4EEgExQcSHWL3QpytB1jEu87maaTQQRZVL82ybbwUgrNEHVGQI2pCYPUTUnPUj400gawkR+fvi27ACWJvsQ8FcSsTUgAVgEYgFnBNYIjjx5lMsXulYCDEAYoKDVySW4AOUferP4JxDpRKtybNtPgUQDLGGPwG0mT7Nmd+bJ174CZEBLHllsDa8ZxSBklh/sKcEQfiZwAI4Q3AsiFng4G0gMkDMhMgIYggMA06SRBmFFSmsCiWHRUCg4Tzb5nOCDQ2VufxhtkgldnwS8kwTXRH5cGfFEiILRMZ4hQiKYIIznE1sSRBgZoARBN/5NmNikEtGIIjZ/x4kEONXBUpWgcwSUGafWEQghKE82+bzAYAhlH0FSAQ2M/sTvEBTM6bvZ3kv/F4JKjaJ8wcFCNt5hzp4A+LDoo4FzL6NmADDAnIGWVEWeGtfQDAuWP7ZVQACISqv9AMQZhDQuxUAjIowSn1QATQzvcnsnxgwvoLHIEIi6EDFEKpB+L0iCN65bjmuumQQa0cshgZs8AO8HT9Vd3hpPMZTL9Sw59fTIJfmFUISwJs34p1lAwaHeZ8QVgFJneAynythQBjVPNvmDIMKSn9UA622P8EkTq9hGGNCZtegYr1PUI2Ai1ZabL9+FS5aVZmzTUPAikGLjWssNq4ZwJbLhvD1nx7HkZMxEANivfCzMFgAG96N8f4BS2YV0HOEIrLa1X2BykAS+88GbZIsLwGwzTh/tswBiKxBxRIuWhnhM+99w7zCPxcXr4rwx+99A9asiII5ZZomlE38DfJ9J7mHZD1KMsJaHpEPVYCCJEJFzVogytT5iH83PgRasYLt16/CULX4YR4aMLjz+lV+JQmOdbYP/xxqakkqq8AXRxUgL81p1YuZQToTGxj/br0zHIUI0DvXDRea+dtZO1LBO9YN+WhSaNvYtj7JO+J+jFoZV5RcPgCLgMtqXWaEiRI7qBlkCaUNIfubrQQla3DVm7u6bSUA4KpLBrH7hVMwjptJN19jJCD2Y5BknJKOLfldGYN3vm5KfYC+0GJfBwPch0NDvY/xYdGIDN400vnsn3DJSAURGZBJHe5wiUxi/KvN3wWqAHlJJpQWgfOzcZrdTZxhH75c3oHt387QgAFBQhaZWvpKIj8tCpkdq3JGNAyag7kywQiXPvpFQJqmCcAwZEIRXPd9+xBr0hZnLqpPLrIH0vOSvpc5E1xEVvPWApVZ/ltIypJJjHcHkveQFTbNGbl3B4uC32GCqeVlPhkDg4RAwt4naD9PZTxnBWQ11xpdUve3DUpXgqQMuvlKv0uvBe6hRd68hiAZSdrnXGNSbyC/zKoP0ClpBsojSZY42Ok97iqNAKHFH2kZg1IYVYAOaJe35MZWCHX7JNRzBaBQ6JYq2unHpORDFaBDfEVy2zK7EFLYLvgiPbW2ykbecmj1gdF6HLLHY9bPLTHJXkAQkvn7yzGuMlHk784ZBRKI1kPPw1zHpNeiN5+Yn07cy3uuRDh3ClxNIKXUqAIopUYTYZ0wnxEO9PcYncnwn+s8lfGc9ToRpijnKqoASqnJVwpRxqJyZUmTV2Z1BVBKjZZDd022MEfQn6L8ubxazQPMT4/LoVX8PXlTUf04TqfrSzPBrRT5u9UEUkpNvhVAJNy7u8+jWSrMF/fv19R7uv40DzAbVidYUXKhCqCUGlUApdRoGLQrstcnSuZzNhzaK85UgKTGf0p+Wc2ZCe5mMIqy8OSVWTWBlFKjCqCUGs0EFyBPGX4/LgsochmAZoKL/d16QUwnZP3cPMmoXvWXpwZDfeFCxz+fCST+sWyKshQQSG4vWMOgPWOuGoVetl3E+GkfT9nocRhUUc5VVAGUUqMKoJQavSZYOSfRcmhFyYEmwgqQN+nU7+th8iTG+jGOpUIfEmGSvpR5pE7CezY71uMOm/2c7pV0LemuZaOArKoJpJQaVQCl1OS+HkAjQcpSQUT0egBFyYMqgFJqVAGUUqMKoJSanHeGY80DJMx5EQxlYvASPvewz5Zcg7T1lc3RaB4AANKHOp4ZzQTn5EwXf/U7+5o3AzzXNmWjyN+tJpBSalQBlFKjCqCUmtzXA6j/qywVilQu6AqglBq9K0RPaL8bQ7+uCMjzmmtMZSP/8dcVQCk1eme4ouQJ/vdrAZjrsy4Esylw/HM/I0zl35PXCOm1/Oft+3S6UBZ8klxNIEU5I6oASqlRBVBKjYZBOyYpj8u+A/0Pg2Z/1/5edu83ocdhUL0mWFlK6DXBipITVQCl1GgirCiLdRXK6frSRFgrBc6BrgBKqdFLIguyGBnYTjPAZT1nRf7unArABZstA3OFIYE0HNrPfk9nf7WPr4xIkNkzoyaQUmpUAZRSowqglBpVAKXU5HOCWQCWcvtVCUvlgoD2fcsEi5fZHOgKoJQaVQCl1Gg5dEckJdCY532hU2HZ7eb6uWzkP/6aCS7I6Up/mu/iUzG96zMt7z1d35oJ9hT5u/VJ8R0y5yFZiMM0Rx96emajF8X3kfZDK0B6y36EGbvH/SVtZvs63ZiUfKgCdEqbjeHFk5pXI/VyVk6fgRH6SDstr53TI1QBcpOZ1YN0t87I3jEWof65wOEp9AJqfSh825hUI/KjF8QUpCngyWwsDIiFiIAZYBYIE3I+oSdfn+xfzOLbD9KfPAYoXXUyj2pq7ty7cSwZCshqTgVIykvLeDQRjJs2mrJGQSAFLBYggEXCCzBdVkf7JLxvz7cNQDjzmDABaHY8qJxnyiPg3DaomkA5EQqSnBG8JDzJED9Li5+hE+Gfqruu+52suVQJwuwvHPqUJEQaBD5xDajf1yScO6gCFEQAUHKvVEnNDwc/O7sgqI4FL4zVu+7vhbF62mZQLNfWd3ZMSjE0EXYmsvaPAEz+IwlBhMBCcAwwe+F3DMRiELFg9/PT2HTx8q663/2rKTgniIXgmIMywPcp1IwQcWKkCtKntM4RLi0DPU+EKchIVBJnkdTWR5idnVcA5xgNJ3jy+RN4eWym4y5fHKtj9/Mn0XACF7MXehf6yvSfhkXDqS+j1HeIZoILkoQjmz4Agt3PQCxAzILYCWIGGg742o9fw2SteEhossb42o+PouGAmEO7LIgFabQp+Sdp+FXxaCa4R6SmhDSdy2ZWVgjMFMwfhmPx5goDcVgFXhmfwVd/8ApeKuAPvDhWx1d/8AqOjM+g4QSxY8QMOOd9CycclIAyeYewMlFIlOlCkAutBi2KZFYBsI/QgODYwJLAERAzgxyBiAAYvDJRx5e/9zKueesKXP2WIbz5/AEMD9pmiJTFR3teeH0Gu399Erufn8SME8QOaARFioNj7R1sgMHe/MlmiZv+StnPU35ZzakAmIGgqsdVQvyfICwQAwgbMAgMQZyNPibmOLNfJRyw6/9O4olfnIQ1BCIAzdBqiCSFEKo3e7wp1Wh7xS6YXI5C6JXDe+iUM/2XFQFAlGvJzRkFkikiqnY1qKVOiK4A4WoA8VEYCs5ozAZEMith5s0kAUc+ckMEWAMYkqz8h2iSt+edAHEsTds/EX4XVoGYAQ7JMA7+SBhiSz6grBARIDKZZ9ucmWCaBDDSzaCWMrMzwUk9Trj9EhOIGI4paEkQSAHYODhLcEIwhmAJMIZ8KDXTfuJMJ2HOOPgTjoFGIvjOh1qbZReZPEC71JdcByBADxUA+bSpDIQSoOYqICAICZhDPMEw4EJERgQMghXAkcBaAoFgSLz9n80vSHLfgSD4SVLN+ciPC+FPlzi/4GY0KjSh1wUEyNeMnMyzbV4f4DCR2djFmM4tfOoVAvI1Ogwv+GwACDhEYpgAC/+1s34TMgKDkExLokohi8tAs8yBHeCCMrD4UKiIwLEvwGuuAMmAVPhTiCCgw3k2zaUALBglQ79d5mMcZN47wQgC3DSF0qiQcwRrGCIGxviZ3JKAhGDAMGSCA5y0mnbgbXoGwzvZrlkDRGDxiTCAwUItwt8S81BdABkCSA7l2TaXAlhLh5i901bmpFiLEoTDQMlKwAKQ9wWYCULsbXUyYCMg9ra/gfPmU1vBGmVWAWb2PyezfZJ4CwkvFk6FX1T4sxD5CBuhhwoAkVEAMMbAue4rHJc8Ga9YJFUCJ968EQAm2OhEPkpEBBCHk9NSvpxpNqntQTa+j5BvoLBCSHMQLXNR2SU/YIz3xcTY0Tzb51IAVzdPUMU5Q8Y6KbcCZCNCWZmj8A1LMI0IQdg5mEsEhDCpV4A52k5m8EQJIKlStFR7ptWo2YGpDgDWWAgjti56Ms/2uUohnn760XFheTqytrvRnSM0Y+1B4tKZ2n8hCFEdTqM2Trxpw0nJxBwvFgYzh22TKlPJ3JUyW4adGYwKfxNrDADZs2fPf03k2T5vFAgAPWKsuZqISu0HJLRUHTTLjxPHIHWQIT6ak/gOkPkfoSGZ/9qj+klbLd9Iy1vpISIYayCCR/Luk7sYTuAeBlIbS2l1PrPCmF6oko3UpHY9z/NKL3Rv/X+WCdTWn+Jp2v9iHs69T94NR1ZU/wfAq5VKgUWjBLSHIFsVIaMMTSHO3N9n1ktmby+naX8B/r6lhJdNOrx/74U/yrtPbgV49NFHYxZ82xjbTOAoKVlBbv3QJuRNwZ7rNWvXll/M+k5pQkQwxkJEvgXszB2pKTidx98A7J9YaxDHcdExlgaZ40PRKUOFvBjWWgACw/TNIvsVnsqvvPqGx4Xl2lO1WtFdFaVvLBscBBmza/+en1xfZL/CHq2BvYeMCRqnKIuPtRZkDMjSl4ru24kxT2+/+oa97GSzrgLK2UCY/ffv3/uTzShoPXYS0xQIfRlEugooi04URb4GC/giOnCdOg7nvO2q6x+BYEutXtfEmLIoEBEGBwYAov9+5qmfvq+TNjrPahl8CmTqlUql4yYUpRsqlQpANFMh/kynbXRsw7x2+KVjF128dgWRuVHE6SqgLCjWGlQqFRDJV57eu+s7nbbTVV1DRI27CXiiWqlqckxZMIgIQeb2uPrJL3bVVreD2bD5XW+JgL0iPFKvd34bQEXJy8BAFYZoAo7f8cwzT/6ym7a6DuMcO/LS+BvXXPJLQ/QxEJHjHj4ZQlHaqFQqsMYKDP3egX1P/LTb9noSxzx65KVnL7j4TQ1D5r1EBFYlUPpApVJB5JNenz2w97F/6UWbPQvkv3b4pR9fuGbtKkPmXQBUCZSeEkURKjYCGfzNM0899he9arenmazXjrz8w9UXrn2rtfbtuhIovaJSqaASRRDB1w/s2/VHvWy756nco6++/N01F68dJqIbvBKU+xpipTuaZg9w74H9j/8helwo25dahlePvPzD1WvWnjCGbjLGkq4ESlGICNVqFdYaITJ3H9j3+OfQhyrxvhXzHH315V0XXPymgwS831o7iHC1k6KcCZ/kqsIQjROZOw7s2/XP/eqr79mrjVfdsI5c/B0iXOccI45jVQRlTogIURTBWgMI9hC72w8c2POLfvbZ93LOY0denLjgjau+QXYgIqJrrbURAFUCpQVrLSqVCoyhOpH5CuLJOw8e3Hes3/0uaP3Cxs3XXQonf28MbhIB4jjWO82VHGsNoqji75cq+BEcffrgwcefXaj+F6WAZ9OV121lkrsh2CwicC5uPgRaOffxF7ATrI0Q7jP1VGSivzyw77EHFnwsC91htu8NV1x7M0j+nIB3AYBzDiIM5zRqdC5irQFRejmtCB4j8JeeO7DnocUa01lRwnn55ddsEovbIXIniNYB4TaCzC23DVGWDv4uzRRme5PeUE3ksBDuR4PvGx3du2dxR3mWKEDKNnv5lb/aAsH7BPJbAF2NzK1bEoVIUKU4O8iWwicCnyEWYLcBHiWihw/uX/ejIvft6TdnmQK0sn79+hV2YOW1IrJBBOsJ2ACiNQIMk+A8EIYBlPvhfYvPDASTQpggYFJEDgM4REKjZHHI1U88cejQoVyPK1IURVEURVEURVEURVEURVEURVEUpUf8P6DmVm99McXxAAAAAElFTkSuQmCC" alt="vrtti icon">
+      <p class="eyebrow">vrtti · urza/editor</p>
+    </div>
+    <h1>Where a note goes in vrtti</h1>
+    <p class="lede">On each device, a note is in one of four states: Open, Recent, a space drawer, or Trash. This page shows what moves a note from one state to another on one device. It also shows what a change on one device does on the other devices.</p>
+    <p class="meta">
+      <span><a href="how-it-works.html">How vrtti works</a></span>
+      <span><a href="trust-model.html">How vrtti trusts devices</a></span>
+      <span><a href="https://urza.github.io/editor/">Open vrtti</a></span>
+      <span><a href="https://github.com/urza/editor">GitHub repository</a></span>
+    </p>
+  </header>
+
+  <h2>Words on this page</h2>
+  <dl class="words">
+    <dt>Local note</dt><dd>A note with sync off. It is only on this device. A file that you opened from disk is a local file.</dd>
+    <dt>Synced note</dt><dd>A note in a space. The server keeps it, and each device of the space gets it.</dd>
+    <dt>Space</dt><dd>A group of devices that share notes. Each device sets one mode per space. In an “Open as tabs” space, new notes open as tabs. In a “Titles only” space, the device keeps only the titles until you open a note.</dd>
+    <dt>Title row</dt><dd>A row in a space drawer that has only the title of a note. The text stays on the server until you click the row.</dd>
+    <dt>Deleted mark</dt><dd>The record that a device sends to the server when it deletes a synced note (a tombstone, in the code). A “detached” mark tells the other devices that a note stopped syncing.</dd>
+  </dl>
+
+  <h2>The four states</h2>
+  <div class="places">
+    <div class="place" style="--c: var(--blue)"><b>Open</b><span>The tabs of a window. Each window has its own tabs.</span><div class="scope">per window</div></div>
+    <div class="place" style="--c: var(--green)"><b>Recent</b><span>Closed local notes and local files, newest first. After 30 days here, a local note goes to Trash.</span><div class="scope">per device</div></div>
+    <div class="place" style="--c: var(--purple)"><b>Space drawer</b><span>One for each space. It holds the closed synced notes of the space and its title rows. Nothing expires here.</span><div class="scope">per device, per space</div></div>
+    <div class="place" style="--c: var(--orange)"><b>Trash</b><span>Deleted notes, kept for 30 days. Each row shows the days that are left.</span><div class="scope">per device</div></div>
+  </div>
+  <p class="note">Recent, each space drawer, and Trash have icons in the bottom bar of the sidebar. Recent is a clock, each space is a colored badge with its initials (for example “P” for personal, “DW” for dev-work), and Trash is a trash can. When one of them is empty, its icon is not there. On desktop, a click opens its list in a drawer above the bar. On the phone, a tap opens the list on the full screen.</p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 1000 455" role="img" aria-label="Diagram. Open and Recent swap by close and reopen for local notes. Open and a space drawer swap by close and reopen for synced notes. Move to trash takes a note from Open, Recent, or a space drawer to Trash, and 30 days in Recent also does. Restore to space takes a note from Trash to Open, and Restore as local takes it to Recent. After 30 days in Trash, or with Delete permanently, a note is gone. Closing an empty note removes it at once. Changes from other devices put notes in Trash.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8A96A3"/></marker>
+      </defs>
+
+      <!-- boxes -->
+      <rect x="100" y="20" width="200" height="70" rx="6" fill="#2E3238" stroke="#99C794" stroke-width="1.5"/>
+      <text x="200" y="50" text-anchor="middle" fill="#E6E6E6" font-size="16">Recent</text>
+      <text x="200" y="72" text-anchor="middle" fill="#8A96A3" font-size="12">local notes, this device</text>
+
+      <rect x="100" y="185" width="200" height="70" rx="6" fill="#2E3238" stroke="#6699CC" stroke-width="1.5"/>
+      <text x="200" y="215" text-anchor="middle" fill="#E6E6E6" font-size="16">Open</text>
+      <text x="200" y="237" text-anchor="middle" fill="#8A96A3" font-size="12">tabs of a window</text>
+
+      <rect x="100" y="350" width="200" height="70" rx="6" fill="#2E3238" stroke="#C695C6" stroke-width="1.5"/>
+      <text x="200" y="380" text-anchor="middle" fill="#E6E6E6" font-size="16">Space drawer</text>
+      <text x="200" y="402" text-anchor="middle" fill="#8A96A3" font-size="12">one for each space</text>
+
+      <rect x="560" y="185" width="200" height="70" rx="6" fill="#2E3238" stroke="#F9AE58" stroke-width="1.5"/>
+      <text x="660" y="215" text-anchor="middle" fill="#E6E6E6" font-size="16">Trash</text>
+      <text x="660" y="237" text-anchor="middle" fill="#8A96A3" font-size="12">30 days, this device</text>
+
+      <rect x="800" y="20" width="180" height="70" rx="6" fill="#2E3238" stroke="#647382" stroke-width="1.5"/>
+      <text x="890" y="50" text-anchor="middle" fill="#E6E6E6" font-size="16">Other devices</text>
+      <text x="890" y="72" text-anchor="middle" fill="#8A96A3" font-size="12">through the server</text>
+
+      <rect x="800" y="350" width="180" height="70" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="890" y="380" text-anchor="middle" fill="#E6E6E6" font-size="16">Gone</text>
+      <text x="890" y="402" text-anchor="middle" fill="#8A96A3" font-size="12">removed for good</text>
+
+      <!-- Open and Recent -->
+      <line x1="170" y1="185" x2="170" y2="94" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="162" y="135" text-anchor="end" fill="#D9D9D9" font-size="12">close a</text>
+      <text x="162" y="151" text-anchor="end" fill="#D9D9D9" font-size="12">local note</text>
+      <line x1="230" y1="90" x2="230" y2="181" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="238" y="142" fill="#D9D9D9" font-size="12">reopen</text>
+
+      <!-- Open and space drawer -->
+      <line x1="170" y1="255" x2="170" y2="346" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="162" y="300" text-anchor="end" fill="#D9D9D9" font-size="12">close a</text>
+      <text x="162" y="316" text-anchor="end" fill="#D9D9D9" font-size="12">synced note</text>
+      <line x1="230" y1="350" x2="230" y2="259" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="238" y="300" fill="#D9D9D9" font-size="12">reopen, or</text>
+      <text x="238" y="316" fill="#D9D9D9" font-size="12">click a title row</text>
+
+      <!-- Open and Trash -->
+      <line x1="300" y1="200" x2="556" y2="200" stroke="#F9AE58" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="430" y="192" text-anchor="middle" fill="#D9D9D9" font-size="12">Move to trash</text>
+      <line x1="560" y1="240" x2="304" y2="240" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="430" y="256" text-anchor="middle" fill="#D9D9D9" font-size="12">Restore to &lt;space&gt;</text>
+
+      <!-- Recent and Trash -->
+      <path d="M 700 185 V 45 H 304" fill="none" stroke="#8A96A3" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="500" y="37" text-anchor="middle" fill="#D9D9D9" font-size="12">Restore as local</text>
+      <path d="M 300 70 H 620 V 181" fill="none" stroke="#F9AE58" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="460" y="88" text-anchor="middle" fill="#D9D9D9" font-size="12">Move to trash, or 30 days pass</text>
+
+      <!-- Space drawer to Trash -->
+      <path d="M 300 385 H 660 V 259" fill="none" stroke="#F9AE58" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="480" y="377" text-anchor="middle" fill="#D9D9D9" font-size="12">Move to trash</text>
+
+      <!-- Other devices to Trash -->
+      <path d="M 850 90 V 220 H 764" fill="none" stroke="#F9AE58" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="858" y="140" fill="#D9D9D9" font-size="12">deleted, moved</text>
+      <text x="858" y="156" fill="#D9D9D9" font-size="12">away, space lost</text>
+
+      <!-- Trash to Gone -->
+      <path d="M 740 255 V 395 H 796" fill="none" stroke="#EC5F67" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="748" y="300" fill="#D9D9D9" font-size="12">after 30 days, or</text>
+      <text x="748" y="316" fill="#D9D9D9" font-size="12">Delete permanently</text>
+
+      <!-- Open to Gone: the empty close -->
+      <path d="M 100 220 H 40 V 440 H 890 V 424" fill="none" stroke="#EC5F67" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+      <text x="560" y="432" text-anchor="middle" fill="#D9D9D9" font-size="12">close an empty note (no Trash)</text>
+    </svg>
+  </div>
+  <p class="note">The diagram leaves out edits from other devices. An edit changes the copy where it is, and the copy does not move. The tables below give each case.</p>
+
+  <div class="callout"><b>Close never deletes a note that has text.</b> A closed local note goes to Recent, and a closed synced note goes to its space drawer. To delete a note on purpose, use “Move to trash”. Trash keeps the note for 30 days, so you can undo a wrong click. An empty note is the one exception. When you close it, vrtti removes it, because it holds nothing to lose.</div>
+
+  <h2>On one device</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>You do</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="2">Close and reopen</td></tr>
+      <tr><td>Close a tab of a local note or a local file (×, <kbd>Ctrl+W</kbd> or <kbd>Alt+W</kbd>, swipe left on the phone, menu “Close”)</td><td><span class="to t-recent">Recent</span><small>vrtti first saves a keystroke that still waits its 300 ms. The note stays in Recent for 30 days.</small></td></tr>
+      <tr><td>Close a tab of a synced note in an “Open as tabs” space</td><td><span class="to t-space">Space drawer</span><small>The device keeps the note with its text. A note in a space drawer does not expire.</small></td></tr>
+      <tr><td>Close a tab of a synced note in a “Titles only” space</td><td><span class="to t-space">Space drawer, title row</span><small>The device keeps only the title, as before you opened the note. If an edit is not on the server yet, the text stays until the push is done. A note with a PIN lock shows only its own title, never its first line.</small></td></tr>
+      <tr><td>Close an empty note</td><td><span class="to t-gone">Gone</span><small>It does not go to Trash. If the server has the note, the device sends a deleted mark, and the other devices act on it (table below).</small></td></tr>
+      <tr><td>Reopen from Recent or from a space drawer</td><td><span class="to t-open">Open</span><small>If another window has the note as a tab, that window comes forward.</small></td></tr>
+      <tr><td>Click a title row</td><td><span class="to t-open">Open</span><small>The device gets the text from the server. From then on it is a normal synced note.</small></td></tr>
+
+      <tr class="group"><td colspan="2">Delete</td></tr>
+      <tr><td>“Move to trash” on a local note</td><td><span class="to t-trash">Trash</span><small>No dialog asks first. If the note is a tab, the tab closes and the next tab takes the screen.</small></td></tr>
+      <tr><td>“Move to trash” on a synced note</td><td><span class="to t-trash">Trash</span> + <span class="to t-trash">Trash on the other devices</span><small>The menu shows “Deletes in &lt;space&gt; · 30-day Trash on this device”. The device keeps a copy in Trash and sends a deleted mark. Offline, the mark waits and goes out at the next sync.</small></td></tr>
+      <tr><td>“Move to trash” on a title row</td><td><span class="to t-trash">Trash</span><small>The device first gets the text from the server, so it can keep a copy in Trash. Offline, it refuses and shows “offline: cannot trash unopened server note”.</small></td></tr>
+      <tr><td>“Remove from list” on a file</td><td><span class="to t-none">off the list</span><small>A file never goes to Trash. The file on disk stays, and vrtti forgets only its own record. For a synced file, the device sends a detached mark, so the other devices keep their copies as local notes. vrtti blocks the action while the file has text that is not on disk yet.</small></td></tr>
+      <tr><td>A local note stays 30 days in Recent</td><td><span class="to t-trash">Trash</span><small>The device checks once at each start. The note then stays 30 more days in Trash.</small></td></tr>
+      <tr><td>A local file stays 30 days in Recent</td><td><span class="to t-none">off the list</span><small>The file on disk stays. A file with text that is not on disk yet never leaves the list.</small></td></tr>
+
+      <tr class="group"><td colspan="2">Trash</td></tr>
+      <tr><td>“Restore to &lt;space&gt;” (or the ↩ button on hover)</td><td><span class="to t-open">Open</span><small>The note opens as a tab and syncs to the devices of the space again. The menu shows this only while this device is in that space. If the deleted mark did not go out yet, the restore cancels it, and the other devices never see a delete. If the mark went out, the note gets a new id, so the other devices get it as a new note.</small></td></tr>
+      <tr><td>“Restore as local”, or “Restore” for a note that had no space</td><td><span class="to t-recent">Recent</span><small>The device makes a new local copy with sync off. The other devices see nothing. A deleted mark that did not go out yet still goes.</small></td></tr>
+      <tr><td>“Delete permanently”</td><td><span class="to t-gone">Gone</span><small>There is no undo. A deleted mark that did not go out yet still goes.</small></td></tr>
+      <tr><td>A note stays 30 days in Trash</td><td><span class="to t-gone">Gone</span><small>The device checks once at each start.</small></td></tr>
+      <tr><td>Open a file whose note is in Trash</td><td><span class="to t-open">Open</span><small>Trash never touches the file on disk. Opening the file takes its record out of Trash, with no copy.</small></td></tr>
+
+      <tr class="group"><td colspan="2">Sync</td></tr>
+      <tr><td>“Stop syncing” a note</td><td><span class="to t-none">stays, now local</span><small>A detached mark tells the other devices. If the note is closed, it moves from its space drawer to Recent.</small></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Ways to delete</h2>
+  <div class="cases">
+    <div class="case"><b>Desktop</b>
+      <ul>
+        <li>The row menu (⋯) has “Move to trash”. For a file, it has “Remove from list”.</li>
+        <li>A row in Recent or in a space drawer shows a trash icon on hover.</li>
+        <li>Delete mode. Click the trash-can button at the top of the sidebar. The sidebar gets a red edge and a “delete mode · Esc” label. Each Open row shows a red trash icon in place of ×.</li>
+        <li>In Delete mode, click the trash icon, or press <kbd>Ctrl+W</kbd> or <kbd>Alt+W</kbd>, to move a note to Trash. The mode stops on <kbd>Esc</kbd>, a second click of the button, a click of the label, an edit in the note, or a reload.</li>
+        <li><kbd>Shift</kbd>+click ×. Hold <kbd>Shift</kbd>, and the × turns red. The click then moves the note to Trash.</li>
+      </ul>
+    </div>
+    <div class="case"><b>Phone</b>
+      <ul>
+        <li>Swipe left on an Open row only closes the note. It never deletes.</li>
+        <li>The row menu (⋯) has “Move to trash”.</li>
+        <li>The bottom bar shows Recent, a badge for each space, and Trash, each with a count. A tap opens that list on the full screen. “← Open” and the Android Back button go back to Open.</li>
+        <li>A tap on a Trash row opens its menu, with restore and delete.</li>
+        <li>A title row has the tag “server”. A tap gets the text.</li>
+        <li>The phone has no Delete mode, no View filter, and no Space Windows.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="note">A note with a PIN lock asks for the PIN before “Move to trash” or “Delete permanently”.</p>
+
+  <h2>Space Windows (desktop)</h2>
+  <ul>
+    <li>A space drawer has a button “Open &lt;space&gt; in new window”. Each space can have one window. A second click brings that window forward.</li>
+    <li>The new window opens each note of the space as a tab. It takes the open tabs of that space from the other windows and the closed notes from the space drawer.</li>
+    <li>For each title row, the window gets the text from the server in the background and opens it as a tab. Offline, a title row that it cannot get stays in the drawer.</li>
+    <li>This happens only when the window opens for the first time. After a reload, the window keeps the tabs that you left open.</li>
+    <li>In a Space Window, <kbd>+</kbd> and <kbd>Ctrl+N</kbd> make notes in that space. The window title is “&lt;note&gt; (&lt;space&gt;) - vrtti”.</li>
+    <li>A new note from another device opens as a tab in the Space Window of its space. This is true also for a “Titles only” space.</li>
+    <li>When you close the Space Window, its notes go back to the space drawer. Notes of a “Titles only” space go back to title rows.</li>
+    <li>If this device loses the space, the Space Window closes, and its notes go to Trash.</li>
+  </ul>
+
+  <h2>Device A does something, device B reacts</h2>
+  <p>B reacts at its next sync. Where B keeps its copy (a tab, Recent, a space drawer, or a title row) decides what changes.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>On device A</th><th>On device B</th></tr></thead>
+    <tbody>
+      <tr><td>Edits a synced note</td><td><span class="to t-none">same state</span><small>B's copy takes the new text in its tab or in its space drawer. A title row shows the new title.</small></td></tr>
+      <tr><td>Makes a new synced note</td><td><span class="to t-open">Open</span> or <span class="to t-space">title row</span><small>In an “Open as tabs” space, the note opens as a tab in B's main window. In a “Titles only” space, only a title row appears in the space drawer. If B has a Space Window for the space, the note opens as a tab there.</small></td></tr>
+      <tr><td>Closes or reopens a note</td><td><span class="to t-none">nothing</span><small>Tabs, Recent, and space drawers belong to each device. B's copy stays where B put it.</small></td></tr>
+      <tr><td>Moves a synced note to Trash, or empties it and closes it</td><td><span class="to t-trash">Trash</span><small>Both actions send the same deleted mark, so B does the same for both. B's tab closes, and another note takes the screen. If B's copy is empty, B removes it. A title row on B disappears.</small></td></tr>
+      <tr><td>The same, but B has edits that it did not push yet</td><td><span class="to t-open">conflict copy</span> + <span class="to t-trash">Trash</span><small>B's unpushed text first becomes a separate local note in a new tab. Then the synced copy goes to Trash.</small></td></tr>
+      <tr><td>Edits a note that B moved to Trash while offline</td><td><span class="to t-none">back in its space</span><small>A's edit reaches B before B's deleted mark goes out. The newer edit wins, and the note leaves B's Trash. It goes back to a tab or to a title row. If B had edits from before the trash, they survive as a conflict copy.</small></td></tr>
+      <tr><td>Uses “Restore to &lt;space&gt;” after the delete reached the server</td><td><span class="to t-open">Open</span> or <span class="to t-space">title row</span><small>The restored note has a new id, so B gets it as a new note (see “Makes a new synced note”). B's old copy stays in B's Trash until B deletes it or 30 days pass.</small></td></tr>
+      <tr><td>Uses “Restore as local”</td><td><span class="to t-none">nothing</span><small>The restored note is local on A. B never hears of it.</small></td></tr>
+      <tr><td>Stops syncing a note, or uses “Remove from list” on a synced file</td><td><span class="to t-none">stays, now local</span><small>“Stop syncing” is not delete. B keeps its copy with sync off. If B's copy is closed, it moves from the space drawer to Recent, and its 30 days start then.</small></td></tr>
+      <tr><td>Moves a note to another space that B is in</td><td><span class="to t-none">follows the note</span><small>B's copy moves to the drawer of the new space, or stays open as a tab.</small></td></tr>
+      <tr><td>Moves a note to a space that B is not in</td><td><span class="to t-trash">Trash</span><small>B lost access to the note, so its copy goes to Trash.</small></td></tr>
+      <tr><td>Removes B from a space (or B leaves it)</td><td><span class="to t-trash">Trash</span><small>Each note of that space on B goes to Trash, and its title rows go. A Space Window of that space closes.</small></td></tr>
+      <tr><td>B uses “Stop syncing this device”</td><td><span class="to t-none">nothing moves</span><small>B forgets the server. Its notes stay where they are.</small></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Why it works this way</h2>
+  <div class="cases">
+    <div class="case"><b>A delete from another device cannot wipe your copy</b><p>A deleted mark from the server never removes a note at once. Each device that holds the text moves its own copy to Trash and keeps it for 30 days. So a server in the wrong hands, or a mistake on another device, cannot wipe a note with no way back.</p></div>
+    <div class="case"><b>No dialog before a delete</b><p>Trash is the safety net, so “Move to trash” does not ask. A wrong click costs one restore. Only “Delete permanently” has no undo, and it works only inside Trash.</p></div>
+    <div class="case"><b>Recent does not grow for ever</b><p>A local note that you do not open for 30 days goes to Trash, and after 30 more days it is gone. Synced notes in a space drawer never expire, because the server keeps them.</p></div>
+    <div class="case"><b>“Titles only” stays light</b><p>A device in a “Titles only” space keeps only the notes that you open. When you close a note, the device drops its text again and keeps the title row.</p></div>
+  </div>
+
+  <p class="src">Checked against urza/editor, main branch at commit 7e7166f (23 November 2026). The design rules are in <a href="https://github.com/urza/editor/blob/main/architecture.md#28-note-lifecycle-sidebar-redesign-and-space-windows-agreed-2026-11-22">architecture.md §28</a>. The code is in <a href="https://github.com/urza/editor/blob/main/app/js/model/docs.js"><code>app/js/model/docs.js</code></a> (close, trash, restore, and sync), <a href="https://github.com/urza/editor/blob/main/app/js/model/lifecycle.js"><code>app/js/model/lifecycle.js</code></a> (the 30-day limits), <a href="https://github.com/urza/editor/blob/main/app/js/model/workspace.js"><code>app/js/model/workspace.js</code></a> (Space Windows), and <a href="https://github.com/urza/editor/blob/main/app/js/ui/sidebar.js"><code>app/js/ui/sidebar.js</code></a> (the sidebar and its drawers).</p>
+</div>
+</body>
+</html>
