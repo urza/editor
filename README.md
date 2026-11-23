@@ -21,6 +21,8 @@
   <a href="https://urza.github.io/editor/docs/how-it-works.html">How it works</a>
   &nbsp;·&nbsp;
   <a href="https://urza.github.io/editor/docs/trust-model.html">Trust model</a>
+  &nbsp;·&nbsp;
+  <a href="https://urza.github.io/editor/docs/note-lifecycle.html">Recent and Trash</a>
 </p>
 
 ![vrtti with notes and a folder in the sidebar, and a Czech spelling suggestion open in a travel note](docs/screenshots/hero.png)
@@ -42,7 +44,9 @@ habit and removes what got in the way:
 
 - Press `+` (or Alt+N) and type. The first line is the title until you rename the note.
 - Each note is saved to the browser's IndexedDB 300 ms after you stop typing. A crash or a reboot loses nothing.
-- Closing a note never asks. The note moves to **Recent** and stays there with no time limit, and one click opens it again. Which notes are open vs. in Recent is local to each window and never syncs.
+- Closing a note never asks. A closed local note moves to **Recent**, and a closed synced note moves to the drawer of its space. One click opens it again. A local note that stays 30 days in Recent goes to Trash.
+- Tabs, Recent, and the space drawers belong to each device and never sync.
+- **Move to trash** deletes a note with no dialog. Trash keeps it for 30 days on that device. [Recent and Trash](https://urza.github.io/editor/docs/note-lifecycle.html) shows where a note goes in each case.
 - A note you leave empty is dropped, so the sidebar does not fill with blank tabs.
 
 ### Files and folders
@@ -131,11 +135,11 @@ The text in the note keeps the normal emoji characters.
 - The server is small: an ASP.NET Core API with one SQLite file, acting as a blind relay. A Docker image is ready (see [server/README.md](server/README.md)).
 - You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. **New notes** (Settings › Sync) sends every new note of a device to one space, or keeps it local. A device with no disk, such as a phone, explains that a space keeps a copy of its notes, but it never picks one for you. A note that does not sync sits in no space and stays on its device.
 - A synced note lives in one **space**. Think of a space as a colored notebook (`personal`, `work`, `ideas`) whose cover lists the devices that can open it: one note belongs to one space, while a device can belong to many spaces, one, or none. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in `work` never gets a note of `personal`, not even a title.
-- **Move to <space>** in a note's menu moves one note to another space and re-encrypts it for that space's members. A device that loses a note (a move away, or its removal from a space) keeps its copy in the local trash.
+- **Move to <space>** in a note's menu moves one note to another space and re-encrypts it for that space's members. A device that loses a note (a move away, or its removal from a space) keeps its copy in Trash for 30 days.
 - Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
-- When the server says a note was deleted, the note goes to a local trash for 30 days first. **Settings › Storage › Deleted notes** restores it. A wrong or forged delete from the server cannot wipe a note.
+- When the server says a note was deleted, each device moves its own copy to Trash for 30 days. The trash can at the bottom of the sidebar opens Trash, and **Restore to <space>** or **Restore as local** brings the note back. A wrong or forged delete from the server cannot wipe a note.
 - **Back up to a folder** (Settings › Sync) writes each note of a space into a folder, as plain text or as `.age` files.
 
 ![The history of a synced note with three revisions](docs/screenshots/history.png)
@@ -160,8 +164,9 @@ with one thumb there. The round button at the bottom right shows three more
 buttons: a new note, the note list, and the settings. The note list fills the
 screen, and each row shows the start of the note and the date of its last
 change. The note you changed last is at the bottom, next to the round button.
-A swipe to the left on a row closes that note. The note goes to Recent, and a
-tap there opens it again. Start the swipe on the row and not at the screen
+A swipe to the left on a row closes that note. The note goes to Recent (a synced
+note goes to the drawer of its space), and a tap there opens it again. Start the
+swipe on the row and not at the screen
 edge, because Android takes a swipe from the edge as Back. On Android, Back closes the top open part (a menu, the
 round buttons, the settings, or the list). A phone shows no status bar.
 **Settings › Update** shows the build and looks for a newer one.
@@ -281,7 +286,7 @@ src-tauri/      the desktop shell (Tauri, Rust)
 server/         the sync server (ASP.NET Core, SQLite)
 design/icons/   icon sources and the icons that were not picked
 crypto-proto/   the age prototype that came before the real code
-docs/           the "How it works" and trust model pages, README screenshots and diagrams (deployed to GitHub Pages under docs/)
+docs/           the "How it works", trust model, and "Recent and Trash" pages, README screenshots and diagrams (deployed to GitHub Pages under docs/)
 ```
 
 ## Run it locally
