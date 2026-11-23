@@ -34,7 +34,9 @@ export function spaceBadge(name) {
  * Whether a closed buffer record has exceeded the 30-day local Recent limit.
  * Synced notes never auto-expire from closing; file-backed records with
  * `file.unwritten` hold unsaved text not yet on disk and never auto-expire.
- * Existing records from before `closedAt` fall back to `updatedAt`.
+ * Records without `closedAt` (from before §28) are stamped at first start by
+ * `docs.js` rather than falling back to `updatedAt`, so an upgrade never dumps
+ * archived Recent notes into Trash on first launch.
  *
  * @param {{ kind?: string, sync?: unknown, trashedAt?: number, file?: { unwritten?: boolean }, closedAt?: number, updatedAt?: number } | null | undefined} record
  * @param {number} [now]
@@ -44,9 +46,8 @@ export function isRecentExpired(record, now = Date.now()) {
   if (!record || record.kind === "keyring") return false;
   if (record.sync || record.trashedAt) return false;
   if (record.file?.unwritten) return false;
-  const at = record.closedAt ?? record.updatedAt;
-  if (typeof at !== "number" || !Number.isFinite(at)) return false;
-  return at < now - RECENT_KEEP;
+  if (typeof record.closedAt !== "number" || !Number.isFinite(record.closedAt)) return false;
+  return record.closedAt < now - RECENT_KEEP;
 }
 
 /**

@@ -59,7 +59,9 @@ export function closeMenu({ restoreFocus = false } = {}) {
 /** @param {HTMLElement} el @returns {HTMLButtonElement[]} */
 function enabledItems(el) {
   return /** @type {HTMLButtonElement[]} */ ([
-    ...el.querySelectorAll("button.menu-item:not(:disabled), button.filter-toggle:not(:disabled)"),
+    ...el.querySelectorAll(
+      ".menu-head button:not(:disabled), button.menu-item:not(:disabled), button.filter-toggle:not(:disabled), button.filter-only:not(:disabled)"
+    ),
   ]);
 }
 
@@ -98,7 +100,11 @@ function makeSwatch(swatch) {
  *   (the desktop View space filter checklist, §28).
  */
 export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
-  if (current && current.anchor === anchor) {
+  // Toggle shut only when clicking a real menu button (`aria-haspopup`) a
+  // second time. The Ctrl+. spelling menu passes `view.contentDOM` as its
+  // anchor (editor/spellcheck.js), where a second Ctrl+. on another word must
+  // replace the menu instead of toggling it closed.
+  if (current && current.anchor === anchor && anchor.hasAttribute("aria-haspopup")) {
     closeMenu({ restoreFocus: true });
     return;
   }
@@ -115,6 +121,13 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
   const getItems = typeof itemsOrFn === "function" ? itemsOrFn : () => itemsOrFn;
 
   function renderItems() {
+    // Re-rendering a `stayOpen` checklist replaces the focused button; restore
+    // focus to the same item index afterwards so Enter/Space/Arrows keep working.
+    const priorButtons = enabledItems(el);
+    const focusedIdx =
+      document.activeElement instanceof HTMLButtonElement
+        ? priorButtons.indexOf(document.activeElement)
+        : -1;
     el.replaceChildren();
     for (const item of getItems()) {
       if (item.separator) {
@@ -253,6 +266,12 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
       });
       el.appendChild(button);
     }
+    if (focusedIdx >= 0) {
+      const nextButtons = enabledItems(el);
+      if (nextButtons.length) {
+        nextButtons[Math.min(focusedIdx, nextButtons.length - 1)].focus();
+      }
+    }
   }
 
   renderItems();
@@ -278,7 +297,15 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
 
   /** @param {Event} event */
   const onDown = (event) => {
-    if (event.target instanceof Node && (el.contains(event.target) || anchor.contains(event.target))) {
+    // Exempt the anchor only when it is a popup button (`aria-haspopup`), so
+    // its click handler toggles the menu cleanly without closing and reopening.
+    // When the anchor is the editor text (`view.contentDOM` in spellcheck.js),
+    // clicking anywhere in the text must close the spelling menu.
+    if (
+      event.target instanceof Node &&
+      (el.contains(event.target) ||
+        (anchor.hasAttribute("aria-haspopup") && anchor.contains(event.target)))
+    ) {
       return;
     }
     closeMenu();
@@ -303,6 +330,9 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
   // explained in closeMenu.
   if (anchor.hasAttribute("aria-haspopup")) anchor.setAttribute("aria-expanded", "true");
 
-  const first = enabledItems(el)[0];
+  const first =
+    /** @type {HTMLButtonElement | null} */ (
+      el.querySelector("button.menu-item:not(:disabled), button.filter-toggle:not(:disabled)")
+    ) ?? enabledItems(el)[0];
   if (first) first.focus();
 }

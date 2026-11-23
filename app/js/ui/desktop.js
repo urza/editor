@@ -46,19 +46,24 @@ const DUPLICATE_MS = 50;
 /**
  * Open the window for a workspace (architecture.md §14.2). In a browser it
  * is a named window.open, which must run inside the user's gesture; the
- * shell opens a native window instead (unit 14.4).
+ * shell opens a native window instead (unit 14.4). Resolves false when a
+ * popup blocker or shell IPC refuses the open.
  * @param {string} id
+ * @returns {Promise<boolean>}
  */
 export function openWorkspaceWindow(id) {
   if (isDesktop) {
-    invoke("open_workspace", { id }).catch((err) =>
-      console.log("[vrtti desktop] open window failed", err)
+    return invoke("open_workspace", { id }).then(
+      () => true,
+      (err) => {
+        console.log("[vrtti desktop] open window failed", err);
+        return false;
+      }
     );
-    return;
   }
   const url = new URL(location.href);
   url.search = "?ws=" + encodeURIComponent(id);
-  window.open(url.toString(), "vrtti-ws-" + id);
+  return Promise.resolve(Boolean(window.open(url.toString(), "vrtti-ws-" + id)));
 }
 
 /**

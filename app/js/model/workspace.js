@@ -240,19 +240,41 @@ export function createWorkspaces({ id }) {
   /**
    * A new workspace. Its window opens it (architecture.md §14.2). Empty,
    * unless the caller hands it folders, tabs, or a dedicated space (§14.5, §28).
-   * @param {{folderIds?: string[], tabs?: string[], space?: string}} [fields]
+   * Accepts a pre-generated `id` so `workspace.openSpace` can call `window.open`
+   * synchronously inside the click gesture before the IndexedDB write resolves.
+   * @param {{id?: string, folderIds?: string[], tabs?: string[], space?: string, initSpace?: boolean}} [fields]
    */
-  async function create({ folderIds = [], tabs = [], space } = {}) {
+  async function create({ id: givenId, folderIds = [], tabs = [], space, initSpace = false } = {}) {
     /** @type {WorkspaceRecord} */
     const record = {
-      ...newRecord(crypto.randomUUID()),
+      ...newRecord(givenId ?? crypto.randomUUID()),
       folderIds: [...folderIds],
       tabs: [...tabs],
       activeId: tabs[0] ?? null,
     };
     if (space) record.space = space;
+    if (initSpace) record.initSpace = true;
     await save(record);
     return record;
+  }
+
+  /**
+   * One-time first-boot handoff for a dedicated Space Window (§28): clears
+   * `initSpace` and records claimed tabs so later reloads keep the user's open
+   * set instead of re-fetching closed stubs.
+   * @param {string[]} initialTabs
+   * @returns {Promise<boolean>}
+   */
+  async function finishSpaceInit(initialTabs) {
+    const record = current();
+    if (!record.initSpace) return false;
+    delete record.initSpace;
+    for (const tab of initialTabs) {
+      if (!record.tabs.includes(tab)) record.tabs.push(tab);
+    }
+    if (!record.activeId && record.tabs.length > 0) record.activeId = record.tabs[0];
+    await save(record);
+    return true;
   }
 
   /**
@@ -276,13 +298,20 @@ export function createWorkspaces({ id }) {
    * Remove a workspace. Its tabs fall into Recent by definition, because
    * Recent is "open nowhere", so nothing is lost. Main is never dissolved.
    * @param {string} wsId
+   * @param {{silent?: boolean}} [opts] silent: skip emitting "dissolved" (used
+   *   when loseSpace is already trashing every note of the space, or rolling
+   *   back an unopened popup).
    */
-  async function dissolve(wsId) {
+  async function dissolve(wsId, { silent = false } = {}) {
     const record = records.get(wsId);
     if (wsId === MAIN_WORKSPACE || !record) return;
     records.delete(wsId);
+    // Mark dissolved here too when a window dissolves itself (loseSpace in a
+    // Space Window leader), because BroadcastChannel never echoes back to its
+    // sender and closeHere() checks isDissolved before creating a blank buffer.
+    if (wsId === id) dissolved = true;
     await deleteWorkspace(wsId);
-    post("workspace-deleted", { id: wsId });
+    post("workspace-deleted", { id: wsId, silent });
     // A folder listed by no other workspace has no way back into a sidebar;
     // its handle would only pile up in the store (the user's folder windows
     // come and go, architecture.md §14). Drop it, here and in the other
@@ -299,7 +328,7 @@ export function createWorkspaces({ id }) {
     emit("change", { id: wsId, foreign: true });
     // After the change: the doc store first moves its active buffer off the
     // dropped tabs, then hears which tabs fell into Recent or a space drawer.
-    emit("dissolved", { tabs: record.tabs, space: record.space });
+    if (!silent) emit("dissolved", { tabs: record.tabs, space: record.space });
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------
@@ -310,14 +339,14 @@ export function createWorkspaces({ id }) {
     void resolveDoubleTake(record);
   });
 
-  on("workspace-deleted", ({ id: wsId }) => {
+  on("workspace-deleted", ({ id: wsId, silent }) => {
     const record = records.get(wsId);
     records.delete(wsId);
     if (wsId === id) dissolved = true;
     emit("change", { id: wsId, foreign: true });
     // If a closing secondary window dissolved itself before dying, main runs
-    // the idempotent post-dissolve cleanup (empty discard, closedAt, stub demotion).
-    if (id === MAIN_WORKSPACE && record) {
+    // the idempotent post-dissolve cleanup unless suppressed by `silent`.
+    if (!silent && id === MAIN_WORKSPACE && record) {
       emit("dissolved", { tabs: record.tabs, space: record.space });
     }
   });
@@ -461,8 +490,10 @@ export function createWorkspaces({ id }) {
     addFolder,
     removeFolder,
     create,
+    finishSpaceInit,
     moveFoldersOut,
     dissolve,
+    dissolveIfGone,
     load,
     start,
   };

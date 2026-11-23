@@ -597,12 +597,14 @@ export function createDocStore({
         delete record.trashedAt;
         plain.delete(id);
         record.sync = {
+          ...record.sync,
           rev: record.sync.rev,
           dirty: true,
           space: spaceOf(record),
           tombstone: "detached",
           forget: true,
         };
+        delete record.sync.priorDirty;
         record.updatedAt = Date.now();
         await persist({ ...record });
         await closeHere(id);
@@ -618,21 +620,34 @@ export function createDocStore({
     delete record.closedAt;
     plain.delete(id);
     if (record.sync) {
-      const space = spaceOf(record);
-      record.originSpace = space;
       record.updatedAt = now;
-      if (record.sync.rev > 0) {
-        const priorDirty = Boolean(record.sync.dirty && !record.sync.rewrap);
-        record.sync = {
-          rev: record.sync.rev,
-          dirty: true,
-          space,
-          tombstone: "deleted",
-          priorDirty,
-        };
+      if (record.sync.tombstone === "detached") {
+        // User already clicked Stop syncing ("the text stays on every device"):
+        // never turn a pending detach into a space-wide delete (§28).
+        if (record.sync.rev > 0) {
+          record.sync = { ...record.sync, dirty: true };
+        } else {
+          delete record.sync;
+          await toLocal(record);
+        }
       } else {
-        // Never pushed to the server: settle directly into local Trash.
-        delete record.sync;
+        const space = spaceOf(record);
+        record.originSpace = space;
+        if (record.sync.rev > 0) {
+          const priorDirty = Boolean(record.sync.dirty && !record.sync.rewrap);
+          // Spread `record.sync` so a pending `purge` (§5, §27) survives.
+          record.sync = {
+            ...record.sync,
+            rev: record.sync.rev,
+            dirty: true,
+            space,
+            tombstone: "deleted",
+            priorDirty,
+          };
+        } else {
+          // Never pushed to the server: settle directly into local Trash.
+          delete record.sync;
+        }
       }
     }
     await persist({ ...record });
@@ -699,8 +714,9 @@ export function createDocStore({
   }
 
   /**
-   * Convert a pending offline delete record into a hidden empty tombstone so
-   * it disappears from Trash immediately while still pushing `deleted` (§28).
+   * Convert a pending offline tombstone record into a hidden empty tombstone so
+   * it disappears from Trash immediately while still pushing its tombstone (and
+   * any `purge`) until afterPush forgets it (§28).
    * @param {BufferRecord} record
    */
   async function hidePendingDelete(record) {
@@ -712,20 +728,27 @@ export function createDocStore({
     record.content = "";
     plain.delete(record.id);
     if (record.sync) {
-      record.sync = {
+      const tombstone = record.sync.tombstone ?? "deleted";
+      /** @type {import("../storage/idb.js").SyncState} */
+      const next = {
+        ...record.sync,
         rev: record.sync.rev,
         dirty: true,
         space: spaceOf(record),
-        tombstone: "deleted",
+        tombstone,
       };
+      delete next.priorDirty;
+      if (tombstone !== "deleted") next.forget = true;
+      record.sync = next;
     }
     await persist({ ...record });
     emit("change");
   }
 
   /**
-   * Delete a trashed note immediately (§28). If an offline `deleted` tombstone
-   * is still waiting to push, hides and wipes it until afterPush forgets it.
+   * Delete a trashed note immediately (§28). If an offline tombstone (`deleted`
+   * or `detached`) is still waiting to push, hides and wipes it until afterPush
+   * forgets it.
    * @param {string} id
    * @returns {Promise<boolean>}
    */
@@ -733,7 +756,7 @@ export function createDocStore({
     const record = buffers.get(id);
     if (!record || !record.trashedAt) return false;
     dropTimers(id);
-    if (record.sync?.tombstone === "deleted") {
+    if (record.sync?.tombstone) {
       await hidePendingDelete(record);
       return true;
     }
@@ -757,12 +780,13 @@ export function createDocStore({
    * Restore a trashed note (§28).
    * - `toSpace: true`: puts the note back into its `originSpace` and opens it
    *   in the current workspace. While the delete tombstone is still pending
-   *   offline, cancels the tombstone in place (preserving `priorDirty`); once
-   *   settled, mints a fresh `docId` and seals for current space members so
-   *   re-sync never hits a 409 loop.
-   * - `toSpace: false`: restores a plain local copy into Recent with a fresh
-   *   `docId` (so a later Sync to <space> never hits a 409 loop). Legacy
-   *   trashed file links keep their handle intact.
+   *   offline, cancels the tombstone in place (preserving `priorDirty`,
+   *   `rewrap`, and `purge`); once settled, mints a fresh `docId` and seals for
+   *   current space members so re-sync never hits a 409 loop (preserving the
+   *   `.age` file handle when file-backed).
+   * - `toSpace: false`: restores a local copy into Recent with a fresh `docId`
+   *   (decrypting `space` ciphertext while keeping `this-device` local
+   *   encryption encrypted at rest). Legacy trashed file links keep their handle.
    *
    * @param {string} id
    * @param {{toSpace?: boolean}} [opts]
@@ -771,16 +795,26 @@ export function createDocStore({
     const record = buffers.get(id);
     if (!record || !record.trashedAt) return null;
 
-    if (toSpace) {
+    // A legacy pre-§27 plain file cannot push plaintext to a space; restore
+    // it locally with its file handle intact unless it is already `.age`.
+    if (toSpace && !(record.kind === "file" && record.file && !record.enc)) {
       const space = record.originSpace ?? record.sync?.space;
       if (!space || spaces.modeOf(space) === undefined) return null;
       if (isUserTrashed(record) && record.sync) {
-        // Offline delete has not reached the server yet: undo in place.
-        const dirty = Boolean(record.sync.priorDirty);
+        // Offline delete has not reached the server yet: undo in place,
+        // keeping `purge` and `rewrap` intact by spreading `record.sync`.
+        const dirty = Boolean(
+          record.sync.priorDirty || record.sync.rewrap || record.sync.purge
+        );
         delete record.trashedAt;
         delete record.originSpace;
         delete record.closedAt;
-        record.sync = { rev: record.sync.rev, dirty, space };
+        /** @type {import("../storage/idb.js").SyncState} */
+        const nextSync = { ...record.sync, dirty, space };
+        delete nextSync.tombstone;
+        delete nextSync.priorDirty;
+        delete nextSync.forget;
+        record.sync = nextSync;
         record.updatedAt = Date.now();
         await persist({ ...record });
         await workspaces.addTab(record.id);
@@ -789,7 +823,10 @@ export function createDocStore({
         return record;
       }
       if (!keyring.isUnlocked) throw new Error("restore: the keyring is locked");
-      const text = record.enc ? await plainOf(record) : (record.content ?? "");
+      // File-backed trashed records keep their body on disk (`content` was
+      // stripped by persist), so read through body() before decoding.
+      const encoded = record.file ? await body(record.id) : (record.content ?? "");
+      const text = record.enc ? await plainOf(record, encoded) : encoded;
       if (text === undefined) throw new Error("restore: this note cannot be read here");
       const now = Date.now();
       /** @type {BufferRecord} */
@@ -800,6 +837,13 @@ export function createDocStore({
         updatedAt: now,
         origin: await deviceId(),
       };
+      if (record.kind === "file" && record.file) {
+        fresh.kind = "file";
+        fresh.file = { ...record.file };
+        // Detach the handle from the old trashed record BEFORE forget(record.id),
+        // or forget() would delete the shared handle row from IndexedDB.
+        delete record.file;
+      }
       copyNoteMeta(fresh, record);
       await sealForSpace(fresh, space);
       buffers.set(fresh.id, fresh);
@@ -811,7 +855,7 @@ export function createDocStore({
       return fresh;
     }
 
-    // Legacy trashed file-backed record: clear trashedAt, keep its handle.
+    // Trashed file-backed record restored locally: clear trashedAt, keep its handle.
     if (record.kind === "file" && record.file) {
       delete record.trashedAt;
       delete record.originSpace;
@@ -825,34 +869,59 @@ export function createDocStore({
     }
 
     // Restore as local into Recent with a fresh docId (avoids 409 loop if
-    // later re-synced to a space).
+    // later re-synced to a space). Decrypt `space` ciphertext into plain local
+    // text, while keeping `this-device` local encryption encrypted at rest.
     const now = Date.now();
-    const decoded = record.enc ? await plainOf(record) : (record.content ?? "");
     /** @type {BufferRecord} */
     const fresh = {
       id: crypto.randomUUID(),
-      content: decoded !== undefined ? decoded : (record.content ?? ""),
+      content: record.content ?? "",
       createdAt: record.createdAt || now,
       updatedAt: now,
       closedAt: now,
     };
     copyNoteMeta(fresh, record);
-    if (decoded === undefined && record.enc) {
-      // Unreadable courier note: keep ciphertext under local preset.
-      fresh.enc = codec.newEncMeta("this-device");
+    if (record.enc?.preset === "space") {
+      const decoded = await plainOf(record);
+      if (decoded !== undefined) {
+        fresh.content = decoded;
+      } else {
+        // Unreadable courier note: keep ciphertext under local preset.
+        fresh.enc = codec.newEncMeta("this-device");
+        if (record.firstLine !== undefined) fresh.firstLine = record.firstLine;
+      }
+    } else if (record.enc) {
+      fresh.enc = { ...record.enc };
       if (record.firstLine !== undefined) fresh.firstLine = record.firstLine;
     }
     buffers.set(fresh.id, fresh);
     await persist({ ...fresh });
 
-    if (isUserTrashed(record)) {
-      // Keep pushing the delete tombstone to the server independently.
+    if (record.sync?.tombstone) {
+      // Keep pushing the pending tombstone (`deleted` or `detached`) independently.
       await hidePendingDelete(record);
     } else {
       await forget(record.id);
     }
     emit("change");
     return fresh;
+  }
+
+  /**
+   * One-time upgrade stamp: closed local records from before §28 carry no
+   * `closedAt`. Stamping `now` on first launch starts their 30-day clock from
+   * the upgrade instead of retroactively dumping old Recent archives into Trash.
+   * @param {number} [now]
+   */
+  async function stampMissingClosedAt(now = Date.now()) {
+    const open = workspaces.openSet();
+    for (const record of [...buffers.values()]) {
+      if (open.has(record.id) || !isDocument(record)) continue;
+      if (record.trashedAt || record.sync || record.closedAt !== undefined) continue;
+      if (isEmpty(record)) continue;
+      record.closedAt = now;
+      await persist({ ...record });
+    }
   }
 
   /**
@@ -885,7 +954,11 @@ export function createDocStore({
   async function emptyOldTrash(now = Date.now()) {
     const limit = now - TRASH_KEEP;
     for (const record of trashed()) {
-      if ((record.trashedAt ?? 0) < limit) await forget(record.id);
+      if ((record.trashedAt ?? 0) >= limit) continue;
+      // Do not forget a record whose tombstone still waits to push offline:
+      // wipe its local body from Trash and keep the hidden tombstone queued.
+      if (record.sync?.tombstone) await hidePendingDelete(record);
+      else await forget(record.id);
     }
   }
 
@@ -2435,6 +2508,11 @@ export function createDocStore({
     const record = buffers.get(id);
     if (!record || !record.sync) return;
     delete record.sync;
+    // Reset closedAt when a closed synced note becomes local so its 30-day
+    // Recent clock starts now rather than from when its tab closed months ago.
+    if (!record.trashedAt && !workspaces.openSet().has(id)) {
+      record.closedAt = Date.now();
+    }
     await toLocal(record);
     await persist({ ...record });
     if (!isMyTab(id)) dropBody(record);
@@ -2595,8 +2673,11 @@ export function createDocStore({
    *   an old text; comparing it here is what keeps that record dirty.
    * @param {number} [sentMtime] The file stamp of the body that went out
    *   (pushPayload): a file written since is text the server does not have.
+   * @param {string} [sentKind] The `payload.kind` ("text" | "deleted" | "detached")
+   *   that this HTTP push actually sent, so a tombstone queued while a text push
+   *   was in flight is never settled before its own push lands (§28).
    */
-  async function afterPush(id, rev, sentUpdatedAt, sentMtime) {
+  async function afterPush(id, rev, sentUpdatedAt, sentMtime, sentKind = "text") {
     const record = buffers.get(id);
     if (!record || !record.sync) return;
     // A file never read on this device since the v5 migration has no stamp;
@@ -2615,7 +2696,17 @@ export function createDocStore({
       // rev; the owner's own persist brings the stored record.
       record.sync.rev = rev;
       record.sync.dirty = stillDirty();
-      post("pushed", { ws: owner, id, rev, sentUpdatedAt, sentMtime });
+      post("pushed", { ws: owner, id, rev, sentUpdatedAt, sentMtime, sentKind });
+      return;
+    }
+    if (record.sync.tombstone && sentKind !== record.sync.tombstone) {
+      // A text push was already in flight when the user trashed or detached
+      // the note: advance `rev` so the tombstone pushes on top of it next,
+      // and keep the tombstone dirty instead of settling early (§28).
+      record.sync.rev = rev;
+      record.sync.dirty = true;
+      await persist({ ...record });
+      emit("change");
       return;
     }
     // A tombstone push is the last thing this record ever says to the server.
@@ -2800,8 +2891,34 @@ export function createDocStore({
       .finally(() => post("remote-applied", { docId: change.docId, rev: change.rev }));
   });
 
-  on("pushed", ({ ws, id, rev, sentUpdatedAt, sentMtime }) => {
-    if (ws === workspaces.id) void afterPush(id, rev, sentUpdatedAt, sentMtime);
+  on("pushed", ({ ws, id, rev, sentUpdatedAt, sentMtime, sentKind }) => {
+    if (ws === workspaces.id) void afterPush(id, rev, sentUpdatedAt, sentMtime, sentKind);
+  });
+
+  // Handshake for a newly booted Space Window claiming open tabs of `space`
+  // from surviving windows (typically Main), so `window.open` runs synchronously
+  // in the user gesture without releasing tabs beforehand (§28).
+  /** @type {Map<string, (from: string, moved: string[]) => void>} */
+  const claimWaiters = new Map();
+
+  on("claimed-space-tabs", ({ reqId, from, moved }) => {
+    claimWaiters.get(reqId)?.(from, moved);
+  });
+
+  on("claim-space-tabs", ({ space, reqId }) => {
+    if (workspaces.isDissolved || !space) return;
+    const moved = openBuffers()
+      .filter((b) => b.sync?.space === space && !b.trashedAt && !b.sync.tombstone)
+      .map((b) => b.id);
+    if (!moved.length) {
+      post("claimed-space-tabs", { reqId, from: workspaces.id, moved: [] });
+      return;
+    }
+    void (async () => {
+      await flushAll();
+      await releaseTabs(moved);
+      post("claimed-space-tabs", { reqId, from: workspaces.id, moved });
+    })();
   });
 
   /**
@@ -2950,8 +3067,12 @@ export function createDocStore({
     if (change.kind === "detached") {
       if (!record || !record.sync) return;
       // "Stop syncing" is not "delete" (architecture.md §3): the text stays,
-      // as a local document.
+      // as a local document. Reset closedAt on closed notes so the 30-day
+      // Recent clock starts from detach, not from an old tab close (§28).
       delete record.sync;
+      if (!record.trashedAt && !workspaces.openSet().has(id)) {
+        record.closedAt = Date.now();
+      }
       await persist({ ...record });
       emit("change");
       return;
@@ -2973,16 +3094,18 @@ export function createDocStore({
       // the push has not seen yet (§23).
       // A pending re-encryption (rewrap) is no text of the user's: the
       // incoming version is encrypted for the members too, by the device
-      // that won the race. An offline user-trash intentionally discarded its
-      // local state, so a newer remote edit revives it without forking (§28).
-      const dirty =
-        (record.sync.dirty && !record.sync.rewrap) ||
-        saveTimers.has(id) ||
-        Boolean(record.file?.unwritten);
-      if (dirty && !emptyDiscard && !userTrashed && typeof record.content === "string") {
+      // that won the race. On an offline user-trash, `priorDirty` records
+      // whether unsent edits existed before the trash: fork those so offline
+      // edits are never lost when a remote edit revives the note (§28).
+      const dirty = userTrashed
+        ? Boolean(record.sync.priorDirty)
+        : (record.sync.dirty && !record.sync.rewrap) ||
+          saveTimers.has(id) ||
+          Boolean(record.file?.unwritten);
+      if (dirty && !emptyDiscard && typeof record.content === "string") {
         forked = record.content;
         await forkConflict(record);
-      } else if (dirty && !emptyDiscard && !userTrashed && record.file) {
+      } else if (dirty && !emptyDiscard && record.file) {
         // A Recent file the leader found changed (stampRecentFiles): the
         // edit is on disk only, and the stamp already moved, so the disk
         // check in adoptRemote cannot see it. Its text forks from the file.
@@ -3091,15 +3214,12 @@ export function createDocStore({
   async function loseSpace(space) {
     losingSpaces.add(space);
     try {
-      // Dissolve any dedicated Space Window FIRST so its window marks itself
-      // dissolved and cannot write its workspace record back while its notes
-      // are being trashed (§28).
+      // Dissolve any dedicated Space Window FIRST (with `silent: true`) so
+      // `isDissolved` stops it from writing its workspace record back during
+      // `trashNote`, while keeping the window alive until the loop finishes in
+      // case the Space Window itself is the sync leader (§28).
       const owner = workspaces.spaceOwner(space);
-      if (owner) {
-        await workspaces.dissolve(owner);
-        if (owner === workspaces.id) emit("space-window-close", { id: owner });
-        else post("close-window", { ws: owner });
-      }
+      if (owner) await workspaces.dissolve(owner, { silent: true });
       for (const record of [...buffers.values()]) {
         // The keyring's space is received by every device, always.
         if (!record.sync || record.kind === "keyring" || spaceOf(record) !== space) continue;
@@ -3107,23 +3227,97 @@ export function createDocStore({
       }
       await forgetRemotes(space);
       emit("change");
+      if (owner) {
+        if (owner === workspaces.id) emit("space-window-close", { id: owner });
+        else post("close-window", { ws: owner });
+      }
     } finally {
       losingSpaces.delete(space);
     }
   }
 
   /**
-   * Populate a Space Window on boot by fetching every remaining remote stub of
-   * `space` into this workspace without duplicating already-open records (§28).
+   * Claim open tabs of `space` from surviving windows plus closed local copies
+   * when a new Space Window boots for the first time (`initSpace: true`, §28).
+   * @param {string} space
+   * @returns {Promise<string[]>}
+   */
+  async function claimSpaceTabs(space) {
+    const holders = workspaces
+      .all()
+      .filter(
+        (w) =>
+          w.id !== workspaces.id &&
+          w.tabs.some((tabId) => {
+            const b = buffers.get(tabId);
+            return Boolean(b && b.sync?.space === space && !b.trashedAt && !b.sync.tombstone);
+          })
+      )
+      .map((w) => w.id);
+
+    /** @type {string[]} */
+    let claimed = [];
+    if (holders.length > 0) {
+      const live = await workspaces.liveSet();
+      for (const w of holders) {
+        if (!live.has(w)) await workspaces.dissolve(w, { silent: true });
+      }
+      const pending = new Set(holders.filter((w) => live.has(w)));
+      if (pending.size > 0) {
+        claimed = await new Promise((resolve) => {
+          /** @type {string[]} */
+          const collected = [];
+          const reqId = crypto.randomUUID();
+          const finish = () => {
+            clearTimeout(timer);
+            claimWaiters.delete(reqId);
+            resolve(collected);
+          };
+          const timer = setTimeout(finish, 300);
+          claimWaiters.set(reqId, (from, moved) => {
+            if (Array.isArray(moved)) collected.push(...moved);
+            pending.delete(from);
+            if (pending.size === 0) finish();
+          });
+          post("claim-space-tabs", { space, reqId });
+        });
+      }
+    }
+    const closed = closedSpaceBuffers(space).map((b) => b.id);
+    const tabs = [...new Set([...claimed, ...closed])];
+    if (tabs.length) await clearClosedAt(tabs);
+    return tabs;
+  }
+
+  /**
+   * Populate a newly opened Space Window with remaining remote stubs of `space`
+   * after `store.start()` without blocking startup or hanging on a stalled
+   * request (§28). Runs once on initial creation (`initSpace`), never on reload.
    * @param {string} space
    * @param {(id: string) => Promise<Change>} fetchDoc
+   * @param {{initialBlankId?: string | null}} [opts]
    * @returns {Promise<{fetched: number, failed: number}>}
    */
-  async function fetchSpaceStubs(space, fetchDoc) {
+  async function fetchSpaceStubs(space, fetchDoc, { initialBlankId = null } = {}) {
     const stubs = [...remotes.values()].filter((s) => s.space === space);
     let fetched = 0;
     let failed = 0;
+    let blankDropped = false;
+
+    /** @param {string} addedId */
+    const dropInitialBlankIfUntouched = async (addedId) => {
+      if (blankDropped || !initialBlankId || initialBlankId === addedId) return;
+      blankDropped = true;
+      const blank = buffers.get(initialBlankId);
+      if (!blank || !isEmpty(blank) || saveTimers.has(initialBlankId)) return;
+      if (activeId === initialBlankId) activate(addedId);
+      emit("evict", { id: initialBlankId });
+      await workspaces.removeTab(initialBlankId);
+      await discard(blank);
+    };
+
     for (const stub of stubs) {
+      if (workspaces.isDissolved) break;
       if (buffers.has(stub.id)) {
         await dropRemote(stub.id);
         const existing = buffers.get(stub.id);
@@ -3131,6 +3325,8 @@ export function createDocStore({
           delete existing.closedAt;
           await persist({ ...existing });
           await workspaces.addTab(stub.id);
+          await dropInitialBlankIfUntouched(stub.id);
+          emit("change");
         }
         continue;
       }
@@ -3139,7 +3335,12 @@ export function createDocStore({
         continue;
       }
       try {
-        const change = await fetchDoc(stub.id);
+        const change = await Promise.race([
+          fetchDoc(stub.id),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("space stub fetch timeout")), 8000)
+          ),
+        ]);
         if (change.kind !== "text") {
           await dropRemote(stub.id);
           continue;
@@ -3147,12 +3348,15 @@ export function createDocStore({
         if (!buffers.has(change.docId)) {
           await createFromChange(change, workspaces.id);
           fetched++;
+          await dropInitialBlankIfUntouched(change.docId);
         } else {
           const existing = buffers.get(change.docId);
           if (existing && !existing.trashedAt && workspaces.ownerOf(change.docId) === null) {
             delete existing.closedAt;
             await persist({ ...existing });
             await workspaces.addTab(change.docId);
+            await dropInitialBlankIfUntouched(change.docId);
+            emit("change");
           }
         }
       } catch (err) {
@@ -4035,8 +4239,11 @@ export function createDocStore({
   // Separate from load(): UI modules mount between the two, so they are
   // subscribed before the first "active" event fires.
   async function start() {
-    // expireOldRecent runs BEFORE emptyOldTrash so old existing Recent notes
-    // move into 30-day Trash rather than deleting directly (§28).
+    // Stamp closedAt on pre-§28 closed local notes before checking expiry so
+    // upgrading never dumps archived Recent notes into Trash on first launch;
+    // expireOldRecent then runs before emptyOldTrash so newly expired notes
+    // spend 30 days in Trash (§28).
+    await stampMissingClosedAt();
     await expireOldRecent();
     await emptyOldTrash();
     await discardEmpty(closedBuffers().map((b) => b.id));
@@ -4096,6 +4303,7 @@ export function createDocStore({
     expireOldRecent,
     emptyOldTrash,
     demoteToStub,
+    claimSpaceTabs,
     fetchSpaceStubs,
     releaseTabs,
     clearClosedAt,

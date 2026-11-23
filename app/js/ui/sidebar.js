@@ -124,6 +124,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
   // ---- Per-window UI state (never persisted) -------------------------------
 
+  // Closed drawers, Delete mode, and the View filter start clear in every
+  // window and nothing stores them (architecture.md §9, §28).
   /** Space keys hidden by the desktop View filter ("local" or space name). @type {Set<string>} */
   const hiddenSpaces = new Set();
   let deleteMode = false;
@@ -156,8 +158,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
    * @param {() => unknown} act
    */
   function open(act) {
-    // Drop any phone subview watcher before closing the note list so Back
-    // does not stay armed on an invisible subview.
+    // Disarm any phone subview Back watcher before closing the note list so
+    // CloseWatcher stack order never keeps an invisible subview layer armed.
     setPhoneView(null, { redraw: false });
     run("settings.close");
     run("sidebar.autoclose");
@@ -175,9 +177,12 @@ export function mountSidebar(store, folders, sync, workspaces) {
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
   newButton.addEventListener("click", () => open(() => run("buffer.new")));
 
-  // Pinned inside #bottom-bar (desktop only; phone uses the thumb menu).
+  // Pinned outside the scroller inside #bottom-bar by app.css, so a long
+  // buffer list never hides it (architecture.md §9, §28). Desktop only; phone
+  // reaches Settings through the round thumb menu.
   barSettings.addEventListener("click", () => {
-    // The drawer sits above the settings panel on narrow desktop, so close it first.
+    // On a narrow desktop window the drawer sits above the settings panel, so
+    // it must close first or the panel opens behind it.
     run("sidebar.autoclose");
     run("settings.toggle");
   });
@@ -190,6 +195,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const openFolder = /** @type {HTMLElement} */ (document.getElementById("open-folder"));
     openFile.hidden = false;
     openFolder.hidden = false;
+    // Through open() too: a file picked while settings are up must show.
+    // A cancelled picker leaves settings closed, which is fine.
     openFile.addEventListener("click", () => open(() => run("file.open")));
     openFolder.addEventListener("click", () => run("folder.open"));
   }
@@ -339,14 +346,17 @@ export function mountSidebar(store, folders, sync, workspaces) {
   actDel.addEventListener("click", () => setDeleteMode(!deleteMode));
   deletePill.addEventListener("click", () => setDeleteMode(false));
 
-  // Typing in the editor exits Delete mode immediately; cursor clicks alone do not.
+  // Typing in the editor exits Delete mode immediately; cursor clicks and
+  // selection changes (`docChanged === false`) must not, so clicking a note to
+  // check its text before deleting stays in Delete mode.
   editorEvents.addEventListener("update", (event) => {
     if (deleteMode && /** @type {CustomEvent} */ (event).detail?.docChanged) {
       setDeleteMode(false);
     }
   });
 
-  // Escape exits Delete mode unless a dialog, menu, settings, search, or rename owns it.
+  // Escape exits Delete mode unless a dialog, menu, settings overlay, search
+  // field, or inline rename already owns Escape on screen.
   window.addEventListener("keydown", (event) => {
     if (event.key === "Shift") document.body.classList.add("shift-held");
     if (event.key !== "Escape" || !deleteMode || event.defaultPrevented) return;
@@ -395,6 +405,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
   /** @param {BufferRecord} record */
   function startRename(record) {
+    // The row is looked up here, not held from the click: a redraw between
+    // opening the menu and picking Rename would leave a detached element, and
+    // the input would go into a row nobody can see.
     const li = document.querySelector(`.buffer-row[data-id="${CSS.escape(record.id)}"]`);
     const titleEl = li ? li.querySelector(".buffer-title") : null;
     if (renamingId || !(titleEl instanceof HTMLElement)) return;
@@ -407,6 +420,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     input.spellcheck = false;
     titleEl.replaceWith(input);
     input.focus();
+    // Select the name without its extension: a rename almost never means to
+    // change the file type.
     const dot = input.value.lastIndexOf(".");
     input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
 
@@ -417,16 +432,23 @@ export function mountSidebar(store, folders, sync, workspaces) {
       done = true;
       renamingId = null;
       const name = input.value;
+      // Redraw first: the row must come back from the record whatever happens
+      // next, including a rename the store refuses.
       render();
       if (commit) run("buffer.rename", { id: record.id, name });
     }
 
     input.addEventListener("keydown", (event) => {
+      // The chord table listens on window, so Alt+W here would close (or in
+      // Delete mode trash) the buffer while its new name is still being typed.
       event.stopPropagation();
       if (event.key === "Enter") finish(true);
       if (event.key === "Escape") finish(false);
     });
+    // Committing on blur, like a file manager: clicking away is a decision,
+    // not a cancel.
     input.addEventListener("blur", () => finish(true));
+    // The row itself activates a buffer on click. Editing its name must not.
     input.addEventListener("click", (event) => event.stopPropagation());
   }
 
@@ -443,6 +465,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   // ---- Menus ---------------------------------------------------------------
 
   /**
+   * The row menu (architecture.md §9, §28). Sync is a per-document server
+   * target (§3); with no server configured the item is disabled and says where
+   * to set one, rather than claiming to sync into nothing. Encrypt is for a
+   * file on disk only (§19, §27): it renames the file to `.age`, so it is
+   * disabled where the browser cannot rename a file. A synced note is
+   * encrypted anyway.
+   *
    * @param {BufferRecord} record @param {{closable: boolean}} opts
    * @returns {import("./menu.js").MenuItem[]}
    */
@@ -451,9 +480,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const items = [];
 
     if (record.kind === "file" && record.file) {
+      // No item at all where the browser cannot rename a file in place: an
+      // entry that silently does nothing is worse than a missing one.
       if (store.canRenameFile(record)) {
         items.push({ label: "Rename file…", act: () => renameAfterPin(record) });
       }
+      // The inverse of Save to disk (architecture.md §23), and the way out of
+      // a file that is gone for good.
       items.push({
         label: "Unlink file",
         hint: "The note stays in vrtti, the file stays on disk",
@@ -469,8 +502,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
       }
     }
 
+    // The whole text to the clipboard. On a phone this menu is the one place
+    // for it: there is no keyboard for Ctrl+A, Ctrl+C.
     items.push({ label: "Copy text", act: () => run("doc.copy", record.id) });
 
+    // Czech without diacritics (.work/mixed-spellcheck/plan.md). On a phone
+    // this menu is the one place for the commands; from here they work on
+    // the whole note. "(vllm)" only when the sync server has a model: the
+    // labels say where the text goes, as the user asked.
     items.push({ separator: true });
     items.push({
       label: "Add diacritics (local)",
@@ -486,9 +525,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
     items.push({ separator: true });
     items.push(...syncItems(record));
+    // History is the server's, so it only exists for a document the server
+    // knows about.
     if (record.sync && sync?.isConfigured) {
       items.push({ label: "History…", act: () => run("doc.history", record.id) });
     }
+    // Two labels, not one checked item: "Decrypt" says what the click does,
+    // and a check mark did not. A synced note stays encrypted (§27), so it
+    // gets neither; a local note gets Decrypt only, for an old encrypted one.
     if (!record.sync) {
       if (record.kind === "file" && record.file) {
         items.push(
@@ -512,6 +556,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
         : { label: "Lock with PIN", hint: "The note opens after this device's PIN", act: () => run("doc.pin", record.id) }
     );
     items.push({ separator: true });
+    // A row is either a tab of this window (closable) or closed in a drawer;
+    // the record itself does not say which (architecture.md §14).
     items.push(
       closable
         ? { label: "Close", act: () => run("buffer.close", record.id) }
@@ -519,7 +565,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     );
 
     // Explicit delete / remove action (§28). Files on disk are never deleted;
-    // unwritten file text blocks removal until reconnected or unlinked.
+    // when `file.unwritten` is true, IndexedDB holds the only copy of unsaved
+    // text, so removal stays disabled until reconnected or unlinked.
     if (record.kind === "file" && record.file) {
       items.push(
         record.file.unwritten
@@ -599,6 +646,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   }
 
   /**
+   * "Sync to <space>" for an unsynced note, the New notes space first (§27),
+   * and for a synced one "Move to <space>" for each other space of this
+   * device, then "Stop syncing" with its space in the hint (§27). The origin
+   * device is the hint of a move: it is what tells a lent note from one of
+   * the space's own. Flat items, since the menu has no submenus and two or
+   * three spaces need none.
+   *
    * @param {BufferRecord} record
    * @returns {import("./menu.js").MenuItem[]}
    */
@@ -629,6 +683,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (!mine.length) {
       return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Devices first" }];
     }
+    // The New notes space first; with Local only, no space is first (§27).
     const first = sync.defaultSpace();
     return [...(first ? [first] : []), ...mine.filter((name) => name !== first)].map((name) => ({
       label: "Sync to " + name,
@@ -652,10 +707,16 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const color = space && sync ? sync.colorOf(space) : "";
     if (!color) return;
     li.classList.add("has-space");
+    // The bar is the row's ::before (app.css): the drag marks of a row are
+    // its box-shadow, so the bar cannot be one too.
     li.style.setProperty("--space-color", color);
   }
 
   /**
+   * A row is an <li>, so the keyboard has to be given it by hand: a tab stop,
+   * and Enter or Space as the click. The target check matters: Enter on the
+   * row's ⋯, ×, trash, or restore button bubbles here too, and must not also
+   * open the row.
    * @param {HTMLElement} li
    */
   function keyboardRow(li) {
@@ -682,9 +743,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const li = document.createElement("li");
     li.className = "buffer-row";
     keyboardRow(li);
+    // The rename box finds its row by this id, after the menu that asked for
+    // it is already gone.
     li.dataset.id = record.id;
     if (closable && record.id === store.activeId) li.classList.add("active");
 
+    // Hover on the row: the space and the device that made the note (§27),
+    // and where the file sits, as far as the page can know it.
     /** @type {string[]} */
     const hover = [];
     if (record.sync?.space) {
@@ -695,6 +760,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (record.kind === "file" && record.file) hover.push("On disk: " + store.diskPath(record));
     if (hover.length) li.title = hover.join("\n");
 
+    // A file-backed row is marked, never labelled: the file name is already
+    // the title, so the marker only has to say "this one is on disk". The
+    // tooltip prefers the folder path, which is what tells two notes.md apart.
     if (record.kind === "file" && record.file) {
       const mark = document.createElement("span");
       mark.className = "buffer-mark";
@@ -703,6 +771,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
       li.appendChild(mark);
     }
 
+    // The lock mark means the PIN lock (§27). A synced note is shown by its
+    // colored bar, and every synced note is encrypted, so neither needs a
+    // mark of its own.
     if (record.pin) {
       const mark = document.createElement("span");
       mark.className = "buffer-mark";
@@ -722,18 +793,22 @@ export function mountSidebar(store, folders, sync, workspaces) {
       warn.className = "buffer-warn";
       warn.type = "button";
       warn.textContent = "⚠";
+      // Two causes share the marker and the click (architecture.md §23): a
+      // lost permission or file, and a write that failed and holds the text.
       warn.title = record.file?.unwritten
         ? "The last write to this file failed. Click to try again."
         : "This file needs permission again. Click to reconnect.";
       warn.addEventListener("click", (event) => {
+        // The click itself is the user gesture requestPermission needs; a
+        // background retry can never get the grant.
         event.stopPropagation();
         run("file.reconnect", record.id);
       });
       li.appendChild(warn);
     }
 
-    if (showRecentAge && !record.file?.unwritten) {
-      const left = daysLeft(record.closedAt ?? record.updatedAt, RECENT_KEEP);
+    if (showRecentAge && !record.file?.unwritten && record.closedAt !== undefined) {
+      const left = daysLeft(record.closedAt, RECENT_KEEP);
       if (left <= 7) {
         const age = document.createElement("span");
         age.className = "buffer-age soon";
@@ -743,6 +818,11 @@ export function mountSidebar(store, folders, sync, workspaces) {
       }
     }
 
+    // The time of the last change, for the rows of the phone note list.
+    // Every row carries it and the preview below, in every layout, and
+    // app.css shows them in phone mode only: the layout can change under a
+    // drawn list (a phone turned on its side), and this way that needs no
+    // redraw and no code that knows the mode.
     const time = document.createElement("span");
     time.className = "buffer-time";
     time.textContent = shortTime(record.updatedAt);
@@ -755,6 +835,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
     more.title = "More";
     more.setAttribute("aria-haspopup", "menu");
     more.addEventListener("click", (event) => {
+      // Without this the row would also activate the buffer behind the menu.
       event.stopPropagation();
       openMenu(more, rowMenu(record, { closable }));
     });
@@ -812,6 +893,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
       li.appendChild(trashBtn);
     }
 
+    // The start of the text, the second line of a phone row. loadedText, not
+    // textOf: this runs for every row on every keystroke, and textOf would
+    // read every file and decrypt every note to draw a list. The store
+    // decodes encrypted notes in the background (warmPreviews in
+    // model/docs.js) and sends "change" when they are ready. A locked note
+    // and an unread file have no preview, and neither has a note that is
+    // only its title; those rows stay one line. Last in the row: app.css
+    // wraps it onto a line of its own.
     const text = store.loadedText(record.id);
     const preview = text === undefined ? "" : previewOf(text, titleText);
     if (preview) {
@@ -822,6 +911,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     }
 
     li.addEventListener("click", () => {
+      // The pointer that dragged this row is released over it, and the
+      // browser sends a click for that. Dropping a row is not opening it.
       if (dropped) return;
       open(() => run(closable ? "buffer.activate" : "buffer.reopen", record.id));
     });
@@ -829,8 +920,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
   }
 
   /**
-   * Unopened Titles-only stub row (§25, §28). PIN-locked stubs without an
-   * explicit user title show 🔒 and "Locked note" (never a first line).
+   * Unopened Titles-only stub row (§25, §28). Its own builder, not a mode of
+   * makeRow: a stub has no BufferRecord in IndexedDB. PIN-locked stubs without
+   * an explicit user title show 🔒 and "Locked note" (never a first line).
    * @param {RemoteStub} stub
    */
   function makeStubRow(stub) {
@@ -851,10 +943,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
     const title = document.createElement("span");
     title.className = "buffer-title";
+    // A title this device could not open yet (locked) or a PIN-locked stub
+    // without an explicit user title never shows a first line (§27, §28).
     title.textContent = stub.title || (stub.pin ? "Locked note" : stub.enc ? "encrypted" : "untitled");
     li.appendChild(title);
 
-    // Phone Mode B marks unopened server stubs with a quiet "server" tag.
+    // Phone Mode B marks unopened server stubs with a quiet "server" tag;
+    // app.css hides `.buffer-tag` outside `html.phone`.
     const tag = document.createElement("span");
     tag.className = "buffer-tag";
     tag.textContent = "server";
@@ -903,10 +998,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (originSpace) spaceBar(li, originSpace);
 
     const left = daysLeft(record.trashedAt ?? record.updatedAt, TRASH_KEEP);
-    li.title =
-      (originSpace ? originSpace + " · " : "") +
-      left +
-      "d left in Trash";
+    li.title = (originSpace ? originSpace + " · " : "") + left + "d left in Trash";
 
     if (record.pin) {
       const mark = document.createElement("span");
@@ -955,6 +1047,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     });
     li.appendChild(restoreBtn);
 
+    // Anchor to `more` when visible on screen, else to `li` (keyboard Enter on
+    // an unhovered desktop row hides `more` via `display: none`).
     li.addEventListener("click", () => {
       openMenu(more.offsetParent ? more : li, trashMenu(record));
     });
@@ -963,17 +1057,34 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
   // ---- Reorder by drag (architecture.md §9, Manual order) -----------------
 
+  // Pointer events, not the HTML5 drag and drop API: the desktop shell takes
+  // the native drag events for file drops (src-tauri, §24), and on Windows
+  // that leaves an in-page HTML5 drag with no dragover and no drop. Pointer
+  // events belong to the page alone, in every webview.
+  //
+  // Mouse and pen only. A finger on a row is how the list scrolls, so a
+  // touch drag would need touch-action: none on every row, and the list
+  // could not scroll any more. The row menu stays the phone's way around.
+
+  // The press that may become a drag, then the drag. Null between gestures.
   /** @type {{ li: HTMLElement, id: string, startY: number, moved: boolean, beforeId: string | null | undefined } | null} */
   let drag = null;
+  // True from the drop until the click that follows it has been swallowed.
   let dropped = false;
+  // A press turns into a drag after this many pixels: a click wobbles less.
   const DRAG_SLOP = 4;
 
   openList.addEventListener("pointerdown", (event) => {
     if (drag || event.button !== 0 || event.pointerType === "touch") return;
     const target = /** @type {HTMLElement} */ (event.target);
+    // A press on ⋯, ×, the trash button, or the rename box is theirs, not a drag.
     if (target.closest("button, input")) return;
     const li = target.closest(".buffer-row");
     if (!(li instanceof HTMLElement) || !li.dataset.id || !li.parentElement) return;
+    // No preventDefault here: it would keep the focus where it is, and a
+    // rename box commits on blur, so a press on another row must still take
+    // the focus away from it. Titles are user-select: none (app.css) instead,
+    // so a slow press does not start selecting them across the list.
     drag = { li, id: li.dataset.id, startY: event.clientY, moved: false, beforeId: undefined };
     li.setPointerCapture(event.pointerId);
   });
@@ -994,6 +1105,9 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const { id, moved, beforeId } = drag;
     endDrag();
     if (!moved) return;
+    // The click comes right after this event, in the same task; the flag
+    // outlives it by one tick and no more, so a lost click cannot leave it
+    // set for the next real one.
     dropped = true;
     setTimeout(() => (dropped = false), 0);
     event.preventDefault();
@@ -1001,7 +1115,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   });
   openList.addEventListener("pointercancel", endDrag);
 
-  /** @param {number} y */
+  /**
+   * The insertion point for the pointer's height: before the first row whose
+   * middle is below the pointer, else last. The mark goes on that row's top
+   * edge, or the last row's bottom edge. A drop beside the row itself (just
+   * above or just below it) is no move, and shows no mark.
+   * @param {number} y
+   */
   function showDropTarget(y) {
     if (!drag) return;
     const rows = /** @type {HTMLElement[]} */ ([...openList.children]);
@@ -1036,25 +1156,61 @@ export function mountSidebar(store, folders, sync, workspaces) {
     for (const row of openList.children) {
       row.classList.remove("dragging", "drop-before", "drop-after");
     }
+    // Only after a real drag: the redraw that stood down runs now, and the
+    // move's own "change" (if any) draws the new order right after. A plain
+    // press must keep its row, or the click that follows the release has no
+    // element to land on and never fires, and the row does not activate.
     if (moved) render();
   }
 
   // ---- Swipe to close (architecture.md §9, Phone mode) ---------------------
-  // Strictly Close only on Open rows; never moves notes to Trash (§28).
+
+  // In the phone note list, a swipe to the left on a row of Open closes that
+  // note (strictly Close only, never Move to trash; §28): one move of the
+  // thumb where the row menu takes two taps. Touch only, so it shares nothing
+  // with the drag above, which ignores touch.
+  //
+  // The row stays where it is and its content moves: this code writes the
+  // distance to one custom property, and app.css moves the row's children by
+  // it and shows the word "close" behind them (a pseudo-element, so makeRow
+  // has nothing to add). Moving the <li> itself would leave nothing to show
+  // behind it.
+  //
+  // The rows carry touch-action: pan-y in phone mode (app.css). That is what
+  // divides the gesture: an up or down move is the browser's scroll, and the
+  // browser then cancels the pointer; a sideways move comes here.
 
   /** @type {{ li: HTMLElement, id: string, pointerId: number, startX: number, startY: number, width: number, active: boolean } | null} */
   let swipe = null;
+  // Rows on their way out (swipeOut). They are no longer `swipe`, so the next
+  // swipe can start while they leave, but render() must still not replace
+  // them in the middle of their animation.
   let leaving = 0;
+  // render() stood down for a swipe or a leaving row and has a redraw to
+  // make up for.
   let redrawOwed = false;
+  // On the row while its word "close" is bright. The class is also the
+  // answer to "does a release close the note" (pointerup), so what the user
+  // was shown and what happens cannot come apart.
   const ARMED = "swipe-armed";
+  // The finger must go this far left before the row starts to follow it.
   const SWIPE_SLOP = 10;
+  // The close point: this share of the row's width (user decision,
+  // 2026-11-19). Half was the first plan, and is a long reach for one thumb.
+  // Distance only, never speed: a quick flick must not close a note.
   const SWIPE_CLOSE = 1 / 3;
+  // The close, in two steps: the content slides off to the left, then the
+  // row folds away and the rows below move up. Milliseconds.
   const SWIPE_OUT = 200;
   const SWIPE_FOLD = 200;
 
   openList.addEventListener("pointerdown", (event) => {
     if (swipe || event.pointerType !== "touch" || !event.isPrimary || !phoneMode()) return;
     const target = /** @type {HTMLElement} */ (event.target);
+    // The rename box wants its touches for the text, and the ⚠ is a small
+    // button with a job of its own. The ⋯ is not excluded: it fills the right
+    // end of the row, which is where a thumb starts a swipe to the left, and
+    // a finger that moved sends no click, so the menu stays shut.
     if (target.closest("input, .buffer-warn")) return;
     const li = target.closest(".buffer-row");
     if (!(li instanceof HTMLElement) || !li.dataset.id) return;
@@ -1073,38 +1229,55 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (!swipe || event.pointerId !== swipe.pointerId) return;
     const dx = event.clientX - swipe.startX;
     if (!swipe.active) {
+      // The list may redraw under a finger that has not moved yet (a sync):
+      // the row this press began on is then gone, and so is the swipe.
       if (!swipe.li.isConnected) {
         swipe = null;
         return;
       }
+      // To the left, and more to the left than up or down. Anything else is
+      // a tap, a scroll, or a move to the right, which does nothing.
       if (dx > -SWIPE_SLOP || -dx < Math.abs(event.clientY - swipe.startY)) return;
       swipe.active = true;
       swipe.width = swipe.li.offsetWidth;
       swipe.li.classList.add("swiping");
     }
+    // Never to the right of where it started.
     const moved = Math.min(0, dx);
     swipe.li.style.setProperty("--swipe", moved + "px");
+    // The word "close" turns bright: lifting the finger now closes the note.
     swipe.li.classList.toggle(ARMED, -moved >= swipe.width * SWIPE_CLOSE);
   });
 
   openList.addEventListener("pointerup", (event) => {
     if (!swipe || event.pointerId !== swipe.pointerId) return;
     const { id, li } = swipe;
+    // Read before endSwipe() takes the class off.
     const close = li.classList.contains(ARMED);
     if (close && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
       swipeOut();
       return;
     }
     endSwipe();
+    // Reduced motion: at once, with no slide out. The store's "change"
+    // redraws the list without the row. The list stays open, so the next
+    // note can go the same way.
     if (close) run("buffer.close", id);
   });
 
+  // A release past the close point: the row leaves, then the note closes.
   function swipeOut() {
     if (!swipe) return;
     const { li, id, width } = swipe;
+    // Free for the next swipe at once. The row keeps its classes: the bright
+    // word "close" stays behind the content while it goes.
     swipe = null;
     leaving++;
+    // A tap on a row that is on its way out must not open its note.
     li.style.pointerEvents = "none";
+    // From where the finger left it. The animation outranks the transform
+    // that app.css derives from --swipe, and `forwards` holds the last frame
+    // until the redraw removes the row.
     const from = li.style.getPropertyValue("--swipe");
     for (const child of li.children) {
       child.animate(
@@ -1112,6 +1285,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
         { duration: SWIPE_OUT, easing: "ease-in", fill: "forwards" }
       );
     }
+    // Height alone would stop at the padding and the min-height.
     li.animate(
       {
         height: [li.offsetHeight + "px", "0px"],
@@ -1121,16 +1295,26 @@ export function mountSidebar(store, folders, sync, workspaces) {
       },
       { delay: SWIPE_OUT, duration: SWIPE_FOLD, easing: "ease-in-out", fill: "forwards" }
     );
+    // A timer, not the animations' `finished`: the close must come even if
+    // the browser drops an animation (the list can go out of sight in the
+    // middle, when the user opens another note). The two constants set both
+    // the animations and this wait, so they cannot drift apart.
     setTimeout(async () => {
       try {
         await run("buffer.close", id);
       } finally {
+        // Held until the store is done, not until the timer: the close
+        // writes to storage first, and a redraw in that gap would draw the
+        // row again at full height. The store's "change" came while the
+        // list was held, so the redraw is owed now.
         leaving--;
         if (redrawOwed) render();
       }
     }, SWIPE_OUT + SWIPE_FOLD);
   }
 
+  // The browser took the gesture for a scroll, or Android took it for Back
+  // (a swipe that starts at the screen edge). Either way nothing closes.
   openList.addEventListener("pointercancel", (event) => {
     if (swipe && event.pointerId === swipe.pointerId) endSwipe();
   });
@@ -1140,13 +1324,21 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const { li, active } = swipe;
     swipe = null;
     if (!active) return;
+    // Without the class, app.css moves the content back to its place.
     li.classList.remove("swiping", ARMED);
     li.style.removeProperty("--swipe");
+    // The redraw that stood down during the swipe runs now. It replaces the
+    // row, so in this one case the content jumps home instead of sliding;
+    // a timer to wait for the slide would be a second clock to keep in step
+    // with the CSS, for a sync that lands in the middle of a swipe.
     if (redrawOwed) render();
   }
 
   // ---- Folder sections (architecture.md §2, §9) ----------------------------
 
+  // Which directory levels are open on screen, keyed folder id + path. UI
+  // state on purpose: the store caches what it listed, the sidebar decides
+  // what is visible. Not persisted; a reload starts with top levels only.
   /** @type {Set<string>} */
   const expanded = new Set();
 
@@ -1163,11 +1355,17 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const li = document.createElement("li");
     li.className = "tree-row " + (isDir ? "dir" : "file");
     keyboardRow(li);
+    // Inline indent: the depth is unbounded, so no fixed set of classes can
+    // cover it. 10px is the padding every other sidebar row uses. The calc
+    // keeps the step proportional to the interface text size (ui/textsize.js),
+    // or a deep tree at 200% would indent by a third of a character.
     li.style.paddingLeft = `calc(${10 + depth * 14}px * var(--ui-scale))`;
     li.dataset.path = entry.path;
 
     const twisty = document.createElement("span");
     twisty.className = "tree-twisty";
+    // Files keep the empty span: it holds the column, so names line up with
+    // the directory names above them.
     twisty.textContent = isDir ? (expanded.has(key) ? "▾" : "▸") : "";
     li.appendChild(twisty);
 
@@ -1178,6 +1376,12 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
     li.addEventListener("click", () => {
       if (!isDir) {
+        // Every file row opens, including binary-looking ones. Sublime lists
+        // and opens everything; guessing which files "count" would be wrong
+        // more often than useful.
+        // The folder's name leads the path, so "docs/sub/notes.md" says
+        // which folder a file came from; the absolute path is not available
+        // to a page (architecture.md §2).
         const folderName = folders.folders.get(folderId)?.name ?? "";
         const path = folderName + "/" + entry.path;
         open(() => run("folder.openFile", { handle: entry.handle, path }));
@@ -1186,6 +1390,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
       if (expanded.has(key)) expanded.delete(key);
       else {
         expanded.add(key);
+        // Loads on first expand and emits "listing", which re-renders with the
+        // children in place. A cached level returns without touching disk.
         folders.entries(folderId, entry.path);
       }
       renderFolders();
@@ -1197,6 +1403,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
   function addLevel(folderId, path, depth, out) {
     const level = folders.cached(folderId, path);
     if (!level) {
+      // Never listed yet (a fresh section, or a reload). The load emits
+      // "listing", which brings us back here with the entries in hand.
       folders.entries(folderId, path);
       return;
     }
@@ -1219,6 +1427,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     const name = document.createElement("span");
     name.className = "folder-name";
     name.textContent = folder.name;
+    // The browser hands the page a folder's name and nothing of its place on
+    // disk; the native backend knows the real path (architecture.md §17).
     const handle = folders.folders.get(folder.id)?.handle;
     name.title = isNativeHandle(handle)
       ? folder.name + "\n" + handle.fullPath
@@ -1232,6 +1442,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       warn.type = "button";
       warn.textContent = "⚠";
       warn.title = "This folder needs permission again. Click to reconnect.";
+      // The click itself is the user gesture requestPermission needs.
       warn.addEventListener("click", () => run("folder.reconnect", folder.id));
       head.appendChild(warn);
     }
@@ -1249,6 +1460,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
     tree.className = "folder-tree";
     /** @type {HTMLElement[]} */
     const rows = [];
+    // Nothing can be listed without a grant, so the section shows its heading
+    // and the reconnect marker alone until the user clicks it.
     if (!stale) addLevel(folder.id, "", 0, rows);
     tree.replaceChildren(...rows);
     section.appendChild(tree);
@@ -1256,12 +1469,22 @@ export function mountSidebar(store, folders, sync, workspaces) {
   }
 
   function renderFolders() {
+    // Without a disk backend the folder commands are not registered, so a
+    // section's buttons would dispatch into nothing. There is also nothing to
+    // draw: such a build can hold no directory handle.
     if (!hasDisk) return;
     folderSections.replaceChildren(...folders.openFolders().map(folderSection));
   }
 
   // ---- Focus & scroll helpers ----------------------------------------------
 
+  /**
+   * Which row the keyboard is on, so a redraw can put the focus back. Every
+   * replaceChildren below destroys the focused row, and a sync or another
+   * window can redraw while the user is arrowing through the list. A row is
+   * found again by its id in the same list; a row that vanished (closed,
+   * fetched) leaves the focus where the browser drops it.
+   */
   function focusedRow() {
     const el = document.activeElement;
     if (!(el instanceof HTMLElement) || !sidebar.contains(el)) return null;
@@ -1277,12 +1500,33 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (li instanceof HTMLElement) li.focus();
   }
 
+  /**
+   * The row of the note on screen, scrolled into view. A new note lands at
+   * the end of the Open list, below the fold once the list is longer than
+   * the sidebar; a search hit or a chord can open a note anywhere in it.
+   * "nearest" moves the list only as far as it must, so a row already on
+   * screen holds the list still. The drawer and a collapsed sidebar keep
+   * their layout (ui/shell.js), so the scroll lands even while hidden.
+   */
   function revealActive() {
     const row = openList.querySelector("li.active");
     if (row instanceof HTMLElement) row.scrollIntoView({ block: "nearest" });
   }
 
-  /** @param {BufferRecord[]} open */
+  /**
+   * The order of the Open list. On a PC it is the tab order, which the user
+   * sets by drag. In phone mode it is the time of the last change, oldest at
+   * the top and newest at the bottom, as in a chat with yourself (user
+   * decision, 2026-11-19): the newest note sits next to the thumb button.
+   * The phone has no drag (it ignores touch), so it loses no order the user
+   * made there, and the tab order stays untouched for the PC.
+   *
+   * The time is updatedAt: an edit, a sync that brings a change, and a
+   * reopen from Recent move a note to the bottom; a switch between notes
+   * does not. sort is stable, so notes with the same time keep the tab order.
+   *
+   * @param {BufferRecord[]} open
+   */
   function openOrder(open) {
     if (!phoneMode()) return open;
     return [...open].sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
@@ -1329,9 +1573,23 @@ export function mountSidebar(store, folders, sync, workspaces) {
     );
   }
 
-  /** @param {{reveal?: boolean}} [opts] */
+  /**
+   * @param {{reveal?: boolean}} [opts] reveal: the active note changed, so
+   *   its row must end up on screen. Off for every other redraw: a sync or a
+   *   keystroke must not drag the list away from where the user scrolled it.
+   */
   function render({ reveal = false } = {}) {
+    // A rename input lives inside one of these rows, and every keystroke in
+    // the editor emits "change". Redrawing now would delete the box the user
+    // is typing in; startRename() calls render() itself when it is done. A
+    // drag holds its rows the same way: a sync arriving mid-drag must not
+    // swap the row under the pointer; endDrag() redraws.
     if (renamingId || drag) return;
+    // A swipe holds its row for the same reason. Only once the row follows
+    // the finger, not from the first touch: every tap and every scroll
+    // begins as a press, and those must not hold a redraw back.
+    // endSwipe() redraws if this happened. A row that leaves after a swipe
+    // (swipeOut) holds the list as well, until its note closes.
     if (swipe?.active || leaving > 0) {
       redrawOwed = true;
       return;
@@ -1511,9 +1769,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (reveal) revealActive();
   }
 
-  // Keyboard travel between rows.
+  // Keyboard travel between rows. Tab already walks everything in the
+  // sidebar top to bottom (the buttons, then every row); Up and Down skip
+  // the buttons and move row to row, and Escape goes back to the text.
   sidebar.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      // A menu's Escape has already closed the menu and put the focus back
+      // on the ⋯ (ui/menu.js). The search view and a rename box stop the
+      // event before it gets here, so theirs are not seen at all.
       if (event.defaultPrevented) return;
       if (deleteMode) {
         event.preventDefault();
@@ -1533,11 +1796,15 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (next) next.focus();
   });
 
+  // Sublime's Ctrl+0: the keyboard's way out of the editor, which keeps Tab
+  // for itself (editor/editor.js). Lands on the open document's row, the
+  // place the user is, or on the first row, or on "+" when there is none.
   register({
     id: "sidebar.focus",
     title: "Focus sidebar",
     keys: "Ctrl+Digit0",
     run: () => {
+      // A collapsed sidebar is inert, and focus() on it does nothing.
       run("sidebar.show");
       const active = openList.querySelector("li.active");
       const target = active instanceof HTMLElement ? active : keyboardRows()[0] ?? newButton;
@@ -1547,16 +1814,26 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
   store.events.addEventListener("change", () => render());
   store.events.addEventListener("active", () => render({ reveal: true }));
+  // The order of Open depends on the mode (openOrder), and a phone turned on
+  // its side can leave it with no store event to redraw the list.
   onPhoneModeChange((phone) => {
     setPhoneView(null, { redraw: false });
     if (phone) setDeleteMode(false);
     else openDrawer = null;
     render();
   });
+  // A lock takes the plaintext out of memory (model/docs.js lockAll), and a
+  // preview drawn from it must leave the screen in the same moment. The store
+  // sends no "change" for a lock, so without this the decrypted lines would
+  // stay in the list until the next edit. The previews go by hand first,
+  // because render() stands down during a rename or a drag, and "the list was
+  // busy" is no reason to keep showing a locked note. All of them, not only
+  // the encrypted ones: the redraw puts the others back.
   store.events.addEventListener("lock", () => {
     for (const el of sidebar.querySelectorAll(".buffer-preview")) el.remove();
     render();
   });
+  // A new color or a new member list changes the bars and the menus (§27).
   sync?.events.addEventListener("spaces", () => render());
   folders.events.addEventListener("change", renderFolders);
   folders.events.addEventListener("listing", renderFolders);

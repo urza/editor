@@ -172,6 +172,7 @@
  * @property {string | null} activeId
  * @property {string[]} folderIds  Directory handle ids from the handles store.
  * @property {string} [space]  Space name owned by a dedicated Space Window (§28).
+ * @property {true} [initSpace]  Set on creation; cleared once initial tab claim runs.
  * @property {number} createdAt
  * @property {number} updatedAt
  */

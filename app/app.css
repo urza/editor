@@ -1237,7 +1237,8 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   cursor: pointer;
   padding: 0 2px;
 }
-.menu-head button:hover { text-decoration: underline; }
+.menu-head button:hover,
+.menu-head button:focus-visible { text-decoration: underline; outline: none; }
 
 /* Stay-open View space filter checklist row with quick "only" button (§28). */
 .filter-row {
@@ -1291,10 +1292,13 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   opacity: 0;
 }
 .filter-row:hover .filter-only,
-.filter-only:focus-visible { opacity: 1; }
-.filter-only:hover {
+.filter-row:has(.filter-toggle:focus-visible) .filter-only,
+.filter-only:focus { opacity: 1; }
+.filter-only:hover,
+.filter-only:focus-visible {
   background: rgba(249, 174, 88, 0.16);
   color: var(--st-caret);
+  outline: none;
 }
 
 /* Empty on a plain item, so every label starts at the same x. */

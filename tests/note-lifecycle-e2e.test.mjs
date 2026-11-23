@@ -200,12 +200,20 @@ class CdpClient {
     });
   }
 
-  async eval(expression) {
-    const res = await this.send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+  async eval(expression, timeoutMs = 20000) {
+    const res = await Promise.race([
+      this.send("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("CDP eval timed out (" + timeoutMs + "ms):\n" + expression.slice(0, 240))),
+          timeoutMs
+        )
+      ),
+    ]);
     if (res.exceptionDetails) {
       throw new Error(res.exceptionDetails.exception?.description || res.exceptionDetails.text);
     }
@@ -557,6 +565,37 @@ describe(
       assert.equal(afterPurge.exists, false);
       assert.equal(afterPurge.barTrashHidden, true);
 
+      // Upgrade safety (Review #11): a closed local note from before §28 has no
+      // `closedAt` and a 60d-old `updatedAt`. Reloading must stamp `closedAt = now`
+      // and keep it in Recent instead of dumping archived notes into Trash.
+      const legacyId = await cdp.eval(`(async () => {
+        const b = await window.vrtti.createBuffer();
+        window.vrtti.store.updateContent(b.id, "Pre-upgrade archived note\\nbody");
+        await window.vrtti.saveNow(b.id);
+        await window.vrtti.closeBuffer(b.id);
+        const rec = window.vrtti.store.get(b.id);
+        delete rec.closedAt;
+        rec.createdAt = Date.now() - 60 * ${DAY};
+        rec.updatedAt = Date.now() - 60 * ${DAY};
+        await window.vrtti.store.putSystemRecord(rec);
+        return b.id;
+      })()`);
+      await devA.page.reload();
+      const afterUpgradeReload = await cdp.eval(`(async () => {
+        const rec = window.vrtti.store.get(${JSON.stringify(legacyId)});
+        const res = {
+          inRecent: window.vrtti.store.recentBuffers().some((r) => r.id === ${JSON.stringify(legacyId)}),
+          trashedAt: rec?.trashedAt ?? null,
+          freshClosedAt: typeof rec?.closedAt === "number" && Date.now() - rec.closedAt < 60_000,
+        };
+        await window.vrtti.run("doc.trash", ${JSON.stringify(legacyId)});
+        await window.vrtti.run("doc.deleteForever", ${JSON.stringify(legacyId)});
+        return res;
+      })()`);
+      assert.equal(afterUpgradeReload.inRecent, true, "pre-upgrade Recent note must stay in Recent on first launch");
+      assert.equal(afterUpgradeReload.trashedAt, null);
+      assert.equal(afterUpgradeReload.freshClosedAt, true, "startup must stamp a fresh closedAt window");
+
       // File-backed notes via OPFS: unwritten protection vs clean removal without touching disk.
       const fileResult = await cdp.eval(`(async () => {
         const root = await navigator.storage.getDirectory();
@@ -795,17 +834,59 @@ describe(
           document.querySelector('#open-list .buffer-row[data-id="' + created.id + '"]')
         );
 
-        // Close menu, re-open and click Show all.
+        // Close menu, re-open, verify keyboard focus survives stayOpen re-render
+        // and ArrowDown/ArrowUp reach "only" and "Show all" (Review #14), then Show all.
         document.getElementById("act-view").click();
         if (!document.querySelector(".menu")) document.getElementById("act-view").click();
+        const firstToggle = document.querySelector(".menu .filter-toggle");
+        firstToggle.focus();
+        firstToggle.click();
+        const focusKeptAfterToggle =
+          document.activeElement?.classList.contains("filter-toggle") ?? false;
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+        const arrowReachedOnly =
+          document.activeElement?.classList.contains("filter-only") ?? false;
+        document.querySelector(".menu .filter-toggle").focus();
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+        const arrowReachedShowAll =
+          Boolean(document.activeElement?.closest(".menu-head")) ||
+          document.activeElement?.classList.contains("filter-only") ||
+          false;
         document.querySelector(".menu .menu-head button").click();
         const pillHiddenAfterAll = document.getElementById("open-filter-pill").hidden;
         document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
 
+        // Spelling-style menu anchored to editor text (cm-content, no aria-haspopup,
+        // Review #12): second openMenu replaces instead of toggling closed, and
+        // pointerdown inside cm-content closes the menu.
+        const { openMenu } = await import("/js/ui/menu.js");
+        const cmContent = document.querySelector(".cm-content");
+        const rect = cmContent.getBoundingClientRect();
+        const at = { left: rect.left + 20, top: rect.top + 20, bottom: rect.top + 40 };
+        openMenu(cmContent, [{ label: "First suggestion", act() {} }], { at });
+        openMenu(cmContent, [{ label: "Second suggestion", act() {} }], { at });
+        const spellReplacedLabel = document.querySelector(".menu .menu-label")?.textContent ?? "";
+        cmContent.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        const spellClosedOnEditorClick = !document.querySelector(".menu");
+
         // Cleanup created note.
         await window.vrtti.run("doc.trash", created.id);
         await window.vrtti.sync.syncNow();
-        return { menuOpen1, menuStayedOpen, viewLit, pillText, per1Hidden, onlyLocalRows, createdVisible, pillHiddenAfterAll };
+        return {
+          menuOpen1,
+          menuStayedOpen,
+          viewLit,
+          pillText,
+          per1Hidden,
+          onlyLocalRows,
+          createdVisible,
+          focusKeptAfterToggle,
+          arrowReachedOnly,
+          arrowReachedShowAll,
+          pillHiddenAfterAll,
+          spellReplacedLabel,
+          spellClosedOnEditorClick,
+        };
       })()`);
 
       assert.equal(viewCheck.menuOpen1, true);
@@ -815,7 +896,12 @@ describe(
       assert.equal(viewCheck.per1Hidden, true);
       assert.equal(viewCheck.onlyLocalRows, true);
       assert.equal(viewCheck.createdVisible, true);
+      assert.equal(viewCheck.focusKeptAfterToggle, true, "stayOpen toggle must preserve keyboard focus");
+      assert.equal(viewCheck.arrowReachedOnly, true, "ArrowDown must reach secondary `only` button");
+      assert.equal(viewCheck.arrowReachedShowAll, true);
       assert.equal(viewCheck.pillHiddenAfterAll, true);
+      assert.equal(viewCheck.spellReplacedLabel, "Second suggestion", "second openMenu on cm-content must replace");
+      assert.equal(viewCheck.spellClosedOnEditorClick, true, "clicking editor text must close menu anchored to cm-content");
 
       // Shared bottom drawer: single drawer open at a time, Trash click opens menu (no editor preview).
       const drawerCheck = await cdp.eval(`(async () => {
@@ -1231,6 +1317,223 @@ describe(
       assert.equal(onlineStubState.originSpace, "infra");
       await syncAndWait(cdpB);
       assert.equal(await cdpB.eval(`Boolean(window.vrtti.store.get(${JSON.stringify(n7)})?.trashedAt)`), true);
+
+      // 4j. In-flight text push returning after doc.trash must NOT settle deleted tombstone early (Review #1).
+      const nRace = await makeSynced("Note Race initial", "personal");
+      await devA.page.setOffline(true);
+      const raceState = await cdpA.eval(`(async () => {
+        window.vrtti.store.updateContent(${JSON.stringify(nRace)}, "Note Race edited before trash");
+        await window.vrtti.saveNow(${JSON.stringify(nRace)});
+        const sentUpdatedAt = window.vrtti.store.get(${JSON.stringify(nRace)}).updatedAt;
+        // User trashes while the "text" push is still in flight:
+        await window.vrtti.run("doc.trash", ${JSON.stringify(nRace)});
+        // Now the in-flight "text" push returns rev 1 (matching current server rev so next push succeeds):
+        await window.vrtti.store.afterPush(${JSON.stringify(nRace)}, 1, sentUpdatedAt, undefined, "text");
+        const rec = window.vrtti.store.get(${JSON.stringify(nRace)});
+        return {
+          tombstone: rec?.sync?.tombstone ?? null,
+          dirty: rec?.sync?.dirty ?? false,
+        };
+      })()`);
+      assert.equal(raceState.tombstone, "deleted", "in-flight text afterPush must keep deleted tombstone");
+      assert.equal(raceState.dirty, true);
+      await devA.page.setOffline(false);
+      await syncAndWait(cdpA);
+      await syncAndWait(cdpB);
+      assert.equal(await cdpB.eval(`Boolean(window.vrtti.store.get(${JSON.stringify(nRace)})?.trashedAt)`), true);
+
+      // 4k. emptyOldTrash on >30d offline tombstone hides local Trash but preserves pending push (Review #2).
+      const DAY = 24 * 60 * 60 * 1000;
+      const nOldTomb = await makeSynced("Note OldTomb offline >30d", "personal");
+      await devA.page.setOffline(true);
+      const oldTombCheck = await cdpA.eval(`(async () => {
+        await window.vrtti.run("doc.trash", ${JSON.stringify(nOldTomb)});
+        const rec = window.vrtti.store.get(${JSON.stringify(nOldTomb)});
+        rec.trashedAt = Date.now() - 31 * ${DAY};
+        await window.vrtti.store.putSystemRecord(rec);
+        await window.vrtti.emptyOldTrash(Date.now());
+        return {
+          inTrash: window.vrtti.trashed().some((r) => r.id === ${JSON.stringify(nOldTomb)}),
+          stillDirtyDelete: window.vrtti.dirtyRecords().some(
+            (r) => r.id === ${JSON.stringify(nOldTomb)} && r.sync?.tombstone === "deleted"
+          ),
+        };
+      })()`);
+      assert.equal(oldTombCheck.inTrash, false, "expired local Trash body must vanish at 30d");
+      assert.equal(oldTombCheck.stillDirtyDelete, true, "unpushed deleted tombstone must survive emptyOldTrash");
+      await devA.page.setOffline(false);
+      await syncAndWait(cdpA);
+      await syncAndWait(cdpB);
+      assert.equal(await cdpA.eval(`!window.vrtti.store.get(${JSON.stringify(nOldTomb)})`), true);
+      assert.equal(await cdpB.eval(`Boolean(window.vrtti.store.get(${JSON.stringify(nOldTomb)})?.trashedAt)`), true);
+
+      // 4l. Settled trashed `.age` synced file Restore to <space> keeps file handle & disk text (Review #3).
+      const syncedFileId = await cdpA.eval(`(async () => {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle("synced-restore.md.age", { create: true });
+        const armored = await window.vrtti.codec.encode(
+          "Synced file body across trash and restore",
+          window.vrtti.codec.newEncMeta("this-device"),
+          window.vrtti.keyring
+        );
+        {
+          const w = await fh.createWritable();
+          await w.write(armored);
+          await w.close();
+        }
+        const rec = await window.vrtti.store.createFromFile(fh);
+        await window.vrtti.store.setSync(rec.id, true, "personal");
+        await window.vrtti.sync.syncNow();
+        return rec.id;
+      })()`);
+      await syncAndWait(cdpB);
+      // Device B trashes the note so Device A's `.age` file-backed record enters settled local Trash!
+      await cdpB.eval(`(async () => {
+        await window.vrtti.run("doc.trash", ${JSON.stringify(syncedFileId)});
+        await window.vrtti.sync.syncNow();
+      })()`);
+      await syncAndWait(cdpA);
+      const restoredFile = await cdpA.eval(`(async () => {
+        const res = await window.vrtti.run("doc.restore", { id: ${JSON.stringify(syncedFileId)}, toSpace: true });
+        await window.vrtti.sync.syncNow();
+        const rec = window.vrtti.store.get(res.id);
+        const text = await window.vrtti.textOf(res.id);
+        return {
+          newId: res?.id ?? null,
+          kind: rec?.kind ?? null,
+          hasFile: Boolean(rec?.file?.handleId),
+          space: rec?.sync?.space ?? null,
+          rev: rec?.sync?.rev ?? 0,
+          text,
+        };
+      })()`);
+      assert.ok(restoredFile.newId && restoredFile.newId !== syncedFileId);
+      assert.equal(restoredFile.kind, "file");
+      assert.equal(restoredFile.hasFile, true);
+      assert.equal(restoredFile.space, "personal");
+      assert.equal(restoredFile.rev, 1);
+      assert.equal(restoredFile.text, "Synced file body across trash and restore");
+      await syncAndWait(cdpB);
+      assert.equal(
+        await cdpB.eval(`window.vrtti.textOf(${JSON.stringify(restoredFile.newId)})`),
+        "Synced file body across trash and restore"
+      );
+
+      // 4m. Restore as local on a `this-device` encrypted note keeps ciphertext encrypted at rest (Review #4).
+      const localEncCheck = await cdpA.eval(`(async () => {
+        await window.vrtti.sync.setNewNotes(null);
+        const b = await window.vrtti.createBuffer();
+        window.vrtti.store.updateContent(b.id, "Local device-encrypted secret");
+        await window.vrtti.saveNow(b.id);
+        await window.vrtti.encrypt(b.id, "this-device");
+        await window.vrtti.run("doc.trash", b.id);
+        const restored = await window.vrtti.run("doc.restore", { id: b.id, toSpace: false });
+        const raw = window.vrtti.store.get(restored.id);
+        const decoded = await window.vrtti.textOf(restored.id);
+        await window.vrtti.sync.setNewNotes("personal");
+        return {
+          preset: raw?.enc?.preset ?? null,
+          armoredAtRest: (raw?.content ?? "").startsWith("-----BEGIN AGE ENCRYPTED FILE-----"),
+          decoded,
+        };
+      })()`);
+      assert.equal(localEncCheck.preset, "this-device");
+      assert.equal(localEncCheck.armoredAtRest, true, "this-device ciphertext must stay encrypted on Restore as local");
+      assert.equal(localEncCheck.decoded, "Local device-encrypted secret");
+
+      // 4n. Offline edit + offline trash + newer remote edit forks conflict copy for unsent edit (Review #5).
+      const nReviveFork = await makeSynced("ReviveFork v1", "personal");
+      await devA.page.setOffline(true);
+      await cdpA.eval(`(async () => {
+        window.vrtti.store.updateContent(${JSON.stringify(nReviveFork)}, "ReviveFork offline unsent edit on A");
+        await window.vrtti.saveNow(${JSON.stringify(nReviveFork)});
+        await window.vrtti.run("doc.trash", ${JSON.stringify(nReviveFork)});
+      })()`);
+      await cdpB.eval(`(async () => {
+        window.vrtti.store.updateContent(${JSON.stringify(nReviveFork)}, "ReviveFork remote winning edit on B");
+        await window.vrtti.saveNow(${JSON.stringify(nReviveFork)});
+        await window.vrtti.sync.syncNow();
+      })()`);
+      await devA.page.setOffline(false);
+      await syncAndWait(cdpA);
+      const reviveForkCheck = await cdpA.eval(`(async () => {
+        const winnerText = await window.vrtti.textOf(${JSON.stringify(nReviveFork)});
+        let foundFork = false;
+        for (const b of window.vrtti.buffers.values()) {
+          if (b.id === ${JSON.stringify(nReviveFork)}) continue;
+          const t = await Promise.resolve(window.vrtti.textOf(b.id)).catch(() => "");
+          if (String(t).includes("ReviveFork offline unsent edit on A")) foundFork = true;
+        }
+        return { winnerText, foundFork };
+      })()`);
+      assert.equal(reviveForkCheck.winnerText, "ReviveFork remote winning edit on B");
+      assert.equal(reviveForkCheck.foundFork, true, "offline edit before trash must fork on remote revive");
+
+      // 4o. Offline Stop syncing + Move to trash keeps `detached` (never deletes on Device B, Review #6)
+      // and detaching a closed synced note resets stale `closedAt` (Review #11b).
+      const nDetachTrash = await makeSynced("Note DetachThenTrash stays on B", "personal");
+      const nClosedDetach = await makeSynced("Note ClosedDetach resets closedAt", "personal");
+      await cdpA.eval(`(async () => {
+        await window.vrtti.closeBuffer(${JSON.stringify(nClosedDetach)});
+        const rec = window.vrtti.store.get(${JSON.stringify(nClosedDetach)});
+        rec.closedAt = Date.now() - 45 * ${DAY};
+        await window.vrtti.store.putSystemRecord(rec);
+        await window.vrtti.run("doc.sync.off", ${JSON.stringify(nClosedDetach)});
+        await window.vrtti.sync.syncNow();
+      })()`);
+      const closedDetachFresh = await cdpA.eval(`(() => {
+        const rec = window.vrtti.store.get(${JSON.stringify(nClosedDetach)});
+        return typeof rec?.closedAt === "number" && Date.now() - rec.closedAt < 60_000;
+      })()`);
+      assert.equal(closedDetachFresh, true, "detaching a closed synced note must reset closedAt to now");
+
+      await devA.page.setOffline(true);
+      const detachTrashOffline = await cdpA.eval(`(async () => {
+        await window.vrtti.run("doc.sync.off", ${JSON.stringify(nDetachTrash)});
+        await window.vrtti.run("doc.trash", ${JSON.stringify(nDetachTrash)});
+        const rec = window.vrtti.store.get(${JSON.stringify(nDetachTrash)});
+        return {
+          tombstone: rec?.sync?.tombstone ?? null,
+          originSpace: rec?.originSpace ?? null,
+        };
+      })()`);
+      assert.equal(detachTrashOffline.tombstone, "detached");
+      assert.equal(detachTrashOffline.originSpace, null);
+      await devA.page.setOffline(false);
+      await syncAndWait(cdpA);
+      await syncAndWait(cdpB);
+      const aDetachedInLocalTrash = await cdpA.eval(`(() => {
+        const rec = window.vrtti.store.get(${JSON.stringify(nDetachTrash)});
+        return Boolean(rec && rec.trashedAt && !rec.sync && !rec.originSpace);
+      })()`);
+      const bKeptDetached = await cdpB.eval(`(() => {
+        const rec = window.vrtti.store.get(${JSON.stringify(nDetachTrash)});
+        return Boolean(rec && !rec.trashedAt && !rec.sync);
+      })()`);
+      assert.equal(aDetachedInLocalTrash, true, "A settles into local Trash with no originSpace");
+      assert.equal(bKeptDetached, true, "trashing after Stop syncing must NEVER delete note on other devices");
+
+      // 4p. `sync.purge` survives offline trash + offline Restore to <space> (Review #7).
+      const nPurge = await makeSynced("Note Purge flag survival", "personal");
+      await devA.page.setOffline(true);
+      const purgeCheck = await cdpA.eval(`(async () => {
+        const rec = window.vrtti.store.get(${JSON.stringify(nPurge)});
+        rec.sync.purge = true;
+        await window.vrtti.store.putSystemRecord(rec);
+        await window.vrtti.run("doc.trash", ${JSON.stringify(nPurge)});
+        const whileTrashedPurge = window.vrtti.store.get(${JSON.stringify(nPurge)})?.sync?.purge ?? false;
+        const restored = await window.vrtti.run("doc.restore", { id: ${JSON.stringify(nPurge)}, toSpace: true });
+        return {
+          whileTrashedPurge,
+          afterRestorePurge: restored?.sync?.purge ?? false,
+          afterRestoreDirty: restored?.sync?.dirty ?? false,
+        };
+      })()`);
+      assert.equal(purgeCheck.whileTrashedPurge, true);
+      assert.equal(purgeCheck.afterRestorePurge, true);
+      assert.equal(purgeCheck.afterRestoreDirty, true);
+      await devA.page.setOffline(false);
+      await syncAndWait(cdpA);
     });
 
     test("5. Phone Mode B: 44px bottom bar, full-screen subview, server stubs, Android Back, swipe-left close only, Trash menu", async () => {
@@ -1385,14 +1688,21 @@ describe(
         const headerText = document.getElementById("drawer-head").textContent;
         document.getElementById("drawer-close").click();
 
-        // Intercept window.open so our test attaches CDP directly to the new tab URL.
-        let openedUrl = null;
+        // First verify blocked popup rollback (Review #10): when window.open returns null,
+        // workspace is dissolved immediately and Main keeps t1 untouched!
         const origOpen = window.open;
-        window.open = (url) => { openedUrl = url; return null; };
+        window.open = () => null;
+        const blockedRes = await window.vrtti.run("workspace.openSpace", "infra");
+        const blockedNotice = document.getElementById("status-state").textContent;
+        const ownerAfterBlocked = window.vrtti.workspaces.spaceOwner("infra");
+        const mainKeptT1OnBlock = window.vrtti.store.openBuffers().some((b) => b.id === t1.id);
+
+        // Now allow window.open so our test attaches CDP directly to the new tab URL.
+        let openedUrl = null;
+        window.open = (url) => { openedUrl = url; return {}; };
         const ws = await window.vrtti.run("workspace.openSpace", "infra");
         window.open = origOpen;
 
-        const mainStillHasT1 = window.vrtti.store.openBuffers().some((b) => b.id === t1.id);
         return {
           t1: t1.id,
           s1: s1.id,
@@ -1402,23 +1712,42 @@ describe(
           openWinBtnHidden,
           subHidden,
           headerText,
-          mainStillHasT1,
+          blockedRes,
+          blockedNotice,
+          ownerAfterBlocked,
+          mainKeptT1OnBlock,
         };
       })()`);
 
       assert.equal(prep.openWinBtnHidden, false);
       assert.equal(prep.subHidden, true);
       assert.equal(/titles only/i.test(prep.headerText), false);
-      assert.equal(prep.mainStillHasT1, false, "Main must release infra tabs before Space Window opens");
+      assert.equal(prep.blockedRes, null, "blocked popup must return null");
+      assert.match(prep.blockedNotice, /could not open window/i);
+      assert.equal(prep.ownerAfterBlocked, null, "blocked popup must roll back workspace record");
+      assert.equal(prep.mainKeptT1OnBlock, true, "blocked popup must leave Main's open tabs untouched");
       assert.match(prep.openedUrl, /\?ws=/);
 
       // Open the real Space Window tab in Device A's browser profile!
       const spaceTab = await devA.openTab(prep.openedUrl);
       const cdpS = spaceTab.cdp;
 
-      // Space Window must hold T1, S1, S2 (plus any existing infra stubs), show banner, hide #act-view, format title.
+      // Wait for non-blocking post-start fetchSpaceStubs to populate S1 & S2, and
+      // verify Main handed off T1 without double-take loss.
+      await cdpS.waitFor(`(() => {
+        const ids = window.vrtti.store.openBuffers().map((b) => b.id);
+        return ${JSON.stringify([prep.t1, prep.s1, prep.s2])}.every((id) => ids.includes(id));
+      })()`);
+
+      const mainReleasedT1 = await cdpA.eval(
+        `!window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.t1)})`
+      );
+      assert.equal(mainReleasedT1, true, "Main must release infra tabs when Space Window claims them");
+
+      // Space Window must hold T1, S1, S2, show banner, hide #act-view, format title.
       const wsBoot = await cdpS.eval(`({
         space: window.vrtti.workspaces.current().space,
+        initSpaceCleared: !window.vrtti.workspaces.current().initSpace,
         openIds: window.vrtti.store.openBuffers().map((b) => b.id),
         bannerHidden: document.getElementById("space-banner").hidden,
         bannerName: document.getElementById("space-banner-name").textContent,
@@ -1426,6 +1755,7 @@ describe(
         title: document.title,
       })`);
       assert.equal(wsBoot.space, "infra");
+      assert.equal(wsBoot.initSpaceCleared, true, "initSpace must clear after initial boot");
       assert.ok(wsBoot.openIds.includes(prep.t1), "T1 moved from Main without double-take loss");
       assert.ok(wsBoot.openIds.includes(prep.s1), "S1 fetched on boot");
       assert.ok(wsBoot.openIds.includes(prep.s2), "S2 fetched on boot");
@@ -1433,6 +1763,21 @@ describe(
       assert.equal(wsBoot.bannerName, "infra");
       assert.equal(wsBoot.actViewHidden, true);
       assert.match(wsBoot.title, /\(infra\) - vrtti$/);
+
+      // Reloading a Space Window after closing a tab must NOT re-open closed stubs (Review #9)!
+      await cdpS.eval(`window.vrtti.closeBuffer(${JSON.stringify(prep.s2)})`);
+      await spaceTab.reload();
+      await new Promise((r) => setTimeout(r, 250));
+      const afterSpaceReload = await cdpS.eval(`({
+        s2Reopened: window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.s2)}),
+        t1Kept: window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.t1)}),
+        s1Kept: window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.s1)}),
+      })`);
+      assert.equal(afterSpaceReload.s2Reopened, false, "Space Window reload must NOT re-fetch closed stubs");
+      assert.equal(afterSpaceReload.t1Kept, true);
+      assert.equal(afterSpaceReload.s1Kept, true);
+      // Re-open S2 so all 3 zebra-token notes are open for the search check below.
+      await cdpS.eval(`window.vrtti.run("remote.open", ${JSON.stringify(prep.s2)})`);
 
       // Search in files (Ctrl+Shift+F) finds hits across all 3 infra notes in the Space Window!
       const searchHits = await cdpS.eval(`(async () => {
@@ -1508,20 +1853,30 @@ describe(
       assert.ok(afterDissolve.stubs.includes(createdInSpace.id));
       assert.ok(afterDissolve.stubs.includes(remoteInfraId));
 
-      // Reopen Space Window, then verify loseSpace("infra") dissolves it and broadcasts close!
+      // Reopen Space Window, then verify loseSpace("infra") run FROM the Space Window
+      // itself dissolves it, trashes all infra notes, and never resurrects the workspace (Review #8)!
       const ws2 = await cdpA.eval(`(async () => {
         const origOpen = window.open;
         let url = null;
-        window.open = (u) => { url = u; return null; };
+        window.open = (u) => { url = u; return {}; };
         const w = await window.vrtti.run("workspace.openSpace", "infra");
         window.open = origOpen;
         return { id: w.id, url };
       })()`);
       const spaceTab2 = await devA.openTab(ws2.url);
-      await cdpA.eval(`window.vrtti.store.loseSpace("infra")`);
+      await spaceTab2.cdp.waitFor(
+        `window.vrtti.store.openBuffers().some((b) => b.id === ${JSON.stringify(prep.t1)})`
+      );
+      await spaceTab2.cdp.eval(`window.vrtti.store.loseSpace("infra")`);
       await new Promise((r) => setTimeout(r, 150));
-      const ownerAfterLose = await cdpA.eval(`window.vrtti.workspaces.spaceOwner("infra")`);
-      assert.equal(ownerAfterLose, null, "loseSpace must dissolve Space Window workspace");
+      const afterLose = await cdpA.eval(`({
+        owner: window.vrtti.workspaces.spaceOwner("infra"),
+        t1Trashed: Boolean(window.vrtti.store.get(${JSON.stringify(prep.t1)})?.trashedAt),
+        infraStubsLeft: window.vrtti.remotes().filter((s) => s.space === "infra").length,
+      })`);
+      assert.equal(afterLose.owner, null, "loseSpace in Space Window must dissolve workspace without reviving it");
+      assert.equal(afterLose.t1Trashed, true, "loseSpace must finish trashing notes before closing Space Window");
+      assert.equal(afterLose.infraStubsLeft, 0);
       try {
         await spaceTab2.closeTab();
       } catch {}

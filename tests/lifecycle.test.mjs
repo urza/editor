@@ -27,7 +27,7 @@ test("spaceBadge derives 1-2 uppercase initials from word parts", () => {
   assert.equal(spaceBadge("---"), "");
 });
 
-test("isRecentExpired respects 30d window, closedAt fallback, sync, and file.unwritten", () => {
+test("isRecentExpired respects 30d window, missing closedAt, sync, and file.unwritten", () => {
   const now = 1_800_000_000_000;
   assert.equal(RECENT_KEEP, 30 * DAY);
   assert.equal(TRASH_KEEP, 30 * DAY);
@@ -42,14 +42,14 @@ test("isRecentExpired respects 30d window, closedAt fallback, sync, and file.unw
     true
   );
 
-  // Falls back to updatedAt when closedAt is missing (upgrade path).
+  // Records without closedAt never expire until startup stamps closedAt = now.
   assert.equal(
     isRecentExpired({ id: "3", createdAt: now - 40 * DAY, updatedAt: now - 29 * DAY }, now),
     false
   );
   assert.equal(
-    isRecentExpired({ id: "4", createdAt: now - 40 * DAY, updatedAt: now - 31 * DAY }, now),
-    true
+    isRecentExpired({ id: "4", createdAt: now - 60 * DAY, updatedAt: now - 60 * DAY }, now),
+    false
   );
 
   // Skips synced notes, trashed notes, keyring records, and unwritten files.

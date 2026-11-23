@@ -159,9 +159,17 @@
           <div id="search-status" class="search-status" aria-live="polite"></div>
           <ul id="search-results" class="search-results"></ul>
         </section>
-        <!-- Top action buttons: search, file, folder, window, view, delete mode.
-             Each button is an icon plus a label; app.css folds the label away
-             at narrow widths via @container action. -->
+        <!-- Action entry points: search, file, folder, window, view, delete mode.
+             The two disk buttons are hidden in the markup and unhidden by
+             ui/sidebar.js only where the File System Access API exists: Firefox
+             and phones must never see a button that cannot work. The row itself
+             always shows; search works without the API.
+             Each button is an icon plus a label. app.css folds the label away
+             via @container action when the button gets narrow, so a slim
+             sidebar still shows all buttons. The icons are inline so that they
+             paint on the first frame and take currentColor from the button; no
+             sprite, no extra fetch. aria-hidden: the label and the title
+             already name the button. -->
         <div id="open-actions">
           <button id="search-open" type="button" title="Find in files (Ctrl+Shift+F)">
             <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="6.75" cy="6.75" r="4.25"/><path d="M10 10l4 4"/></svg>

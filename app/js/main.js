@@ -339,22 +339,22 @@ async function start() {
           if (existing !== workspaces.id) post("focus", { ws: existing });
           return existing;
         }
-        await workspaces.dissolve(existing);
+        await workspaces.dissolve(existing, { silent: true });
       }
-      // Flush pending edits and release this window's tabs of `space` BEFORE
-      // creating the Space Window record so resolveDoubleTake never strips
-      // tabs from the newly opened window (§28).
-      await store.flushAll();
-      const moved = store
-        .openBuffers()
-        .filter((b) => b.sync?.space === space && !b.trashedAt && !b.sync.tombstone)
-        .map((b) => b.id);
-      if (moved.length) await store.releaseTabs(moved);
-      const closed = store.closedSpaceBuffers(space).map((b) => b.id);
-      const tabs = [...new Set([...moved, ...closed])];
-      if (tabs.length) await store.clearClosedAt(tabs);
-      const workspace = await workspaces.create({ space, tabs });
-      openWorkspaceWindow(workspace.id);
+      // Open the window synchronously inside the click gesture (before any
+      // await when no stale record existed) so browser popup blockers do not
+      // refuse `window.open`, and keep this window's tabs untouched until the
+      // new Space Window boots and claims them (§28).
+      const wsId = crypto.randomUUID();
+      const creating = workspaces.create({ id: wsId, space, initSpace: true });
+      const opening = openWorkspaceWindow(wsId);
+      const [workspace, opened] = await Promise.all([creating, opening]);
+      if (!opened) {
+        await workspaces.dissolve(wsId, { silent: true });
+        statusbar.notice("could not open window");
+        return null;
+      }
+      setTimeout(() => void workspaces.dissolveIfGone(wsId), 5000);
       return workspace;
     },
   });
@@ -1302,17 +1302,19 @@ async function start() {
       if (!id) return false;
       const record = store.get(id);
       if (!record || !record.trashedAt) return false;
-      const needsKey = Boolean(record.enc || (toSpace && !record.sync));
+      // Decrypting `space` ciphertext or re-sealing for a space needs the
+      // keyring unlocked; a `this-device` local note restored locally stays
+      // encrypted as-is and needs no unlock.
+      const needsKey = Boolean(record.enc?.preset === "space" || (toSpace && !record.sync));
       if (needsKey && keyring.isSetUp && !keyring.isUnlocked && !(await run("crypto.unlock"))) {
         return false;
       }
-      const targetSpace = toSpace ? record.originSpace : undefined;
       try {
         const restored = await store.restore(id, { toSpace });
         if (!restored) return false;
-        if (toSpace) sidebar?.unhideFor(restored);
+        if (restored.sync?.space) sidebar?.unhideFor(restored);
         statusbar.notice(
-          toSpace && targetSpace ? "restored to " + targetSpace : "restored to Recent"
+          restored.sync?.space ? "restored to " + restored.sync.space : "restored to Recent"
         );
         return restored;
       } catch (err) {
@@ -1775,21 +1777,35 @@ async function start() {
     if (ws === workspaces.id) closeWorkspaceWindow(workspaces.id);
   });
 
-  // On Space Window boot, fetch any remaining server stubs of that space into
-  // this window's tabs before store.start() picks an active buffer (§28).
+  // On a Space Window's very first boot (`initSpace: true`), claim open tabs
+  // of that space from surviving windows and clear `initSpace` before
+  // `store.start()` picks an active buffer. Remaining server stubs fetch in the
+  // background AFTER `store.start()` so startup never blocks on network calls
+  // and reloads never reopen tabs the user closed (§28).
   const ownSpace = workspaces.current().space;
-  if (ownSpace && sync.isConfigured) {
-    const fetched = await store.fetchSpaceStubs(ownSpace, (id) => sync.fetchDoc(id));
-    if (fetched.failed > 0) {
-      statusbar.notice(
-        fetched.failed === 1
-          ? "offline: 1 note could not be fetched"
-          : "offline: " + fetched.failed + " notes could not be fetched"
-      );
-    }
+  let initialSpaceBoot = false;
+  if (ownSpace && workspaces.current().initSpace) {
+    const claimed = await store.claimSpaceTabs(ownSpace);
+    initialSpaceBoot = await workspaces.finishSpaceInit(claimed);
   }
+  const hadTabsBeforeStart = workspaces.current().tabs.length > 0;
 
   await store.start();
+
+  if (ownSpace && initialSpaceBoot && sync.isConfigured) {
+    const initialBlankId = hadTabsBeforeStart ? null : store.activeId;
+    void store
+      .fetchSpaceStubs(ownSpace, (id) => sync.fetchDoc(id), { initialBlankId })
+      .then((fetched) => {
+        if (fetched.failed > 0) {
+          statusbar.notice(
+            fetched.failed === 1
+              ? "offline: 1 note could not be fetched"
+              : "offline: " + fetched.failed + " notes could not be fetched"
+          );
+        }
+      });
+  }
   // When phone mode starts back on the note list, focus the active row the
   // same way the thumb menu's list button does (scrolls it into view and
   // keeps focus off the editor underneath).

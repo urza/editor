@@ -3616,6 +3616,9 @@ version changes are required (IndexedDB remains v8 with optional record fields).
   never leak a first line.
 - `WorkspaceRecord.space?`: space name owned by a dedicated desktop Space
   Window.
+- `WorkspaceRecord.initSpace?`: set on creation of a Space Window and cleared
+  on its first boot once tabs and server stubs are claimed, so reloads keep the
+  user's open tab set.
 - `model/lifecycle.js` holds pure helpers (`RECENT_KEEP`, `TRASH_KEEP`,
   `spaceBadge`, `isRecentExpired`, `stubTitle`, `daysLeft`).
 
@@ -3626,11 +3629,14 @@ version changes are required (IndexedDB remains v8 with optional record fields).
   and local files stamp `closedAt` and enter `Recent` (`recentBuffers()`).
   Synced notes leave `Recent` and appear in their space drawer
   (`closedSpaceBuffers(space)`).
-- **30-day `Recent` expiry (`expireOldRecent`):** runs once at startup before
-  `emptyOldTrash()` so existing notes older than 30 days (`closedAt ??
-  updatedAt`) enter 30-day Trash instead of deleting outright. Clean closed
-  local file links older than 30 days forget their IndexedDB record and handle
-  without touching disk. Any record with `file.unwritten` is skipped.
+- **30-day `Recent` expiry (`stampMissingClosedAt`, `expireOldRecent`):** on
+  first launch after upgrading, closed local records without `closedAt` receive
+  `closedAt = now` so existing `Recent` archives start a fresh 30-day window
+  instead of expiring from `updatedAt`; detaching a closed synced note also
+  resets `closedAt = now`. `expireOldRecent()` runs before `emptyOldTrash()` so
+  notes older than 30 days enter 30-day Trash rather than deleting outright.
+  Clean closed local file links older than 30 days forget their IndexedDB record
+  and handle without touching disk. Any record with `file.unwritten` is skipped.
 - **`Titles only` body drop (`demoteToStub`):** closing or dissolving a clean
   non-file synced note in a `list` space writes its `RemoteStub` first and then
   forgets the local buffer record. Dirty notes stay cached until `afterPush()`
@@ -3732,12 +3738,16 @@ from `userTrashed` (`tombstone === "deleted" && trashedAt`):
   `workspace.openSpace(space)`. If a live window already owns `space`
   (`workspaces.spaceOwner(space)`), it focuses that window instead of opening a
   second one.
-- Otherwise the caller flushes edits and calls `store.releaseTabs()` on its
-  open tabs for `space` before calling `workspaces.create({ space, tabs })`,
-  preventing `resolveDoubleTake` from stripping tabs off the new window.
-- On boot, the Space Window calls `store.fetchSpaceStubs()` to pull remaining
-  server stubs of `space` into its tabs before `store.start()` picks an active
-  note (notifying if offline).
+- Otherwise `workspace.openSpace` creates a workspace record with
+  `initSpace: true` and calls `openWorkspaceWindow` synchronously inside the
+  click gesture so popup blockers never refuse it, rolling back immediately if
+  the window fails to open without touching the caller's tabs.
+- On its first boot (`initSpace: true`), the Space Window claims open tabs of
+  `space` from surviving windows via `claimSpaceTabs()` (which flushes and
+  releases them first so `resolveDoubleTake` sees no overlap), clears
+  `initSpace`, runs `store.start()`, and fetches remaining server stubs in the
+  background (`fetchSpaceStubs()`). Later reloads keep the user's open tabs
+  without re-fetching stubs the user closed.
 - Inside a Space Window: the sidebar shows `#space-banner` and hides `#act-view`;
   the window title reads `<buffer> (<space>) - vrtti`; `+` / `Ctrl+N` creates
   notes in `workspace.space` (overriding `New notes`); `Ctrl+Shift+F` searches
