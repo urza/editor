@@ -664,6 +664,10 @@ body {
   stroke-linejoin: round;
 }
 
+/* Teeth of the Settings gear (#bar-settings and #thumb-settings): thicker than
+   the 1.5 ring stroke and square-ended so they read as cogs, not sun rays. */
+.icon-gear-teeth { stroke-width: 2.4; stroke-linecap: butt; }
+
 /* Icon + 4px gap + a six-letter label at --ui-xs needs about 5.25em of the
    button's font (measured 57.75px at 11px in DejaVu Sans Mono, the widest of
    the stack); below that the label would spill, so it folds and the icon
@@ -2091,8 +2095,6 @@ img.twemoji {
 /* The bullets of the list icon are zero-length strokes with round caps, so
    the stroke width is their diameter: a little fatter than the lines. */
 .thumb-icon-dots { stroke-width: 2.25; }
-/* The teeth of the gear: short, thick and square-ended. */
-.thumb-icon-teeth { stroke-width: 2.4; stroke-linecap: butt; }
 
 html.phone .thumb-icon {
   width: calc(22px * var(--thumb-scale));

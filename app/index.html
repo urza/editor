@@ -255,7 +255,7 @@
             <span class="bar-count" id="bar-trash-count"></span>
           </button>
           <button id="bar-settings" class="bar-btn" type="button" title="Settings">
-            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="2.2"/><path d="M8 2v1.6M8 12.4V14M2 8h1.6M12.4 8H14M3.8 3.8l1.1 1.1M11.1 11.1l1.1 1.1M12.2 3.8l-1.1 1.1M4.9 11.1l-1.1 1.1"/></svg>
+            <svg class="action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.25"/><circle cx="8" cy="8" r="1.5"/><path class="icon-gear-teeth" d="M12.6 8h2M3.4 8h-2M8 12.6v2M8 3.4v-2M11.25 11.25l1.42 1.42M4.75 11.25l-1.42 1.42M4.75 4.75L3.33 3.33M11.25 4.75l1.42-1.42"/></svg>
           </button>
         </div>
       </div>
@@ -291,7 +291,8 @@
            places each button on a quarter circle around it.
            Icons, not signs like "⚙": a phone can draw those as colour emoji.
            Inline for the reason given at #open-actions. The gear is a ring
-           with eight short, thick strokes for teeth (.thumb-icon-teeth).
+           with eight short, thick strokes for teeth (.icon-gear-teeth), shared
+           with #bar-settings in the desktop sidebar bottom bar.
            The middle button holds two icons, and app.css shows one: the list
            on a note, the arrow back on the note list. -->
       <div id="thumb-scrim" hidden></div>
@@ -304,7 +305,7 @@
           <svg class="thumb-icon thumb-icon-back" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13 8H3M7 4L3 8l4 4"/></svg>
         </button>
         <button id="thumb-settings" type="button" title="Settings" aria-label="Settings">
-          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.25"/><circle cx="8" cy="8" r="1.5"/><path class="thumb-icon-teeth" d="M12.6 8h2M3.4 8h-2M8 12.6v2M8 3.4v-2M11.25 11.25l1.42 1.42M4.75 11.25l-1.42 1.42M4.75 4.75L3.33 3.33M11.25 4.75l1.42-1.42"/></svg>
+          <svg class="thumb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="4.25"/><circle cx="8" cy="8" r="1.5"/><path class="icon-gear-teeth" d="M12.6 8h2M3.4 8h-2M8 12.6v2M8 3.4v-2M11.25 11.25l1.42 1.42M4.75 11.25l-1.42 1.42M4.75 4.75L3.33 3.33M11.25 4.75l1.42-1.42"/></svg>
         </button>
       </div>
       <!-- Overlay over the editor, filled by ui/settings.js from its item list.
