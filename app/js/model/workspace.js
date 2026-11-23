@@ -136,6 +136,18 @@ export function createWorkspaces({ id }) {
     return owner;
   }
 
+  /**
+   * The secondary workspace that owns a dedicated Space Window for `space`,
+   * or null when no window owns it (architecture.md §28).
+   * @param {string} space @returns {string | null}
+   */
+  function spaceOwner(space) {
+    for (const record of records.values()) {
+      if (record.id !== MAIN_WORKSPACE && record.space === space) return record.id;
+    }
+    return null;
+  }
+
   /** @param {string} bufferId @param {string} [wsId] */
   async function addTab(bufferId, wsId = id) {
     let record = get(wsId);
@@ -159,6 +171,22 @@ export function createWorkspaces({ id }) {
     if (index < 0) return;
     record.tabs.splice(index, 1);
     if (record.activeId === bufferId) record.activeId = null;
+    await save(record);
+  }
+
+  /**
+   * Remove multiple tabs from this workspace in one save. Used before handing
+   * tabs off to a new Space Window so resolveDoubleTake sees no overlap (§28).
+   * @param {string[]} bufferIds
+   */
+  async function removeTabs(bufferIds) {
+    if (bufferIds.length === 0) return;
+    const drop = new Set(bufferIds);
+    const record = current();
+    const next = record.tabs.filter((tab) => !drop.has(tab));
+    if (next.length === record.tabs.length) return;
+    record.tabs = next;
+    if (record.activeId && drop.has(record.activeId)) record.activeId = null;
     await save(record);
   }
 
@@ -211,14 +239,42 @@ export function createWorkspaces({ id }) {
 
   /**
    * A new workspace. Its window opens it (architecture.md §14.2). Empty,
-   * unless the caller hands it folders to list from the start: a folder
-   * asked for in main gets its window this way (§14.5).
-   * @param {{folderIds?: string[]}} [fields]
+   * unless the caller hands it folders, tabs, or a dedicated space (§14.5, §28).
+   * Accepts a pre-generated `id` so `workspace.openSpace` can call `window.open`
+   * synchronously inside the click gesture before the IndexedDB write resolves.
+   * @param {{id?: string, folderIds?: string[], tabs?: string[], space?: string, initSpace?: boolean}} [fields]
    */
-  async function create({ folderIds = [] } = {}) {
-    const record = { ...newRecord(crypto.randomUUID()), folderIds: [...folderIds] };
+  async function create({ id: givenId, folderIds = [], tabs = [], space, initSpace = false } = {}) {
+    /** @type {WorkspaceRecord} */
+    const record = {
+      ...newRecord(givenId ?? crypto.randomUUID()),
+      folderIds: [...folderIds],
+      tabs: [...tabs],
+      activeId: tabs[0] ?? null,
+    };
+    if (space) record.space = space;
+    if (initSpace) record.initSpace = true;
     await save(record);
     return record;
+  }
+
+  /**
+   * One-time first-boot handoff for a dedicated Space Window (§28): clears
+   * `initSpace` and records claimed tabs so later reloads keep the user's open
+   * set instead of re-fetching closed stubs.
+   * @param {string[]} initialTabs
+   * @returns {Promise<boolean>}
+   */
+  async function finishSpaceInit(initialTabs) {
+    const record = current();
+    if (!record.initSpace) return false;
+    delete record.initSpace;
+    for (const tab of initialTabs) {
+      if (!record.tabs.includes(tab)) record.tabs.push(tab);
+    }
+    if (!record.activeId && record.tabs.length > 0) record.activeId = record.tabs[0];
+    await save(record);
+    return true;
   }
 
   /**
@@ -242,13 +298,20 @@ export function createWorkspaces({ id }) {
    * Remove a workspace. Its tabs fall into Recent by definition, because
    * Recent is "open nowhere", so nothing is lost. Main is never dissolved.
    * @param {string} wsId
+   * @param {{silent?: boolean}} [opts] silent: skip emitting "dissolved" (used
+   *   when loseSpace is already trashing every note of the space, or rolling
+   *   back an unopened popup).
    */
-  async function dissolve(wsId) {
+  async function dissolve(wsId, { silent = false } = {}) {
     const record = records.get(wsId);
     if (wsId === MAIN_WORKSPACE || !record) return;
     records.delete(wsId);
+    // Mark dissolved here too when a window dissolves itself (loseSpace in a
+    // Space Window leader), because BroadcastChannel never echoes back to its
+    // sender and closeHere() checks isDissolved before creating a blank buffer.
+    if (wsId === id) dissolved = true;
     await deleteWorkspace(wsId);
-    post("workspace-deleted", { id: wsId });
+    post("workspace-deleted", { id: wsId, silent });
     // A folder listed by no other workspace has no way back into a sidebar;
     // its handle would only pile up in the store (the user's folder windows
     // come and go, architecture.md §14). Drop it, here and in the other
@@ -264,8 +327,8 @@ export function createWorkspaces({ id }) {
     if (dropped.length > 0) emit("folders-dropped", { ids: dropped });
     emit("change", { id: wsId, foreign: true });
     // After the change: the doc store first moves its active buffer off the
-    // dropped tabs, then hears which tabs fell into Recent.
-    emit("dissolved", { tabs: record.tabs });
+    // dropped tabs, then hears which tabs fell into Recent or a space drawer.
+    if (!silent) emit("dissolved", { tabs: record.tabs, space: record.space });
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------
@@ -276,10 +339,16 @@ export function createWorkspaces({ id }) {
     void resolveDoubleTake(record);
   });
 
-  on("workspace-deleted", ({ id: wsId }) => {
+  on("workspace-deleted", ({ id: wsId, silent }) => {
+    const record = records.get(wsId);
     records.delete(wsId);
     if (wsId === id) dissolved = true;
     emit("change", { id: wsId, foreign: true });
+    // If a closing secondary window dissolved itself before dying, main runs
+    // the idempotent post-dissolve cleanup unless suppressed by `silent`.
+    if (!silent && id === MAIN_WORKSPACE && record) {
+      emit("dissolved", { tabs: record.tabs, space: record.space });
+    }
   });
 
   on("focus", ({ ws }) => {
@@ -411,16 +480,20 @@ export function createWorkspaces({ id }) {
     ownerOf,
     hasFolder,
     folderOwner,
+    spaceOwner,
     liveSet,
     addTab,
     removeTab,
+    removeTabs,
     moveTab,
     setActive,
     addFolder,
     removeFolder,
     create,
+    finishSpaceInit,
     moveFoldersOut,
     dissolve,
+    dissolveIfGone,
     load,
     start,
   };

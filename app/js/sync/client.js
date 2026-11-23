@@ -1190,7 +1190,7 @@ export function createSyncClient({ store, keyring }) {
     if (!res.ok) throw httpError(res);
 
     const body = await res.json();
-    await store.afterPush(record.id, body.rev, sentUpdatedAt, sentMtime);
+    await store.afterPush(record.id, body.rev, sentUpdatedAt, sentMtime, payload.kind);
 
     if (purge) {
       // The doc just turned encrypted, and the older revisions still hold its
@@ -1676,6 +1676,7 @@ export function createSyncClient({ store, keyring }) {
     revision,
     syncDefaultOn,
     // Spaces (architecture.md §25, §27).
+    isMine,
     modeOf,
     defaultSpace,
     recipients,

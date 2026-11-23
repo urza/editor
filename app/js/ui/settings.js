@@ -18,7 +18,6 @@ import { EDITOR, editorFontSize, UI, uiScale } from "./textsize.js";
 import { sidebarNewButtonShown } from "./newbutton.js";
 import { listRowsLong } from "./sidebar.js";
 import { watchBack } from "./shell.js";
-import { titleOf } from "../model/docs.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
 /**
@@ -629,14 +628,9 @@ const SECTIONS = [
     ],
   },
   {
-    // The trash lives here too: it is where this device keeps what other
-    // devices deleted (§22), so it belongs with what the device stores.
+    // Deleted notes moved to the sidebar Trash drawer (§28).
     title: "Storage",
-    status: async () => {
-      const word = (await isPersisted()) ? "persistent" : "not persistent";
-      const deleted = store?.trashed().length ?? 0;
-      return deleted ? word + " · " + deleted + " deleted" : word;
-    },
+    status: async () => ((await isPersisted()) ? "persistent" : "not persistent"),
     items: [
       {
         type: "info",
@@ -664,23 +658,6 @@ const SECTIONS = [
         // Pointless once the grant exists, so the row disappears with it.
         visible: async () => !(await isPersisted()),
         act: () => run("storage.persist"),
-      },
-      {
-        type: "list",
-        key: "trash",
-        label: "Deleted notes",
-        hint:
-          "A note that another device deleted, or that left this device with its space, waits here for 30 days. " +
-          "Restore puts it back into Recent, with sync off.",
-        visible: () => (store?.trashed().length ?? 0) > 0,
-        rows: () =>
-          (store?.trashed() ?? []).map((record) => ({
-            key: "trash-" + record.id,
-            label: titleOf(record),
-            value: "deleted " + new Date(record.trashedAt ?? 0).toLocaleString(),
-            button: "restore",
-            act: () => store?.restore(record.id),
-          })),
       },
     ],
   },

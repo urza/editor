@@ -1,5 +1,7 @@
 // @ts-check
-// Sidebar: the Open list, one section per opened folder, Recent and From server. Reads the
+// Sidebar: the Open list, folder trees, the desktop View space filter and
+// zero-shift Delete mode, the bottom icon bar with its single shared drawer,
+// and phone Mode B full-screen subviews (architecture.md §9, §28). Reads the
 // stores, dispatches commands, owns its DOM region. All user-derived text goes
 // through textContent.
 //
@@ -10,21 +12,26 @@
 import { titleOf } from "../model/docs.js";
 import { previewOf, shortTime } from "../model/preview.js";
 import { hasDisk } from "../model/capabilities.js";
+import { daysLeft, RECENT_KEEP, spaceBadge, TRASH_KEEP } from "../model/lifecycle.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
+import { editorEvents } from "../editor/editor.js";
 import { openMenu } from "./menu.js";
-import { onPhoneModeChange, phoneMode } from "./shell.js";
+import { onPhoneModeChange, phoneMode, watchBack } from "./shell.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
 // Longer rows in the phone note list (architecture.md §9, Phone mode): two
-// lines of preview, where a row has one line by default. Device-local in localStorage, like the "+" setting next to it
-// (ui/newbutton.js): a phone and a small tablet want different answers. The
-// state is a class on <html> and app.css does the rest, so a change redraws
-// nothing; the inline script in index.html replays the class before the
-// first paint and only reads the key this file writes.
+// lines of preview, where a row has one line by default. Device-local in
+// localStorage, like the "+" setting next to it (ui/newbutton.js): a phone and
+// a small tablet want different answers. The state is a class on <html> and
+// app.css does the rest, so a change redraws nothing; the inline script in
+// index.html replays the class before the first paint and only reads the key
+// this file writes.
 const ROWS_KEY = "vrtti.listRows";
 const ROWS_CLASS = "rows-long";
 
@@ -33,18 +40,112 @@ export function listRowsLong() {
   return document.documentElement.classList.contains(ROWS_CLASS);
 }
 
+/** @param {string} d */
+function makeIcon(d) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "action-icon");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
+}
+
+function makeTrashIcon() {
+  return makeIcon("M3 4.5h10M6 4.5V3h4v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5");
+}
+
+function makeRestoreIcon() {
+  return makeIcon("M5 5L2 8l3 3M2.5 8h7a3 3 0 0 1 0 6H7");
+}
+
+/**
+ * @typedef {{ kind: "recent" } | { kind: "trash" } | { kind: "space", space: string }} DrawerTarget
+ */
+
+/**
+ * @param {DrawerTarget | null} a @param {DrawerTarget | null} b
+ */
+function sameTarget(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  return a.kind !== "space" || a.space === /** @type {{kind: "space", space: string}} */ (b).space;
+}
+
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
  * @param {ReturnType<import("../model/folders.js").createFolderStore>} folders
  * @param {ReturnType<import("../sync/client.js").createSyncClient>} [sync]
+ * @param {ReturnType<import("../model/workspace.js").createWorkspaces>} [workspaces]
  */
-export function mountSidebar(store, folders, sync) {
+export function mountSidebar(store, folders, sync, workspaces) {
+  const app = /** @type {HTMLElement} */ (document.getElementById("app"));
   const sidebar = /** @type {HTMLElement} */ (document.getElementById("sidebar"));
+  const sidebarScroll = /** @type {HTMLElement} */ (document.getElementById("sidebar-scroll"));
+  const spaceBanner = /** @type {HTMLElement} */ (document.getElementById("space-banner"));
+  const spaceBannerName = /** @type {HTMLElement} */ (document.getElementById("space-banner-name"));
   const openList = /** @type {HTMLElement} */ (document.getElementById("open-list"));
-  const recentList = /** @type {HTMLElement} */ (document.getElementById("recent-list"));
-  const folderSections = /** @type {HTMLElement} */ (
-    document.getElementById("folder-sections")
-  );
+  const openFilterPill = /** @type {HTMLElement} */ (document.getElementById("open-filter-pill"));
+  const deletePill = /** @type {HTMLElement} */ (document.getElementById("delete-pill"));
+  const openEmpty = /** @type {HTMLElement} */ (document.getElementById("open-empty"));
+  const clearFilterBtn = /** @type {HTMLElement} */ (document.getElementById("clear-filter-btn"));
+  const folderSections = /** @type {HTMLElement} */ (document.getElementById("folder-sections"));
+
+  const actView = /** @type {HTMLElement} */ (document.getElementById("act-view"));
+  const actDel = /** @type {HTMLElement} */ (document.getElementById("act-del"));
+
+  const phoneViewEl = /** @type {HTMLElement} */ (document.getElementById("phone-view"));
+  const phoneViewDot = /** @type {HTMLElement} */ (document.getElementById("phone-view-dot"));
+  const phoneViewTitle = /** @type {HTMLElement} */ (document.getElementById("phone-view-title"));
+  const phoneViewBack = /** @type {HTMLElement} */ (document.getElementById("phone-view-back"));
+  const phoneViewList = /** @type {HTMLElement} */ (document.getElementById("phone-view-list"));
+
+  const bottomDrawer = /** @type {HTMLElement} */ (document.getElementById("bottom-drawer"));
+  const drawerDot = /** @type {HTMLElement} */ (document.getElementById("drawer-dot"));
+  const drawerTitle = /** @type {HTMLElement} */ (document.getElementById("drawer-title"));
+  const drawerSub = /** @type {HTMLElement} */ (document.getElementById("drawer-sub"));
+  const drawerOpenWin = /** @type {HTMLElement} */ (document.getElementById("drawer-open-win"));
+  const drawerClose = /** @type {HTMLElement} */ (document.getElementById("drawer-close"));
+  const drawerList = /** @type {HTMLElement} */ (document.getElementById("drawer-list"));
+
+  const bottomBar = /** @type {HTMLElement} */ (document.getElementById("bottom-bar"));
+  const barRecent = /** @type {HTMLElement} */ (document.getElementById("bar-recent"));
+  const barRecentCount = /** @type {HTMLElement} */ (document.getElementById("bar-recent-count"));
+  const barSepLeft = /** @type {HTMLElement} */ (document.getElementById("bar-sep-left"));
+  const barSpaces = /** @type {HTMLElement} */ (document.getElementById("bar-spaces"));
+  const barSepRight = /** @type {HTMLElement} */ (document.getElementById("bar-sep-right"));
+  const barTrash = /** @type {HTMLElement} */ (document.getElementById("bar-trash"));
+  const barTrashCount = /** @type {HTMLElement} */ (document.getElementById("bar-trash-count"));
+  const barSettings = /** @type {HTMLElement} */ (document.getElementById("bar-settings"));
+
+  const ownSpace = () => workspaces?.current().space;
+
+  // ---- Per-window UI state (never persisted) -------------------------------
+
+  // Closed drawers, Delete mode, and the View filter start clear in every
+  // window and nothing stores them (architecture.md §9, §28).
+  /** Space keys hidden by the desktop View filter ("local" or space name). @type {Set<string>} */
+  const hiddenSpaces = new Set();
+  let deleteMode = false;
+  /** Desktop shared drawer selection; starts closed in every window. @type {DrawerTarget | null} */
+  let openDrawer = null;
+  /** Phone Mode B full-screen subview; null shows Open. @type {DrawerTarget | null} */
+  let phoneView = null;
+  let stopPhoneBack = () => {};
+
+  /** @param {DrawerTarget | null} next @param {{redraw?: boolean}} [opts] */
+  function setPhoneView(next, { redraw = true } = {}) {
+    if (sameTarget(phoneView, next)) return;
+    phoneView = next;
+    stopPhoneBack();
+    stopPhoneBack = phoneView && phoneMode() ? watchBack(() => setPhoneView(null)) : () => {};
+    if (redraw) {
+      render();
+      if (phoneView) sidebarScroll.scrollTop = 0;
+    }
+  }
 
   /**
    * Every gesture that opens a document goes through here, so the document
@@ -57,22 +158,31 @@ export function mountSidebar(store, folders, sync) {
    * @param {() => unknown} act
    */
   function open(act) {
+    // Disarm any phone subview Back watcher before closing the note list so
+    // CloseWatcher stack order never keeps an invisible subview layer armed.
+    setPhoneView(null, { redraw: false });
     run("settings.close");
     run("sidebar.autoclose");
     act();
   }
 
+  // If the phone note list closes via the thumb button or Escape while a
+  // subview is active, return the list to Open and disarm its Back watcher.
+  new MutationObserver(() => {
+    if (phoneView && !app.classList.contains("sidebar-open")) {
+      setPhoneView(null);
+    }
+  }).observe(app, { attributes: true, attributeFilter: ["class"] });
+
   const newButton = /** @type {HTMLElement} */ (document.getElementById("new-buffer"));
   newButton.addEventListener("click", () => open(() => run("buffer.new")));
 
-  // Pinned outside the scroller by app.css, so a long buffer list never hides
-  // it (architecture.md §9). The panel itself is ui/settings.js.
-  const settingsButton = /** @type {HTMLElement} */ (
-    document.getElementById("sidebar-settings")
-  );
-  settingsButton.addEventListener("click", () => {
-    // The drawer sits above the settings panel on a phone, so it must go
-    // first, or the panel opens behind it.
+  // Pinned outside the scroller inside #bottom-bar by app.css, so a long
+  // buffer list never hides it (architecture.md §9, §28). Desktop only; phone
+  // reaches Settings through the round thumb menu.
+  barSettings.addEventListener("click", () => {
+    // On a narrow desktop window the drawer sits above the settings panel, so
+    // it must close first or the panel opens behind it.
     run("sidebar.autoclose");
     run("settings.toggle");
   });
@@ -112,32 +222,178 @@ export function mountSidebar(store, folders, sync) {
     },
   });
 
-  const recentBlock = /** @type {HTMLElement} */ (document.getElementById("recent"));
-  const recentHeading = /** @type {HTMLElement} */ (document.getElementById("recent-heading"));
+  // ---- Desktop View space filter (§28) -------------------------------------
 
-  // Closed buffers must not clutter the sidebar (user decision, 2026-09-01):
-  // Recent is collapsed and only the heading with a count shows. A click opens
-  // it for this window's lifetime and nothing remembers that (2026-09-24):
-  // every window starts with it closed, whatever the last one did.
-  let recentCollapsed = true;
-  recentHeading.addEventListener("click", () => {
-    recentCollapsed = !recentCollapsed;
+  /** @param {BufferRecord} record */
+  function filterKey(record) {
+    return record.sync?.space || "local";
+  }
+
+  /** @param {BufferRecord} record */
+  function matchesFilter(record) {
+    if (phoneMode() || ownSpace() || hiddenSpaces.size === 0) return true;
+    return !hiddenSpaces.has(filterKey(record));
+  }
+
+  // Tell the doc store which tabs are visible so closing/trashing the active
+  // tab while filtered activates the next visible tab when one exists (§28).
+  store.setVisibleFilter(matchesFilter);
+
+  /** @param {BufferRecord | null | undefined} record */
+  function unhideFor(record) {
+    if (!record) return;
+    if (hiddenSpaces.delete(filterKey(record))) render();
+  }
+
+  /** @returns {import("./menu.js").MenuItem[]} */
+  function buildViewItems() {
+    const allOpen = store.openBuffers();
+    /** @type {Map<string, number>} */
+    const counts = new Map();
+    for (const b of allOpen) {
+      const key = filterKey(b);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    /** @type {string[]} */
+    const spaces = [];
+    for (const s of sync?.mySpaces() ?? []) if (!spaces.includes(s)) spaces.push(s);
+    for (const b of allOpen) {
+      const s = b.sync?.space;
+      if (s && !spaces.includes(s)) spaces.push(s);
+    }
+    const allKeys = ["local", ...spaces];
+    /** @type {import("./menu.js").MenuItem[]} */
+    const items = [
+      {
+        header: "Show in Open",
+        headerAction: {
+          label: "Show all",
+          act: () => {
+            hiddenSpaces.clear();
+            render();
+          },
+        },
+      },
+      {
+        label: "Local & files",
+        swatch: "local",
+        checked: !hiddenSpaces.has("local"),
+        count: counts.get("local") ?? 0,
+        act: () => {
+          if (hiddenSpaces.has("local")) hiddenSpaces.delete("local");
+          else hiddenSpaces.add("local");
+          render();
+        },
+        action: {
+          label: "only",
+          title: "Show only Local & files",
+          act: () => {
+            hiddenSpaces.clear();
+            for (const k of allKeys) if (k !== "local") hiddenSpaces.add(k);
+            render();
+          },
+        },
+      },
+    ];
+    for (const space of spaces) {
+      items.push({
+        label: space,
+        swatch: sync?.colorOf(space) || "#6699CC",
+        checked: !hiddenSpaces.has(space),
+        count: counts.get(space) ?? 0,
+        act: () => {
+          if (hiddenSpaces.has(space)) hiddenSpaces.delete(space);
+          else hiddenSpaces.add(space);
+          render();
+        },
+        action: {
+          label: "only",
+          title: "Show only " + space,
+          act: () => {
+            hiddenSpaces.clear();
+            for (const k of allKeys) if (k !== space) hiddenSpaces.add(k);
+            render();
+          },
+        },
+      });
+    }
+    return items;
+  }
+
+  actView.addEventListener("click", () => {
+    if (phoneMode() || ownSpace()) return;
+    openMenu(actView, buildViewItems, { stayOpen: true });
+  });
+  clearFilterBtn.addEventListener("click", () => {
+    hiddenSpaces.clear();
     render();
   });
 
-  const fromserverBlock = /** @type {HTMLElement} */ (document.getElementById("fromserver"));
-  const fromserverHeading = /** @type {HTMLElement} */ (
-    document.getElementById("fromserver-heading")
-  );
-  const fromserverList = /** @type {HTMLElement} */ (document.getElementById("fromserver-list"));
+  // ---- Desktop zero-shift Delete mode & Shift+click × (§28) ----------------
 
-  // The same rule as Recent (architecture.md §25): closed in every new
-  // window, open for this window's lifetime after a click, never stored.
-  let fromserverCollapsed = true;
-  fromserverHeading.addEventListener("click", () => {
-    fromserverCollapsed = !fromserverCollapsed;
+  /** @param {boolean} next */
+  function setDeleteMode(next) {
+    if (phoneMode()) next = false;
+    if (deleteMode === next) return;
+    deleteMode = next;
+    sidebar.classList.toggle("delete-mode", deleteMode);
+    actDel.classList.toggle("active-danger", deleteMode);
+    actDel.setAttribute("aria-pressed", String(deleteMode));
+    deletePill.hidden = !deleteMode;
+    render();
+  }
+
+  actDel.addEventListener("click", () => setDeleteMode(!deleteMode));
+  deletePill.addEventListener("click", () => setDeleteMode(false));
+
+  // Typing in the editor exits Delete mode immediately; cursor clicks and
+  // selection changes (`docChanged === false`) must not, so clicking a note to
+  // check its text before deleting stays in Delete mode.
+  editorEvents.addEventListener("update", (event) => {
+    if (deleteMode && /** @type {CustomEvent} */ (event).detail?.docChanged) {
+      setDeleteMode(false);
+    }
+  });
+
+  // Escape exits Delete mode unless a dialog, menu, settings overlay, search
+  // field, or inline rename already owns Escape on screen.
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Shift") document.body.classList.add("shift-held");
+    if (event.key !== "Escape" || !deleteMode || event.defaultPrevented) return;
+    if (renamingId || sidebar.classList.contains("searching")) return;
+    if (document.querySelector("dialog[open], .menu")) return;
+    const settingsPanel = document.getElementById("settings-panel");
+    if (settingsPanel && !settingsPanel.hidden) return;
+    event.preventDefault();
+    setDeleteMode(false);
+  });
+  window.addEventListener("keyup", (event) => {
+    if (event.key === "Shift") document.body.classList.remove("shift-held");
+  });
+  window.addEventListener("blur", () => document.body.classList.remove("shift-held"));
+
+  // ---- Bottom bar, shared drawer, and phone subview controls (§28) ---------
+
+  /** @param {DrawerTarget} target */
+  function toggleSection(target) {
+    if (phoneMode()) {
+      setPhoneView(sameTarget(phoneView, target) ? null : target);
+      return;
+    }
+    openDrawer = sameTarget(openDrawer, target) ? null : target;
+    render();
+  }
+
+  barRecent.addEventListener("click", () => toggleSection({ kind: "recent" }));
+  barTrash.addEventListener("click", () => toggleSection({ kind: "trash" }));
+  drawerClose.addEventListener("click", () => {
+    openDrawer = null;
     render();
   });
+  drawerOpenWin.addEventListener("click", () => {
+    if (openDrawer?.kind === "space") run("workspace.openSpace", openDrawer.space);
+  });
+  phoneViewBack.addEventListener("click", () => setPhoneView(null));
 
   // ---- Rename (architecture.md §9) -----------------------------------------
 
@@ -152,7 +408,7 @@ export function mountSidebar(store, folders, sync) {
     // The row is looked up here, not held from the click: a redraw between
     // opening the menu and picking Rename would leave a detached element, and
     // the input would go into a row nobody can see.
-    const li = document.querySelector('.buffer-row[data-id="' + record.id + '"]');
+    const li = document.querySelector(`.buffer-row[data-id="${CSS.escape(record.id)}"]`);
     const titleEl = li ? li.querySelector(".buffer-title") : null;
     if (renamingId || !(titleEl instanceof HTMLElement)) return;
     renamingId = record.id;
@@ -183,8 +439,8 @@ export function mountSidebar(store, folders, sync) {
     }
 
     input.addEventListener("keydown", (event) => {
-      // The chord table listens on window, so Alt+W here would close the
-      // buffer while its new name is still being typed.
+      // The chord table listens on window, so Alt+W here would close (or in
+      // Delete mode trash) the buffer while its new name is still being typed.
       event.stopPropagation();
       if (event.key === "Enter") finish(true);
       if (event.key === "Escape") finish(false);
@@ -206,12 +462,15 @@ export function mountSidebar(store, folders, sync) {
     startRename(store.get(record.id) ?? record);
   }
 
+  // ---- Menus ---------------------------------------------------------------
+
   /**
-   * The row menu (architecture.md §9). Sync is a per-document server target
-   * (§3); with no server configured the item is disabled and says where to set
-   * one, rather than claiming to sync into nothing. Encrypt is for a file on
-   * disk only (§19, §27): it renames the file to `.age`, so it is disabled
-   * where the browser cannot rename a file. A synced note is encrypted anyway.
+   * The row menu (architecture.md §9, §28). Sync is a per-document server
+   * target (§3); with no server configured the item is disabled and says where
+   * to set one, rather than claiming to sync into nothing. Encrypt is for a
+   * file on disk only (§19, §27): it renames the file to `.age`, so it is
+   * disabled where the browser cannot rename a file. A synced note is
+   * encrypted anyway.
    *
    * @param {BufferRecord} record @param {{closable: boolean}} opts
    * @returns {import("./menu.js").MenuItem[]}
@@ -297,13 +556,92 @@ export function mountSidebar(store, folders, sync) {
         : { label: "Lock with PIN", hint: "The note opens after this device's PIN", act: () => run("doc.pin", record.id) }
     );
     items.push({ separator: true });
-    // A row is either a tab of this window (closable) or in Recent; the
-    // record itself no longer says which (architecture.md §14).
+    // A row is either a tab of this window (closable) or closed in a drawer;
+    // the record itself does not say which (architecture.md §14).
     items.push(
       closable
         ? { label: "Close", act: () => run("buffer.close", record.id) }
-        : { label: "Reopen", act: () => run("buffer.reopen", record.id) }
+        : { label: "Reopen", act: () => open(() => run("buffer.reopen", record.id)) }
     );
+
+    // Explicit delete / remove action (§28). Files on disk are never deleted;
+    // when `file.unwritten` is true, IndexedDB holds the only copy of unsaved
+    // text, so removal stays disabled until reconnected or unlinked.
+    if (record.kind === "file" && record.file) {
+      items.push(
+        record.file.unwritten
+          ? {
+              label: "Remove from list",
+              danger: true,
+              disabled: true,
+              hint: "Unsaved text is not on disk; reconnect or Unlink file first",
+            }
+          : {
+              label: "Remove from list",
+              danger: true,
+              hint: "File stays on disk",
+              act: () => run("doc.trash", record.id),
+            }
+      );
+    } else {
+      items.push({
+        label: "Move to trash",
+        danger: true,
+        hint: record.sync?.space
+          ? "Deletes in " + record.sync.space + " · 30-day Trash on this device"
+          : "Keeps in Trash for 30 days",
+        act: () => run("doc.trash", record.id),
+      });
+    }
+    return items;
+  }
+
+  /** @param {RemoteStub} stub @returns {import("./menu.js").MenuItem[]} */
+  function stubMenu(stub) {
+    return [
+      { label: "Open", act: () => open(() => run("remote.open", stub.id)) },
+      { separator: true },
+      {
+        label: "Move to trash",
+        danger: true,
+        hint: "Deletes in " + stub.space + " · 30-day Trash on this device",
+        act: () => run("remote.trash", stub.id),
+      },
+    ];
+  }
+
+  /** @param {BufferRecord} record @returns {import("./menu.js").MenuItem[]} */
+  function trashMenu(record) {
+    /** @type {import("./menu.js").MenuItem[]} */
+    const items = [];
+    const space = record.originSpace;
+    const canRestoreSpace = Boolean(space && sync?.isMine(space));
+    if (canRestoreSpace && space) {
+      items.push({
+        label: "Restore to " + space,
+        swatch: sync?.colorOf(space) || undefined,
+        hint: "Opens in " + space + " and syncs to its devices",
+        act: () => open(() => run("doc.restore", { id: record.id, toSpace: true })),
+      });
+      items.push({
+        label: "Restore as local",
+        hint: "Moves to Recent on this device only",
+        act: () => run("doc.restore", { id: record.id, toSpace: false }),
+      });
+    } else {
+      items.push({
+        label: "Restore",
+        hint: "Moves to Recent on this device",
+        act: () => run("doc.restore", { id: record.id, toSpace: false }),
+      });
+    }
+    items.push({ separator: true });
+    items.push({
+      label: "Delete permanently",
+      danger: true,
+      hint: "Cannot be undone",
+      act: () => run("doc.deleteForever", record.id),
+    });
     return items;
   }
 
@@ -331,6 +669,7 @@ export function mountSidebar(store, folders, sync) {
           .filter((name) => name !== here)
           .map((name) => ({
             label: "Move to " + name,
+            swatch: sync.colorOf(name) || undefined,
             hint: from ? "from " + from : undefined,
             act: () => run("doc.move", { id: record.id, space: name }),
           })),
@@ -348,6 +687,7 @@ export function mountSidebar(store, folders, sync) {
     const first = sync.defaultSpace();
     return [...(first ? [first] : []), ...mine.filter((name) => name !== first)].map((name) => ({
       label: "Sync to " + name,
+      swatch: sync.colorOf(name) || undefined,
       act: () => run("doc.sync.on", { id: record.id, space: name }),
     }));
   }
@@ -375,7 +715,8 @@ export function mountSidebar(store, folders, sync) {
   /**
    * A row is an <li>, so the keyboard has to be given it by hand: a tab stop,
    * and Enter or Space as the click. The target check matters: Enter on the
-   * row's ⋯ or × button bubbles here too, and must not also open the row.
+   * row's ⋯, ×, trash, or restore button bubbles here too, and must not also
+   * open the row.
    * @param {HTMLElement} li
    */
   function keyboardRow(li) {
@@ -395,15 +736,18 @@ export function mountSidebar(store, folders, sync) {
     );
   }
 
-  /** @param {BufferRecord} record @param {{closable: boolean}} opts */
-  function makeRow(record, { closable }) {
+  // ---- Row builders --------------------------------------------------------
+
+  /** @param {BufferRecord} record @param {{closable: boolean, showRecentAge?: boolean}} opts */
+  function makeRow(record, { closable, showRecentAge = false }) {
     const li = document.createElement("li");
     li.className = "buffer-row";
     keyboardRow(li);
     // The rename box finds its row by this id, after the menu that asked for
     // it is already gone.
     li.dataset.id = record.id;
-    if (record.id === store.activeId) li.classList.add("active");
+    if (closable && record.id === store.activeId) li.classList.add("active");
+
     // Hover on the row: the space and the device that made the note (§27),
     // and where the file sits, as far as the page can know it.
     /** @type {string[]} */
@@ -463,6 +807,17 @@ export function mountSidebar(store, folders, sync) {
       li.appendChild(warn);
     }
 
+    if (showRecentAge && !record.file?.unwritten && record.closedAt !== undefined) {
+      const left = daysLeft(record.closedAt, RECENT_KEEP);
+      if (left <= 7) {
+        const age = document.createElement("span");
+        age.className = "buffer-age soon";
+        age.textContent = left + "d";
+        age.title = left + "d left in Recent";
+        li.appendChild(age);
+      }
+    }
+
     // The time of the last change, for the rows of the phone note list.
     // Every row carries it and the preview below, in every layout, and
     // app.css shows them in phone mode only: the layout can change under a
@@ -487,16 +842,55 @@ export function mountSidebar(store, folders, sync) {
     li.appendChild(more);
 
     if (closable) {
-      const close = document.createElement("button");
-      close.className = "buffer-close";
-      close.type = "button";
-      close.textContent = "×";
-      close.title = "Close (Alt+W)";
-      close.addEventListener("click", (event) => {
+      if (deleteMode) {
+        const trashBtn = document.createElement("button");
+        trashBtn.className = "buffer-trash";
+        trashBtn.type = "button";
+        trashBtn.appendChild(makeTrashIcon());
+        trashBtn.title =
+          record.kind === "file"
+            ? record.file?.unwritten
+              ? "Unsaved text is not on disk; reconnect or Unlink file first"
+              : "Remove from list (file stays on disk)"
+            : "Move to trash (Alt+W)";
+        trashBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          run("doc.trash", record.id);
+        });
+        li.appendChild(trashBtn);
+      } else {
+        const close = document.createElement("button");
+        close.className = "buffer-close";
+        close.type = "button";
+        close.textContent = "×";
+        close.title =
+          record.kind === "file"
+            ? "Close (Alt+W · Shift+click to remove from list)"
+            : "Close (Alt+W · Shift+click to move to trash)";
+        close.addEventListener("click", (event) => {
+          event.stopPropagation();
+          run(event.shiftKey ? "doc.trash" : "buffer.close", record.id);
+        });
+        li.appendChild(close);
+      }
+    } else {
+      // Closed rows in Recent / space drawers have no ×, so a hover trash
+      // button gives desktop 1-click cleanup (§28). Hidden in phone mode.
+      const trashBtn = document.createElement("button");
+      trashBtn.className = "buffer-trash";
+      trashBtn.type = "button";
+      trashBtn.appendChild(makeTrashIcon());
+      trashBtn.title =
+        record.kind === "file"
+          ? record.file?.unwritten
+            ? "Unsaved text is not on disk; reconnect or Unlink file first"
+            : "Remove from list (file stays on disk)"
+          : "Move to trash";
+      trashBtn.addEventListener("click", (event) => {
         event.stopPropagation();
-        run("buffer.close", record.id);
+        run("doc.trash", record.id);
       });
-      li.appendChild(close);
+      li.appendChild(trashBtn);
     }
 
     // The start of the text, the second line of a phone row. loadedText, not
@@ -526,56 +920,139 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
-   * A From server row (§25). Its own builder, not a mode of makeRow: a stub
-   * is no record, and has no menu, no close and no drag. A click fetches the
-   * note and opens it as a tab here.
+   * Unopened Titles-only stub row (§25, §28). Its own builder, not a mode of
+   * makeRow: a stub has no BufferRecord in IndexedDB. PIN-locked stubs without
+   * an explicit user title show 🔒 and "Locked note" (never a first line).
    * @param {RemoteStub} stub
    */
   function makeStubRow(stub) {
     const li = document.createElement("li");
-    li.className = "buffer-row";
+    li.className = "buffer-row stub-row";
     keyboardRow(li);
     li.dataset.id = stub.id;
     li.title = stub.space + " · on the server. Click to open it here.";
     spaceBar(li, stub.space);
 
+    if (stub.pin) {
+      const mark = document.createElement("span");
+      mark.className = "buffer-mark";
+      mark.textContent = "🔒";
+      mark.title = "Locked with the PIN";
+      li.appendChild(mark);
+    }
+
     const title = document.createElement("span");
     title.className = "buffer-title";
-    // A title this device could not open yet (locked) is no first line.
-    title.textContent = stub.title || (stub.enc ? "encrypted" : "untitled");
+    // A title this device could not open yet (locked) or a PIN-locked stub
+    // without an explicit user title never shows a first line (§27, §28).
+    title.textContent = stub.title || (stub.pin ? "Locked note" : stub.enc ? "encrypted" : "untitled");
     li.appendChild(title);
+
+    // Phone Mode B marks unopened server stubs with a quiet "server" tag;
+    // app.css hides `.buffer-tag` outside `html.phone`.
+    const tag = document.createElement("span");
+    tag.className = "buffer-tag";
+    tag.textContent = "server";
+    li.appendChild(tag);
+
+    const more = document.createElement("button");
+    more.className = "buffer-more";
+    more.type = "button";
+    more.textContent = "⋯";
+    more.title = "More";
+    more.setAttribute("aria-haspopup", "menu");
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMenu(more, stubMenu(stub));
+    });
+    li.appendChild(more);
+
+    const trashBtn = document.createElement("button");
+    trashBtn.className = "buffer-trash";
+    trashBtn.type = "button";
+    trashBtn.appendChild(makeTrashIcon());
+    trashBtn.title = "Move to trash";
+    trashBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      run("remote.trash", stub.id);
+    });
+    li.appendChild(trashBtn);
 
     li.addEventListener("click", () => open(() => run("remote.open", stub.id)));
     return li;
   }
 
   /**
-   * The From server rows, newest first. With stubs from two or more spaces,
-   * a heading names each space over its group; the groups follow their
-   * newest stub, so the newest note is still on top. One space needs no
-   * heading: the block's own heading already says what the rows are.
-   * @param {RemoteStub[]} stubs newest first, as store.remotes() gives them
-   * @returns {HTMLElement[]}
+   * Trashed note row (§28). No read-only editor preview: clicking the row
+   * opens its restore/delete menu; desktop hover also offers a 1-click ↩ button.
+   * @param {BufferRecord} record
    */
-  function stubRows(stubs) {
-    /** @type {Map<string, RemoteStub[]>} */
-    const groups = new Map();
-    // Insertion order is the order of each space's newest stub.
-    for (const stub of stubs) {
-      const group = groups.get(stub.space);
-      if (group) group.push(stub);
-      else groups.set(stub.space, [stub]);
+  function makeTrashRow(record) {
+    const li = document.createElement("li");
+    li.className = "buffer-row trash-row";
+    keyboardRow(li);
+    li.dataset.id = record.id;
+
+    const originSpace = record.originSpace;
+    const canRestoreSpace = Boolean(originSpace && sync?.isMine(originSpace));
+    if (originSpace) spaceBar(li, originSpace);
+
+    const left = daysLeft(record.trashedAt ?? record.updatedAt, TRASH_KEEP);
+    li.title = (originSpace ? originSpace + " · " : "") + left + "d left in Trash";
+
+    if (record.pin) {
+      const mark = document.createElement("span");
+      mark.className = "buffer-mark";
+      mark.textContent = "🔒";
+      mark.title = "Locked with the PIN";
+      li.appendChild(mark);
     }
-    if (groups.size < 2) return stubs.map(makeStubRow);
-    /** @type {HTMLElement[]} */
-    const rows = [];
-    for (const [space, group] of groups) {
-      const heading = document.createElement("li");
-      heading.className = "buffer-subheading";
-      heading.textContent = space;
-      rows.push(heading, ...group.map(makeStubRow));
-    }
-    return rows;
+
+    const title = document.createElement("span");
+    title.className = "buffer-title";
+    title.textContent = titleOf(record);
+    li.appendChild(title);
+
+    const age = document.createElement("span");
+    age.className = left <= 5 ? "buffer-age soon" : "buffer-age";
+    age.textContent = left + "d";
+    li.appendChild(age);
+
+    const time = document.createElement("span");
+    time.className = left <= 5 ? "buffer-time soon" : "buffer-time";
+    time.textContent = left + "d left";
+    li.appendChild(time);
+
+    const more = document.createElement("button");
+    more.className = "buffer-more";
+    more.type = "button";
+    more.textContent = "⋯";
+    more.title = "More";
+    more.setAttribute("aria-haspopup", "menu");
+    more.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMenu(more, trashMenu(record));
+    });
+    li.appendChild(more);
+
+    const restoreBtn = document.createElement("button");
+    restoreBtn.className = "buffer-restore";
+    restoreBtn.type = "button";
+    restoreBtn.appendChild(makeRestoreIcon());
+    restoreBtn.title = canRestoreSpace && originSpace ? "Restore to " + originSpace : "Restore";
+    restoreBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (canRestoreSpace) open(() => run("doc.restore", { id: record.id, toSpace: true }));
+      else run("doc.restore", { id: record.id, toSpace: false });
+    });
+    li.appendChild(restoreBtn);
+
+    // Anchor to `more` when visible on screen, else to `li` (keyboard Enter on
+    // an unhovered desktop row hides `more` via `display: none`).
+    li.addEventListener("click", () => {
+      openMenu(more.offsetParent ? more : li, trashMenu(record));
+    });
+    return li;
   }
 
   // ---- Reorder by drag (architecture.md §9, Manual order) -----------------
@@ -600,7 +1077,7 @@ export function mountSidebar(store, folders, sync) {
   openList.addEventListener("pointerdown", (event) => {
     if (drag || event.button !== 0 || event.pointerType === "touch") return;
     const target = /** @type {HTMLElement} */ (event.target);
-    // A press on the ⋯, the × or the rename box is theirs, not a drag.
+    // A press on ⋯, ×, the trash button, or the rename box is theirs, not a drag.
     if (target.closest("button, input")) return;
     const li = target.closest(".buffer-row");
     if (!(li instanceof HTMLElement) || !li.dataset.id || !li.parentElement) return;
@@ -689,9 +1166,9 @@ export function mountSidebar(store, folders, sync) {
   // ---- Swipe to close (architecture.md §9, Phone mode) ---------------------
 
   // In the phone note list, a swipe to the left on a row of Open closes that
-  // note: one move of the thumb where the row menu takes two taps. Touch
-  // only, so it shares nothing with the drag above, which ignores touch. Its
-  // own state and its own listeners, on the same list.
+  // note (strictly Close only, never Move to trash; §28): one move of the
+  // thumb where the row menu takes two taps. Touch only, so it shares nothing
+  // with the drag above, which ignores touch.
   //
   // The row stays where it is and its content moves: this code writes the
   // distance to one custom property, and app.css moves the row's children by
@@ -720,13 +1197,10 @@ export function mountSidebar(store, folders, sync) {
   const SWIPE_SLOP = 10;
   // The close point: this share of the row's width (user decision,
   // 2026-11-19). Half was the first plan, and is a long reach for one thumb.
-  // Distance only, never speed: a quick flick must not close a note, because
-  // a close has no undo other than opening the note again from Recent.
+  // Distance only, never speed: a quick flick must not close a note.
   const SWIPE_CLOSE = 1 / 3;
   // The close, in two steps: the content slides off to the left, then the
-  // row folds away and the rows below move up. The first version removed the
-  // row the moment the finger lifted, and on a real phone that was too fast
-  // to follow (user report, 2026-11-19). Milliseconds.
+  // row folds away and the rows below move up. Milliseconds.
   const SWIPE_OUT = 200;
   const SWIPE_FOLD = 200;
 
@@ -1002,6 +1476,8 @@ export function mountSidebar(store, folders, sync) {
     folderSections.replaceChildren(...folders.openFolders().map(folderSection));
   }
 
+  // ---- Focus & scroll helpers ----------------------------------------------
+
   /**
    * Which row the keyboard is on, so a redraw can put the focus back. Every
    * replaceChildren below destroys the focused row, and a sync or another
@@ -1057,6 +1533,47 @@ export function mountSidebar(store, folders, sync) {
   }
 
   /**
+   * Collect all non-empty space sections (closed local copies + server stubs).
+   * Empty spaces hide from the bottom bar (§28).
+   */
+  function collectSpaceSections() {
+    const allStubs = store.remotes();
+    /** @type {string[]} */
+    const names = [];
+    for (const s of sync?.mySpaces() ?? []) if (!names.includes(s)) names.push(s);
+    for (const stub of allStubs) if (!names.includes(stub.space)) names.push(stub.space);
+    for (const b of store.closedBuffers()) {
+      const s = b.sync?.space;
+      if (s && !names.includes(s)) names.push(s);
+    }
+
+    /** @type {{ space: string, closed: BufferRecord[], stubs: RemoteStub[], count: number }[]} */
+    const sections = [];
+    for (const space of names) {
+      const closed = store.closedSpaceBuffers(space);
+      const stubs = allStubs.filter((s) => s.space === space);
+      const count = closed.length + stubs.length;
+      if (count > 0) sections.push({ space, closed, stubs, count });
+    }
+    return sections;
+  }
+
+  /**
+   * Build combined rows for one space drawer or phone space view, newest first.
+   * @param {{ closed: BufferRecord[], stubs: RemoteStub[] }} sec
+   */
+  function spaceSectionRows(sec) {
+    /** @type {({ kind: "buf", updatedAt: number, record: BufferRecord } | { kind: "stub", updatedAt: number, stub: RemoteStub })[]} */
+    const entries = [
+      ...sec.closed.map((record) => ({ kind: /** @type {"buf"} */ ("buf"), updatedAt: record.updatedAt || 0, record })),
+      ...sec.stubs.map((stub) => ({ kind: /** @type {"stub"} */ ("stub"), updatedAt: stub.updatedAt || 0, stub })),
+    ].sort((a, b) => b.updatedAt - a.updatedAt);
+    return entries.map((e) =>
+      e.kind === "buf" ? makeRow(e.record, { closable: false }) : makeStubRow(e.stub)
+    );
+  }
+
+  /**
    * @param {{reveal?: boolean}} [opts] reveal: the active note changed, so
    *   its row must end up on screen. Off for every other redraw: a sync or a
    *   keystroke must not drag the list away from where the user scrolled it.
@@ -1079,32 +1596,175 @@ export function mountSidebar(store, folders, sync) {
     }
     redrawOwed = false;
     const focused = focusedRow();
+    const isPhone = phoneMode();
+    const wsSpace = ownSpace();
+
+    // Space Window banner and button adaptation (§28).
+    if (wsSpace && !isPhone) {
+      spaceBanner.hidden = false;
+      spaceBannerName.textContent = wsSpace;
+      const color = sync?.colorOf(wsSpace) || "";
+      if (color) spaceBanner.style.setProperty("--space-win-color", color);
+      else spaceBanner.style.removeProperty("--space-win-color");
+      actView.hidden = true;
+      newButton.title = "New note in " + wsSpace + " (Alt+N)";
+    } else {
+      spaceBanner.hidden = true;
+      actView.hidden = false;
+      newButton.title = "New buffer (Alt+N)";
+    }
+
+    // Open list + desktop View space filter.
+    const allOpen = store.openBuffers();
+    const filtered = !isPhone && !wsSpace && hiddenSpaces.size > 0;
+    const visibleOpen = filtered ? allOpen.filter(matchesFilter) : allOpen;
+    actView.classList.toggle("active-accent", filtered);
+    openFilterPill.hidden = !filtered;
+    if (filtered) openFilterPill.textContent = "(" + visibleOpen.length + "/" + allOpen.length + ")";
+    openEmpty.hidden = !(filtered && allOpen.length > 0 && visibleOpen.length === 0);
 
     openList.replaceChildren(
-      ...openOrder(store.openBuffers()).map((b) => makeRow(b, { closable: true }))
+      ...openOrder(visibleOpen).map((b) => makeRow(b, { closable: true }))
     );
 
-    const closed = store.closedBuffers();
-    recentBlock.hidden = closed.length === 0;
-    recentHeading.textContent =
-      (recentCollapsed ? "▸" : "▾") + " Recent (" + closed.length + ")";
-    // For screen readers, and for app.css: the bar's orange line shows only
-    // while the list is open.
-    recentHeading.setAttribute("aria-expanded", String(!recentCollapsed));
-    recentList.hidden = recentCollapsed;
-    recentList.replaceChildren(
-      ...(recentCollapsed ? [] : closed.map((b) => makeRow(b, { closable: false })))
+    // Bottom bar sections: Recent (local only), non-empty spaces, Trash.
+    const recent = store.recentBuffers();
+    const spaceSections = collectSpaceSections();
+    const trashed = store.trashed();
+
+    // Auto-close active drawer or phone subview if its section emptied.
+    if (
+      (openDrawer?.kind === "recent" && recent.length === 0) ||
+      (openDrawer?.kind === "trash" && trashed.length === 0) ||
+      (openDrawer?.kind === "space" && !spaceSections.some((s) => s.space === openDrawer?.space))
+    ) {
+      openDrawer = null;
+    }
+    if (
+      (phoneView?.kind === "recent" && recent.length === 0) ||
+      (phoneView?.kind === "trash" && trashed.length === 0) ||
+      (phoneView?.kind === "space" && !spaceSections.some((s) => s.space === phoneView?.space))
+    ) {
+      setPhoneView(null, { redraw: false });
+    }
+
+    const activeSection = isPhone ? phoneView : openDrawer;
+
+    // Bottom icon bar.
+    barRecent.hidden = recent.length === 0;
+    barRecent.title = "Recent (" + recent.length + ")";
+    barRecent.style.setProperty("--btn-accent", "var(--st-caret)");
+    barRecent.classList.toggle("active", activeSection?.kind === "recent");
+    barRecentCount.textContent = String(recent.length);
+
+    barTrash.hidden = trashed.length === 0;
+    barTrash.title = "Deleted notes (" + trashed.length + ")";
+    barTrash.style.setProperty("--btn-accent", "var(--st-danger)");
+    barTrash.classList.toggle("active", activeSection?.kind === "trash");
+    barTrashCount.textContent = String(trashed.length);
+
+    barSpaces.replaceChildren(
+      ...spaceSections.map((sec) => {
+        const btn = document.createElement("button");
+        btn.className = "bar-btn";
+        btn.type = "button";
+        btn.dataset.space = sec.space;
+        const color = sync?.colorOf(sec.space) || "var(--st-caret)";
+        btn.style.setProperty("--btn-accent", color);
+        btn.title = sec.space + " (" + sec.count + ")";
+        btn.setAttribute("aria-label", sec.space + " (" + sec.count + ")");
+        if (activeSection?.kind === "space" && activeSection.space === sec.space) {
+          btn.classList.add("active");
+        }
+        const badge = document.createElement("span");
+        badge.className = "space-badge";
+        badge.textContent = spaceBadge(sec.space);
+        const count = document.createElement("span");
+        count.className = "bar-count";
+        count.textContent = String(sec.count);
+        btn.append(badge, count);
+        btn.addEventListener("click", () => toggleSection({ kind: "space", space: sec.space }));
+        return btn;
+      })
     );
 
-    // The store emits "change" when a stub comes or goes, in any window
-    // (§25), so this block follows the same event as the lists above.
-    const stubs = store.remotes();
-    fromserverBlock.hidden = stubs.length === 0;
-    fromserverHeading.textContent =
-      (fromserverCollapsed ? "▸" : "▾") + " From server (" + stubs.length + ")";
-    fromserverHeading.setAttribute("aria-expanded", String(!fromserverCollapsed));
-    fromserverList.hidden = fromserverCollapsed;
-    fromserverList.replaceChildren(...(fromserverCollapsed ? [] : stubRows(stubs)));
+    const hasLeft = recent.length > 0 || spaceSections.length > 0;
+    const hasRight = isPhone ? trashed.length > 0 : true;
+    barSepLeft.hidden = !(recent.length > 0 && spaceSections.length > 0);
+    barSepRight.hidden = !(hasLeft && hasRight);
+    bottomBar.classList.toggle(
+      "phone-empty",
+      isPhone && recent.length === 0 && spaceSections.length === 0 && trashed.length === 0
+    );
+
+    // Desktop shared expandable drawer.
+    if (!isPhone && openDrawer) {
+      bottomDrawer.hidden = false;
+      if (openDrawer.kind === "recent") {
+        bottomDrawer.style.setProperty("--drawer-accent", "var(--st-caret)");
+        drawerDot.hidden = true;
+        drawerTitle.textContent = "Recent (" + recent.length + ")";
+        drawerSub.hidden = false;
+        drawerSub.textContent = "30d";
+        drawerOpenWin.hidden = true;
+        drawerList.replaceChildren(
+          ...recent.map((b) => makeRow(b, { closable: false, showRecentAge: true }))
+        );
+      } else if (openDrawer.kind === "trash") {
+        bottomDrawer.style.setProperty("--drawer-accent", "var(--st-danger)");
+        drawerDot.hidden = true;
+        drawerTitle.textContent = "Deleted notes (" + trashed.length + ")";
+        drawerSub.hidden = false;
+        drawerSub.textContent = "30d";
+        drawerOpenWin.hidden = true;
+        drawerList.replaceChildren(...trashed.map(makeTrashRow));
+      } else {
+        const sec = spaceSections.find((s) => s.space === openDrawer?.space);
+        if (sec) {
+          const color = sync?.colorOf(sec.space) || "var(--st-caret)";
+          bottomDrawer.style.setProperty("--drawer-accent", color);
+          drawerDot.hidden = false;
+          drawerTitle.textContent = sec.space + " (" + sec.count + ")";
+          drawerSub.hidden = true;
+          drawerOpenWin.hidden = false;
+          drawerOpenWin.title = "Open " + sec.space + " in new window";
+          drawerList.replaceChildren(...spaceSectionRows(sec));
+        }
+      }
+    } else {
+      bottomDrawer.hidden = true;
+      drawerList.replaceChildren();
+    }
+
+    // Phone Mode B full-screen subview inside #sidebar-scroll.
+    const showPhoneView = Boolean(isPhone && phoneView);
+    sidebar.classList.toggle("phone-subview", showPhoneView);
+    phoneViewEl.hidden = !showPhoneView;
+    if (showPhoneView && phoneView) {
+      if (phoneView.kind === "recent") {
+        phoneViewDot.hidden = true;
+        phoneViewTitle.textContent = "Recent (" + recent.length + ")";
+        phoneViewList.replaceChildren(
+          ...recent.map((b) => makeRow(b, { closable: false }))
+        );
+      } else if (phoneView.kind === "trash") {
+        phoneViewDot.hidden = true;
+        phoneViewTitle.textContent = "Deleted notes (" + trashed.length + ")";
+        phoneViewList.replaceChildren(...trashed.map(makeTrashRow));
+      } else {
+        const sec = spaceSections.find((s) => s.space === phoneView?.space);
+        if (sec) {
+          const color = sync?.colorOf(sec.space) || "var(--st-caret)";
+          phoneViewDot.hidden = false;
+          phoneViewDot.style.setProperty("--drawer-accent", color);
+          phoneViewTitle.textContent = sec.space + " (" + sec.count + ")";
+          phoneViewList.replaceChildren(...spaceSectionRows(sec));
+        }
+      }
+    } else {
+      phoneViewList.replaceChildren();
+    }
+
     refocusRow(focused);
     if (reveal) revealActive();
   }
@@ -1118,6 +1778,11 @@ export function mountSidebar(store, folders, sync) {
       // on the ⋯ (ui/menu.js). The search view and a rename box stop the
       // event before it gets here, so theirs are not seen at all.
       if (event.defaultPrevented) return;
+      if (deleteMode) {
+        event.preventDefault();
+        setDeleteMode(false);
+        return;
+      }
       event.preventDefault();
       run("editor.focus");
       return;
@@ -1151,7 +1816,12 @@ export function mountSidebar(store, folders, sync) {
   store.events.addEventListener("active", () => render({ reveal: true }));
   // The order of Open depends on the mode (openOrder), and a phone turned on
   // its side can leave it with no store event to redraw the list.
-  onPhoneModeChange(() => render());
+  onPhoneModeChange((phone) => {
+    setPhoneView(null, { redraw: false });
+    if (phone) setDeleteMode(false);
+    else openDrawer = null;
+    render();
+  });
   // A lock takes the plaintext out of memory (model/docs.js lockAll), and a
   // preview drawn from it must leave the screen in the same moment. The store
   // sends no "change" for a lock, so without this the decrypted lines would
@@ -1169,4 +1839,10 @@ export function mountSidebar(store, folders, sync) {
   folders.events.addEventListener("listing", renderFolders);
   render();
   renderFolders();
+
+  return {
+    isDeleteMode: () => deleteMode,
+    exitDeleteMode: () => setDeleteMode(false),
+    unhideFor,
+  };
 }

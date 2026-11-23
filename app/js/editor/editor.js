@@ -322,7 +322,9 @@ function baseExtensions(lang, onDocChanged, onDominantPaste, spellOff) {
       if (update.docChanged && onDocChanged) {
         onDocChanged(update.state.doc.toString());
       }
-      if (update.docChanged || update.selectionSet) editorEvents.dispatchEvent(new Event("update"));
+      if (update.docChanged || update.selectionSet) {
+        editorEvents.dispatchEvent(new CustomEvent("update", { detail: { docChanged: update.docChanged } }));
+      }
     }),
     // Language re-detection after a paste, and only after a paste: sniffing on
     // every keystroke would recolor a note the moment its first line happens
