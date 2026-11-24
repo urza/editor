@@ -1322,6 +1322,32 @@ export function createDocStore({
       if (!record.file || !handle) {
         throw new UnavailableError("missing", "no handle for " + record.id);
       }
+      // Native handles check `expectedMtime` and return the new `mtime` inside
+      // one `disk_write` IPC call (keeping `sync_all()`). Browser FSA handles
+      // have no atomic mtime-checked write, so they stat before and after.
+      if (isNativeHandle(handle)) {
+        try {
+          const written = await writeFile(handle, record.content ?? "", {
+            expectedMtime: record.file.mtime,
+          });
+          record.file.mtime =
+            typeof written?.mtime === "number" ? written.mtime : await lastModified(handle);
+          wrote(record);
+          return true;
+        } catch (err) {
+          if (!err || /** @type {any} */ (err).code !== "conflict") throw err;
+          const disk = await readBody(record);
+          if (disk.content !== record.content) {
+            await forkConflict(record);
+            await replaceFromDisk(record.id, disk);
+            return false;
+          }
+          // Same bytes (a touch): adopt the new stamp and write nothing.
+          record.file.mtime = disk.mtime;
+          wrote(record);
+          return true;
+        }
+      }
       const disk = await movedOnDisk(record, handle);
       if (disk && disk.content !== record.content) {
         await forkConflict(record);
@@ -1364,12 +1390,11 @@ export function createDocStore({
       // record already holds age ciphertext. A `.age` file opened as binary
       // therefore comes back armored, which is still standard age and still
       // opens with the CLI (architecture.md §13.4).
-      await writeFile(handle, record.content ?? "");
-      // One stat after the write, not a stamp from the write itself: the FSA
-      // writable reports none. Another program writing between the two calls
-      // would be taken for our own write; that window is milliseconds and is
-      // accepted, as the poll's own window is (§23).
-      record.file.mtime = await lastModified(handle);
+      const written = await writeFile(handle, record.content ?? "");
+      // Reuse the mtime `disk_write` returns on native handles; browser FSA
+      // writables report none, so they stat once after close (§23).
+      record.file.mtime =
+        typeof written?.mtime === "number" ? written.mtime : await lastModified(handle);
       wrote(record);
       return true;
     } catch (err) {

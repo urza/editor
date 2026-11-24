@@ -369,8 +369,8 @@ fn open_workspace_window<R: Runtime>(app: &AppHandle<R>, ws: &str) -> tauri::Res
             PageLoadEvent::Started => mark_not_ready(window.app_handle(), window.label()),
             PageLoadEvent::Finished => {
                 let window = window.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(READY_FALLBACK);
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(READY_FALLBACK).await;
                     if is_ready(window.app_handle(), window.label()) {
                         return;
                     }
