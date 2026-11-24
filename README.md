@@ -100,6 +100,15 @@ its suggestions are the Czech words with the same letters plus diacritics
 ("tlacitko" gives "tlačítko"). Hover a marked word for suggestions, press
 Ctrl+. for them as a menu, or tap the word on a phone, and pick one to apply it.
 
+**Rules and your own words.** Harper also marks grammar and style in blue, for
+example a long sentence. **Settings › Editor › Spellcheck rules and words** has
+a switch for each of its 823 rules, with a search, and a list of your own words
+("My words") that neither language marks. A mark also offers a quick button
+next to its suggestions: **Add to my words** on a red mark, and **Turn off**
+with the name of the rule on a blue one. These settings sync to all your
+devices, encrypted like a note, and they belong to no space. A second switch in
+Settings turns the blue mark for Czech without diacritics off on one device.
+
 **Add diacritics.** Two commands put the diacritics into the selection, or
 into the whole note when nothing is selected. Each one is a single undo step.
 
