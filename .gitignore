@@ -13,3 +13,6 @@ server/**/data/
 
 # Hand-downloaded shell builds for a test on this machine (never committed).
 /releases/
+
+# Local performance benchmark outputs written by tests/perf/run.mjs.
+tests/perf/results/
