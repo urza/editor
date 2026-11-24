@@ -48,7 +48,11 @@ def load_import_map():
 def source_files():
     files = []
     for base in ("vendor", "js"):
-        for dirpath, _dirnames, filenames in os.walk(os.path.join(ROOT, base)):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, base)):
+            # Prune vendor/twemoji/: it holds ~4,000 SVGs and no JS files, and
+            # walking it costs hundreds of milliseconds on bind-mounted disks.
+            if base == "vendor" and "twemoji" in dirnames:
+                dirnames.remove("twemoji")
             for name in sorted(filenames):
                 if name.endswith(".js"):
                     files.append(os.path.join(dirpath, name))

@@ -1,6 +1,6 @@
 // Browser test for Settings focus handling on desktop and phone.
 //
-//   node --test tests/settings-focus.test.mjs
+//   node --test tests/e2e/settings-focus.test.mjs
 //
 // Verifies with real pointer clicks and real Space/Enter key events (via CDP
 // Input.dispatchMouseEvent / Input.dispatchKeyEvent) that closing Settings
@@ -18,7 +18,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const APP_DIR = path.join(ROOT, "app");
 
 const MIME = {

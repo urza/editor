@@ -7,6 +7,33 @@ correct tree into a failing check for reasons nobody can see.
 """
 
 
+import re
+
+# Single-pass C regex scanner for JS string literals and comments. Each string
+# branch is mutually exclusive (runs of non-quote/non-backslash chars vs. an
+# escape pair) so the engine stays linear with no backtracking, and matching
+# strings keeps `//` or `/*` inside literals from being blanked.
+_TOKEN_RE = re.compile(
+    r"""'(?:[^'\\]+|\\[\s\S]?)*(?:'|$)"""
+    r"""|"(?:[^"\\]+|\\[\s\S]?)*(?:"|$)"""
+    r"""|`(?:[^`\\]+|\\[\s\S]?)*(?:`|$)"""
+    r"""|//[^\n]*"""
+    r"""|/\*[\s\S]*?(?:\*/|$)"""
+)
+_NON_NEWLINE_RE = re.compile(r"[^\n]")
+
+
+def _blank_comment(match):
+    token = match.group(0)
+    if token[0] != "/":
+        return token
+    if token[1] == "/":
+        return " " * len(token)
+    # Newlines stay, so ^-anchored patterns and line numbers still
+    # line up with the original file.
+    return _NON_NEWLINE_RE.sub(" ", token)
+
+
 def mask_comments(text):
     """Blank out every comment, keeping the string exactly as long.
 
@@ -25,35 +52,4 @@ def mask_comments(text):
     `//` would be masked as a comment. No file in the vendored tree has one,
     and the cost of being wrong is a missed check, never a broken build.
     """
-    chars = list(text)
-    i, n = 0, len(text)
-    quote = None
-    while i < n:
-        c = text[i]
-        if quote:
-            if c == "\\":
-                i += 2  # skip the escaped character, quote or not
-                continue
-            if c == quote:
-                quote = None
-            i += 1
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "/":
-            while i < n and text[i] != "\n":
-                chars[i] = " "
-                i += 1
-            continue
-        if c == "/" and i + 1 < n and text[i + 1] == "*":
-            end = text.find("*/", i + 2)
-            end = n if end < 0 else end + 2
-            while i < end:
-                # Newlines stay, so ^-anchored patterns and line numbers still
-                # line up with the original file.
-                if text[i] != "\n":
-                    chars[i] = " "
-                i += 1
-            continue
-        if c in "\"'`":
-            quote = c
-        i += 1
-    return "".join(chars)
+    return _TOKEN_RE.sub(_blank_comment, text)
