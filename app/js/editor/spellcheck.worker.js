@@ -89,10 +89,12 @@ let latestLintReqId = 0;
  * them (op "config"; editor/spellcheck.js, sendWorkerConfig). `rules` is the
  * complete map of the Harper rules the user changed: setLintConfig replaces
  * Harper's whole map on each call, and a missing rule runs at its default.
- * `words` holds the keys of "My words" (wordKey).
- * @type {{ rules: Record<string, boolean>, words: Set<string> }}
+ * `words` holds the keys of "My words" (wordKey). `plain` is the device
+ * switch "Mark Czech without diacritics"; it travels here with the shared
+ * settings because the word rule (mixed.js, judge) runs in this worker.
+ * @type {{ rules: Record<string, boolean>, words: Set<string>, plain: boolean }}
  */
-let config = { rules: {}, words: new Set() };
+let config = { rules: {}, words: new Set(), plain: true };
 
 /**
  * Whether the user's own list has this word, in any capitalization.
@@ -484,7 +486,7 @@ async function lintDocument(text, requestedLangs, reqId) {
           relDiags.push(d);
           continue;
         }
-        const verdict = judge(word, langs, { ...ask, english: () => false });
+        const verdict = judge(word, langs, { ...ask, english: () => false }, config.plain);
         if (verdict === "typo") {
           const czech = langs.cs ? answerCzech("s" + word, budget, deferred) ?? [] : [];
           const names = d.actions.map((a) => a.name);
@@ -506,7 +508,7 @@ async function lintDocument(text, requestedLangs, reqId) {
         if (langs.en && !english.has(word) && !isMine(word) && !(langs.cs && isCzechWord(word))) {
           english.set(word, await englishWord(word, budget, deferred));
         }
-        const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
+        const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null }, config.plain);
         if (verdict === "ok") continue;
         if (verdict === "pending") {
           deferred.incomplete = true;
@@ -632,7 +634,7 @@ self.addEventListener("message", async (event) => {
         result = await lintDocument(msg.text, msg.langs, msg.reqId);
       }
     } else if (op === "config") {
-      config = { rules: msg.rules ?? {}, words: new Set(msg.words ?? []) };
+      config = { rules: msg.rules ?? {}, words: new Set(msg.words ?? []), plain: msg.plain !== false };
       if (harperEngine) await harperEngine.setLintConfig(config.rules);
       // Every cached paragraph was linted with the old settings.
       paraCache.clear();

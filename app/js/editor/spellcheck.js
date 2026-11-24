@@ -52,6 +52,9 @@ const WASM_URL = "./vendor/harper/harper_wasm_slim_bg.wasm";
 const WASM_FLAVOR = "slim";
 
 const STORAGE_KEY = "vrtti.spellcheck";
+// "Mark Czech without diacritics" (Settings > Editor), a setting of this
+// device like the switch above. Default on.
+const PLAIN_KEY = "vrtti.spellcheck.plain";
 
 // Sublime shows spelling errors while you type but not on every keystroke.
 // 600 ms is long enough that a fast typist never triggers a pass mid-word.
@@ -127,6 +130,7 @@ let engine = null;
 let engineBroken = false;
 
 let enabled = readEnabled();
+let plainOn = readSwitch(PLAIN_KEY);
 
 // The settings that all devices share (model/spellsettings.js): the changed
 // rules and "My words". This module does not read the store; main.js hands
@@ -149,7 +153,7 @@ export function isMyWord(word) {
 // enough: the load promise is shared, and its completion repaints once.
 let czechRequested = false;
 
-// Fires "change" on every flip of `enabled`. The state lives in this module,
+// Fires "change" on every flip of `enabled` or of `plainOn`. The state lives in this module,
 // so the notification does too: the statusbar and the settings panel both
 // render from it, and neither has to know which one flipped it.
 export const events = new EventTarget();
@@ -180,12 +184,40 @@ export function relintAll() {
 }
 
 function readEnabled() {
+  return readSwitch(STORAGE_KEY);
+}
+
+/** @param {string} key */
+function readSwitch(key) {
   try {
     // Default on: absent means "never toggled", not "off".
-    return localStorage.getItem(STORAGE_KEY) !== "off";
+    return localStorage.getItem(key) !== "off";
   } catch {
     return true;
   }
+}
+
+/** Whether a word that is Czech without diacritics gets its blue mark. */
+export function isPlainOn() {
+  return plainOn;
+}
+
+/**
+ * Turn the blue mark "Czech without diacritics" on or off on this device.
+ * Off, such a word gets no mark at all (mixed.js, judge). The commands
+ * "Add diacritics" do not read this: they still change such a word.
+ * @param {boolean} on
+ */
+export function setPlainOn(on) {
+  if (on === plainOn) return;
+  plainOn = on;
+  try {
+    localStorage.setItem(PLAIN_KEY, on ? "on" : "off");
+  } catch {
+    // Storage denied: the switch still works this session.
+  }
+  events.dispatchEvent(new Event("change"));
+  relintAll();
 }
 
 /** @returns {boolean} */
@@ -284,7 +316,7 @@ let workerConfigSent = "";
  * app start, before any note asked for a check.
  */
 async function sendWorkerConfig() {
-  const config = { rules: lintConfig(shared), words: [...myWords].sort() };
+  const config = { rules: lintConfig(shared), words: [...myWords].sort(), plain: plainOn };
   const text = JSON.stringify(config);
   if (text === workerConfigSent) return;
   await callWorker({ op: "config", ...config });
@@ -957,7 +989,7 @@ async function spellSource(view) {
         add(d);
         continue;
       }
-      const verdict = judge(word, langs, { ...ask, english: () => false });
+      const verdict = judge(word, langs, { ...ask, english: () => false }, plainOn);
       if (verdict === "typo") {
         const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
         const names = (d.actions ?? []).map((a) => a.name);
@@ -978,7 +1010,7 @@ async function spellSource(view) {
       if (langs.en && !english.has(word) && !isMyWord(word) && !(langs.cs && hunspell.isWord(word))) {
         english.set(word, await englishWord(harper, word, budget));
       }
-      const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
+      const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null }, plainOn);
       if (verdict === "ok" || verdict === "pending") continue;
       if (verdict === "typo") {
         const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];

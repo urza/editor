@@ -156,3 +156,13 @@ test("My words is asked before a checker whose answer is not known yet", () => {
   assert.equal(judge("vrtti", { cs: true, en: true }, pending), "ok");
   assert.equal(judge("other", { cs: true, en: true }, pending), "pending");
 });
+
+test("with the switch for Czech without diacritics off, such a word gets no mark", () => {
+  const langs = { cs: true, en: true };
+  assert.deepEqual(judge("tlacitko", langs, ask(), true), { plain: ["tlačítko"] });
+  // Off: accepted, and not red. A switch that hides blue marks must not
+  // turn the same words into typos.
+  assert.equal(judge("tlacitko", langs, ask(), false), "ok");
+  // A word with no Czech twin is still a typo.
+  assert.equal(judge("xqzt", langs, ask(), false), "typo");
+});

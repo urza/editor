@@ -25,9 +25,11 @@
  *           mine?: (w: string) => boolean }} ask
  *   `english` returns null while its answer is not known yet. `mine` says
  *   whether the word is in the user's own list ("My words").
+ * @param {boolean} [markPlain]  False when the device switch "Mark Czech
+ *   without diacritics" is off.
  * @returns {Verdict}
  */
-export function judge(word, langs, ask) {
+export function judge(word, langs, ask, markPlain = true) {
   // First, and whatever languages are on: the user declared this word
   // correct. This is the one place both checkers pass through, which is why
   // the list lives here and not in Harper's own dictionary: Harper is never
@@ -46,7 +48,11 @@ export function judge(word, langs, ask) {
   if (langs.cs) {
     const twins = ask.twins(word);
     if (twins === null) return "pending";
-    if (twins.length > 0) return { plain: twins };
+    // With the switch off the word is accepted, not left to fall through to
+    // "typo": a switch that hides blue marks must not paint the same words
+    // red. The twin search still runs, because it is what tells such a word
+    // from a real typo.
+    if (twins.length > 0) return markPlain ? { plain: twins } : "ok";
   }
   return "typo";
 }

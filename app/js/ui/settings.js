@@ -9,7 +9,7 @@
 // results.
 
 import { run } from "../commands/registry.js";
-import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
+import { events as spellEvents, isEnabled, isPlainOn, setPlainOn } from "../editor/spellcheck.js";
 import { activeLangs } from "../editor/mixed.js";
 import { modelFixesCzechParagraphs, setModelFixesCzechParagraphs } from "../editor/adddiacritics.js";
 import { hasDisk, isPersisted, storageEstimate } from "../model/capabilities.js";
@@ -386,6 +386,19 @@ const SECTIONS = [
         value: () => spellSummary(),
         button: "open",
         act: () => openSpellPage(),
+      },
+      // The app's own blue mark, not a Harper rule, so it is a switch here
+      // and not a row of the Spellcheck page (user decision, 2026-11-24).
+      {
+        type: "toggle",
+        key: "spell-plain",
+        label: "Mark Czech without diacritics",
+        hint: "A blue mark on words such as “dekuji”. This device only.",
+        more:
+          "The mark shows on a word that becomes a Czech word when you add diacritics. " +
+          "Off: such a word gets no mark.",
+        get: () => isPlainOn(),
+        set: () => setPlainOn(!isPlainOn()),
       },
       // The languages of the open note. Phone mode only (app.css): a PC has
       // the two buttons in the status bar, and the phone has no status bar.
