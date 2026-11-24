@@ -1,5 +1,5 @@
 // @ts-check
-// The app's own log, readable on a phone (Settings › Update › Log).
+// The app's own log, readable on a phone (Settings › App › Log).
 //
 // A phone has no console the user can open, so an error there was a dialog to
 // catch and a screenshot, and the reason behind it was gone. This keeps the
