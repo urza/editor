@@ -550,7 +550,36 @@ describe(
         const gridThPos = getComputedStyle(panel.querySelector('[data-key="device-grid"] tbody th')).position;
         const listRowsDisplay = getComputedStyle(panel.querySelector('[data-key="list-rows"]')).display;
         const sidebarNewDisplay = getComputedStyle(panel.querySelector('[data-key="sidebar-new"]')).display;
-        return { railDisplay, jumpDisplay, jumpLabels, scrolledTop, devicesCurrent, gridThPos, listRowsDisplay, sidebarNewDisplay };
+
+        // Verify zero horizontal overflow on the panel itself (including with
+        // a long sync status string and open Keys disclosure).
+        const statusVal = panel.querySelector('[data-key="sync-status"] .settings-value');
+        statusVal.textContent = "synced · last sync 11:28:15 PM · test: connected";
+        panel.querySelector('[data-key="security-keys"] details').open = true;
+        const pr = panel.getBoundingClientRect();
+        const offenders = [];
+        for (const el of panel.querySelectorAll("*")) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          const scroller = el.closest(".settings-jump, .settings-grid-wrap");
+          if (scroller && scroller !== el) continue;
+          if (r.right > pr.right + 0.5 || r.left < pr.left - 0.5) {
+            offenders.push(el.className || el.tagName);
+          }
+        }
+        return {
+          railDisplay,
+          jumpDisplay,
+          jumpLabels,
+          scrolledTop,
+          devicesCurrent,
+          gridThPos,
+          listRowsDisplay,
+          sidebarNewDisplay,
+          panelCW: panel.clientWidth,
+          panelSW: panel.scrollWidth,
+          offenders,
+        };
       })()`);
 
       assert.equal(phone.railDisplay, "none");
@@ -570,6 +599,8 @@ describe(
       assert.equal(phone.gridThPos, "sticky");
       assert.equal(phone.listRowsDisplay, "flex");
       assert.equal(phone.sidebarNewDisplay, "none");
+      assert.equal(phone.panelSW, phone.panelCW, "phone settings panel must not scroll horizontally");
+      assert.deepEqual(phone.offenders, [], "no non-scroller element may extend outside the phone settings panel");
     });
   },
 );
