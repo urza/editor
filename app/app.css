@@ -2159,6 +2159,107 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 
 .settings-input:focus { outline: 1px solid var(--st-caret); }
 
+/* ---- The Spellcheck page (ui/spellpage.js): a second view in the panel ---- */
+
+/* display:flex on the body would beat the browser's own [hidden] rule, and
+   the panel hides the body while the page is open (ui/settings.js, openSub). */
+.settings-body[hidden],
+.settings-sub[hidden] { display: none; }
+
+/* One column of the same width as the rows of Settings, so a rule row reads
+   like a settings row. No rail: the page has two sections. */
+.settings-sub {
+  max-width: calc(820px * var(--ui-scale));
+}
+.spell-page {
+  max-width: calc(600px * var(--ui-scale));
+  padding-left: 14px;
+}
+
+/* The base rule sizes .settings-input for the right column of a row. Here it
+   is a line of its own. */
+.spell-search {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.spell-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 0;
+}
+.spell-count {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--ui-sm);
+  color: var(--st-sidebar-label);
+}
+/* "N changed" is a filter button that reads as a link, in the link blue of
+   the notes. Pressed, it takes the "on" orange like a toggle. */
+.spell-changed-filter {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6699CC;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.spell-changed-filter[aria-pressed="true"] { color: var(--st-caret); }
+/* Not the orange: on this panel the orange means "on" and nothing else. */
+.spell-changed {
+  color: #6699CC;
+  font-size: var(--ui-sm);
+}
+
+.spell-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  border-top: 1px solid var(--st-sidebar-bg);
+  background: transparent;
+  color: var(--st-sidebar-label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.spell-group:hover:not(:disabled) { color: var(--st-sidebar-heading); }
+.spell-group[aria-expanded="true"] { color: var(--st-sidebar-heading); }
+/* Disabled while a filter holds the groups open; it must not look dead. */
+.spell-group:disabled { cursor: default; }
+.spell-group-caret {
+  flex: 0 0 1em;
+  font-size: var(--ui-sm);
+  color: var(--st-gutter-fg);
+}
+.spell-group-name { flex: 1; min-width: 0; }
+.spell-group-count {
+  font-size: var(--ui-sm);
+  color: var(--st-gutter-fg);
+  white-space: nowrap;
+}
+.spell-rules { padding-left: 20px; }
+.spell-rules > .settings-row:first-of-type { border-top: 0; }
+.spell-note {
+  margin: 0;
+  padding: 6px 0;
+  max-width: 66ch;
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  color: var(--st-gutter-fg);
+}
+/* A finger needs the height of a tap target on each row that opens, and on
+   the way back. */
+html.phone .spell-group { min-height: var(--tap); align-items: center; }
+html.phone #settings-back { min-height: var(--tap); }
+
 /* Phone rows are about 350px wide. Keep half of that for the label and its
    hint, or a medium-length value squeezes the hint into one word per line;
    a value that no longer fits wraps to its own line instead. An input always

@@ -112,7 +112,7 @@
  *                            nobody renamed. Optional, so no migration. It is
  *                            also the readable name of an encrypted doc whose
  *                            first line is ciphertext.
- * @property {'scratch' | 'file' | 'keyring'} [kind]  Absent means scratch (every v1
+ * @property {'scratch' | 'file' | 'keyring' | 'shared-settings'} [kind]  Absent means scratch (every v1
  *                            record). 'keyring' marks the one hidden record that
  *                            carries the device list (architecture.md §13.3);
  *                            the sidebar never shows it.

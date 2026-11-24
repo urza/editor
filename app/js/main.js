@@ -46,7 +46,7 @@ import { decodeInvite, encodeInvite, normalizeCode, PALETTE } from "./crypto/spa
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
-import { isEnabled, setEnabled } from "./editor/spellcheck.js";
+import { isEnabled, setEnabled, setShared } from "./editor/spellcheck.js";
 import { activeLangs, switchLang } from "./editor/mixed.js";
 import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
@@ -1798,6 +1798,13 @@ async function start() {
   const hadTabsBeforeStart = workspaces.current().tabs.length > 0;
 
   await store.start();
+
+  // The spellcheck settings that all devices share live in a hidden record
+  // (model/docs.js, SETTINGS_ID). The editor module gets them here, now and
+  // after each change: one made in this window, in another window, or on
+  // another device (a pull).
+  setShared(store.sharedSettings());
+  store.events.addEventListener("shared-settings", () => setShared(store.sharedSettings()));
 
   if (ownSpace && initialSpaceBoot && sync.isConfigured) {
     const initialBlankId = hadTabsBeforeStart ? null : store.activeId;

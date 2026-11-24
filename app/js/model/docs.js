@@ -76,7 +76,8 @@ import { needsReencrypt } from "../crypto/spaces.js";
 // (editor/lang.js explains why the two stay together).
 import { detectFromName, isLang } from "../editor/lang.js";
 import { on, post } from "./channel.js";
-import { isRecentExpired, stubTitle, TRASH_KEEP } from "./lifecycle.js";
+import { isRecentExpired, isSystemRecord, stubTitle, TRASH_KEEP } from "./lifecycle.js";
+import { readSettings } from "./spellsettings.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
@@ -111,6 +112,10 @@ export const DEFAULT_SPACE = "personal";
 // settings say: a device that misses the device list cannot read what the
 // others encrypt to it (§13.3). It is never in the modes map.
 export const KEYRING_SPACE = "keyring";
+// The hidden record of the settings that all devices share: the changed
+// spellcheck rules and "My words" (model/spellsettings.js). A fixed id for the
+// same reason as the keyring: every device must arrive at the same record.
+export const SETTINGS_ID = "shared-settings";
 const SAVE_DELAY = 300;
 // Slow poll for external edits. Window focus is the responsive trigger; this
 // only covers a window that stays focused while another program writes.
@@ -506,9 +511,10 @@ export function createDocStore({
   // only way the UI reaches records, so filtering here hides it everywhere.
   // Do not drop this filter to "simplify"; the sidebar would grow a row of raw
   // JSON and closing it would corrupt the keyring.
+  // The shared settings record (SETTINGS_ID) is hidden by the same filter.
   /** @param {BufferRecord} record */
   function isDocument(record) {
-    return record.kind !== "keyring";
+    return !isSystemRecord(record);
   }
 
   // This window's tabs, in tab order (architecture.md §14). A tab whose
@@ -660,7 +666,7 @@ export function createDocStore({
    * @param {BufferRecord} record
    */
   async function trash(record) {
-    if (record.sync?.space && record.kind !== "keyring") {
+    if (record.sync?.space && !isSystemRecord(record)) {
       record.originSpace = record.sync.space;
     }
     record.trashedAt ??= Date.now();
@@ -1127,25 +1133,67 @@ export function createDocStore({
   }
 
   /**
-   * Write a record the user never opens: the keyring today. It goes into the
-   * Map and into IndexedDB like any other, but nothing activates it and no
-   * debounce owns it, because no editor is ever attached to it.
+   * Write a record the user never opens: the keyring and the shared settings.
+   * It goes into the Map and into IndexedDB like any other, but nothing
+   * activates it and no debounce owns it, because no editor is ever attached
+   * to it.
    * @param {BufferRecord} record
    */
   async function putSystemRecord(record) {
     buffers.set(record.id, record);
     await persist({ ...record });
-    // One event for a write here and for a pull (architecture.md §13.3).
-    // The keyring follows it through main.js (setContent), for device names
-    // only: who reads a note comes from the space logs (§27).
-    if (record.kind === "keyring") emit("system", { id: record.id });
+    emitSystem(record);
     emit("change");
     return record;
+  }
+
+  /**
+   * One event for a write here, for a pull, and for a write in another
+   * window (architecture.md §13.3). The keyring follows "system" through
+   * main.js (setContent), for device names only: who reads a note comes from
+   * the space logs (§27). The settings have an event of their own, so a new
+   * word does not make every keyring listener run.
+   * @param {BufferRecord} record
+   */
+  function emitSystem(record) {
+    emit(record.kind === "keyring" ? "system" : "shared-settings", { id: record.id });
   }
 
   /** The hidden keyring record, or undefined before setup. */
   function keyringRecord() {
     return buffers.get(KEYRING_ID);
+  }
+
+  /**
+   * The settings that all devices share (model/spellsettings.js). Empty
+   * settings before the first change.
+   * @returns {import("./spellsettings.js").SpellSettings}
+   */
+  function sharedSettings() {
+    return readSettings(buffers.get(SETTINGS_ID)?.content);
+  }
+
+  /**
+   * Store new shared settings. Every window may call this: the record has no
+   * owner, like the keyring, and the other windows get it through persist().
+   * @param {import("./spellsettings.js").SpellSettings} settings
+   */
+  async function writeSharedSettings(settings) {
+    const previous = buffers.get(SETTINGS_ID);
+    const now = Date.now();
+    /** @type {BufferRecord} */
+    const record = {
+      id: SETTINGS_ID,
+      kind: "shared-settings",
+      createdAt: now,
+      ...previous,
+      content: JSON.stringify(settings),
+      updatedAt: now,
+    };
+    // Dirty when synced, so the other devices get the change. The "change"
+    // event of putSystemRecord arms the push (sync/client.js, start).
+    if (record.sync) record.sync = { ...record.sync, dirty: true };
+    await putSystemRecord(record);
   }
 
   /**
@@ -2883,7 +2931,7 @@ export function createDocStore({
    * @param {BufferRecord} record @returns {string}
    */
   function spaceOf(record) {
-    return record.sync?.space ?? (record.kind === "keyring" ? KEYRING_SPACE : DEFAULT_SPACE);
+    return record.sync?.space ?? (isSystemRecord(record) ? KEYRING_SPACE : DEFAULT_SPACE);
   }
 
   /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
@@ -3689,7 +3737,7 @@ export function createDocStore({
   function heldSpaces() {
     const held = new Set();
     for (const record of buffers.values()) {
-      if (record.sync && record.kind !== "keyring") held.add(spaceOf(record));
+      if (record.sync && !isSystemRecord(record)) held.add(spaceOf(record));
     }
     for (const stub of remotes.values()) held.add(stub.space);
     return held;
@@ -3706,7 +3754,7 @@ export function createDocStore({
       if (owner) await workspaces.dissolve(owner, { silent: true });
       for (const record of [...buffers.values()]) {
         // The keyring's space is received by every device, always.
-        if (!record.sync || record.kind === "keyring" || spaceOf(record) !== space) continue;
+        if (!record.sync || isSystemRecord(record) || spaceOf(record) !== space) continue;
         await trashNote(record.id);
       }
       await forgetRemotes(space);
@@ -4111,7 +4159,7 @@ export function createDocStore({
    */
   function idsInSpace(space) {
     return [...buffers.values()]
-      .filter((r) => r.sync && !r.sync.tombstone && !r.trashedAt && r.kind !== "keyring" && spaceOf(r) === space)
+      .filter((r) => r.sync && !r.sync.tombstone && !r.trashedAt && !isSystemRecord(r) && spaceOf(r) === space)
       .map((r) => r.id);
   }
 
@@ -4637,9 +4685,9 @@ export function createDocStore({
     if ((previous?.spellOff ?? []).join() !== (record.spellOff ?? []).join()) {
       emit("spell", { id });
     }
-    if (record.kind === "keyring") {
+    if (isSystemRecord(record)) {
       plain.delete(id);
-      emit("system", { id });
+      emitSystem(record);
       emit("change");
       return;
     }
@@ -4829,6 +4877,8 @@ export function createDocStore({
     clearClosedAt,
     putSystemRecord,
     keyringRecord,
+    sharedSettings,
+    writeSharedSettings,
     load,
     start,
     create,

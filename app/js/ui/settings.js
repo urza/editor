@@ -19,6 +19,8 @@ import { sidebarNewButtonShown } from "./newbutton.js";
 import { listRowsLong } from "./sidebar.js";
 import { phoneMode, watchBack } from "./shell.js";
 import { SYNC_LABEL } from "./statusbar.js";
+import { buildSpellPage } from "./spellpage.js";
+import { changedCount, wordList } from "../model/spellsettings.js";
 
 /**
  * The keyring the Security and Devices sections report on, handed in by mountSettings.
@@ -46,6 +48,24 @@ let store = null;
 
 /** Result of the last "Test connection" click, shown on the Sync status row. */
 let testResult = "";
+
+/**
+ * Opens the Spellcheck page inside the panel. Set by mountSettings: the rows
+ * below are declared before the panel exists.
+ * @type {() => void}
+ */
+let openSpellPage = () => {};
+
+/** The right-hand text of the row that opens the Spellcheck page. */
+function spellSummary() {
+  if (!store) return "";
+  const settings = store.sharedSettings();
+  const rules = changedCount(settings);
+  const words = wordList(settings).length;
+  // No "823 rules" here on purpose: the total comes from Harper, and this row
+  // must not load a 15 MB wasm file each time Settings opens.
+  return `${rules} ${rules === 1 ? "rule" : "rules"} changed. ${words} ${words === 1 ? "word" : "words"}.`;
+}
 
 /**
  * One action button on an `action` row. `actions` lets a row carry two related
@@ -352,6 +372,20 @@ const SECTIONS = [
           "red for typos, blue for missing Czech diacritics and style hints.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
+      },
+      // The 823 rules of the English checker and the user's own words have a
+      // page of their own (ui/spellpage.js), so Settings stays one screen.
+      {
+        type: "action",
+        key: "spell-page",
+        label: "Spellcheck rules and words",
+        hint: "Rules of the English checker, and your own words.",
+        more:
+          "Turn single rules on or off, and keep a list of words that neither language marks. " +
+          "With sync set up, these settings go to all your devices.",
+        value: () => spellSummary(),
+        button: "open",
+        act: () => openSpellPage(),
       },
       // The languages of the open note. Phone mode only (app.css): a PC has
       // the two buttons in the status bar, and the phone has no status bar.
@@ -1460,6 +1494,15 @@ export function mountSettings(deps = {}) {
   const headRow = document.createElement("div");
   headRow.className = "settings-page settings-head-row";
   head.appendChild(headRow);
+  // Shown only while a second view is open (openSub below).
+  const backButton = document.createElement("button");
+  backButton.className = "settings-button";
+  backButton.id = "settings-back";
+  backButton.type = "button";
+  backButton.textContent = "← Settings";
+  backButton.hidden = true;
+  backButton.addEventListener("click", () => closeSub());
+  headRow.appendChild(backButton);
   const title = document.createElement("h2");
   title.className = "settings-title";
   title.textContent = "Settings";
@@ -1491,6 +1534,12 @@ export function mountSettings(deps = {}) {
   const main = document.createElement("div");
   main.className = "settings-main";
   body.append(rail, main);
+  // A second view takes the place of the body: the Spellcheck page. It lives
+  // inside this panel and not in a panel of its own, so the head, the ×,
+  // Escape, Back and the focus rules below stay in one place.
+  const sub = document.createElement("div");
+  sub.className = "settings-page settings-sub";
+  sub.hidden = true;
 
   /** @type {(() => void)[]} */
   const painters = [];
@@ -1648,7 +1697,7 @@ export function mountSettings(deps = {}) {
 
     entries.push({ section, element, item, jumpItem, gap, status });
   }
-  panel.replaceChildren(head, body);
+  panel.replaceChildren(head, body, sub);
 
   // The statusbar spellcheck button stays clickable next to an open panel on a
   // PC, so the panel repaints whenever that state flips, whoever flipped it.
@@ -1689,6 +1738,53 @@ export function mountSettings(deps = {}) {
   // leave the app (watchBack in ui/shell.js).
   let stopBack = () => {};
 
+  /**
+   * The second view that is open, or null.
+   * @type {{ title: string, element: HTMLElement, shown?: () => void, hidden?: () => void,
+   *          escape?: () => boolean } | null}
+   */
+  let subPage = null;
+  // A layer of its own for Back on a phone: the first Back returns to the
+  // rows of Settings, the second closes the panel.
+  let stopSubBack = () => {};
+
+  /** @param {NonNullable<typeof subPage>} page */
+  function openSub(page) {
+    if (subPage) closeSub();
+    subPage = page;
+    sub.replaceChildren(page.element);
+    body.hidden = true;
+    sub.hidden = false;
+    backButton.hidden = false;
+    title.textContent = page.title;
+    panel.scrollTop = 0;
+    stopSubBack = watchBack(closeSub);
+    page.shown?.();
+  }
+
+  /** @param {boolean} [refocus] False when the whole panel closes next. */
+  function closeSub(refocus = true) {
+    if (!subPage) return;
+    const page = subPage;
+    subPage = null;
+    stopSubBack();
+    stopSubBack = () => {};
+    sub.hidden = true;
+    body.hidden = false;
+    backButton.hidden = true;
+    title.textContent = "Settings";
+    page.hidden?.();
+    // The row that opened the page shows counts the page may have changed.
+    refresh();
+    // The focused control went away with the page; Escape needs a target.
+    if (refocus) panel.focus();
+  }
+
+  if (store) {
+    const spellPage = buildSpellPage({ store });
+    openSpellPage = () => openSub(spellPage);
+  }
+
   /** @param {KeyboardEvent} event */
   function onKeydown(event) {
     if (event.key !== "Escape") return;
@@ -1699,7 +1795,11 @@ export function mountSettings(deps = {}) {
     // Capture phase: CodeMirror binds Escape too, and this way the panel wins
     // wherever the focus happens to be.
     event.preventDefault();
-    close();
+    // One step at a time, like Back on a phone. The page can use the key
+    // first, for a step of its own (a filled search field).
+    if (subPage?.escape?.()) return;
+    if (subPage) closeSub();
+    else close();
   }
 
   function open() {
@@ -1714,6 +1814,9 @@ export function mountSettings(deps = {}) {
 
   function close() {
     if (panel.hidden) return;
+    // The panel opens on its rows the next time, never on a page of last week.
+    // No refocus: the lines below decide where the focus goes.
+    closeSub(false);
     // Read before hiding: setting panel.hidden = true drops focus from inside
     // the panel onto document.body.
     const active = document.activeElement;

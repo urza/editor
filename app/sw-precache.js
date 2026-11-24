@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "f1e530e21af5",
+  "version": "d02916455de3",
   "spellVersion": "6ebf48c2260d",
   "app": [
     "./",
@@ -27,6 +27,7 @@ self.__PRECACHE = {
     "./js/editor/mixed.js",
     "./js/editor/spellcheck.js",
     "./js/editor/spellcheck.worker.js",
+    "./js/editor/spellrules.js",
     "./js/editor/textlang.js",
     "./js/editor/transform.js",
     "./js/main.js",
@@ -40,6 +41,7 @@ self.__PRECACHE = {
     "./js/model/lifecycle.js",
     "./js/model/log.js",
     "./js/model/preview.js",
+    "./js/model/spellsettings.js",
     "./js/model/workspace.js",
     "./js/storage/fsa.js",
     "./js/storage/idb.js",
@@ -57,6 +59,7 @@ self.__PRECACHE = {
     "./js/ui/shell.js",
     "./js/ui/shortcuts.js",
     "./js/ui/sidebar.js",
+    "./js/ui/spellpage.js",
     "./js/ui/statusbar.js",
     "./js/ui/statustext.js",
     "./js/ui/textsize.js",

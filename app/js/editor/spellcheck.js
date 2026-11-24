@@ -36,6 +36,8 @@ import { plainLang } from "./lang.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
 import { WORD } from "./diacritics.js";
 import { segments } from "./textlang.js";
+import { emptySettings, lintConfig } from "../model/spellsettings.js";
+import { buildCatalog } from "./spellrules.js";
 
 // Resolved against the document, which is index.html, not against this
 // module: Harper fetches the binary with a plain fetch(), which resolves
@@ -126,6 +128,12 @@ let engineBroken = false;
 
 let enabled = readEnabled();
 
+// The settings that all devices share (model/spellsettings.js): the changed
+// rules and "My words". This module does not read the store; main.js hands
+// the settings in at the start and after each change (setShared), so the
+// editor layer stays free of the model, as with `noteSpellOff`.
+let shared = emptySettings();
+
 // Whether this module already asked hunspell.js to load. One request is
 // enough: the load promise is shared, and its completion repaints once.
 let czechRequested = false;
@@ -210,6 +218,9 @@ function loadHarper() {
         const binary = harper.createBinaryModuleFromUrl(WASM_URL, WASM_FLAVOR);
         const local = new harper.LocalLinter({ binary });
         await local.setup();
+        // Before the first pass: a rule the user turned off must not flash
+        // its marks once at each start.
+        await local.setLintConfig(lintConfig(shared));
         engine = local;
         // The pass that started this load returned []. Nothing else will ask
         // for a new one until the user types, so ask on its behalf.
@@ -225,6 +236,71 @@ function loadHarper() {
       });
   }
   return loading;
+}
+
+/**
+ * Take new shared settings and repaint the open editors.
+ *
+ * Harper's setLintConfig replaces its whole map on each call, and a rule that
+ * is missing from the map runs at its default. So the call always gets the
+ * complete list of changed rules, never the one rule that was just switched:
+ * that call would silently reset every other rule.
+ * @param {import("../model/spellsettings.js").SpellSettings} settings
+ */
+export function setShared(settings) {
+  const rulesChanged = JSON.stringify(lintConfig(settings)) !== JSON.stringify(lintConfig(shared));
+  shared = settings;
+  // With the worker, the pass that relintAll starts sends the settings ahead
+  // of its text (sendWorkerConfig). Without an engine yet, loadHarper applies
+  // the rules when it arrives.
+  if (useWorker() || !rulesChanged || !engine) return relintAll();
+  engine.setLintConfig(lintConfig(shared)).then(relintAll, (/** @type {unknown} */ err) => {
+    console.error("[vrtti] Harper refused the rule settings", err);
+  });
+}
+
+/** The settings as the worker last got them, as JSON. */
+let workerConfigSent = "";
+
+/**
+ * Give the worker the current settings, when they differ from what it has.
+ * Called ahead of each request whose answer depends on them, and awaited, so
+ * the worker never lints a text with the settings of a moment ago. Sent on
+ * demand and not from setShared: that would start the worker thread at each
+ * app start, before any note asked for a check.
+ */
+async function sendWorkerConfig() {
+  const config = { rules: lintConfig(shared) };
+  const text = JSON.stringify(config);
+  if (text === workerConfigSent) return;
+  await callWorker({ op: "config", ...config });
+  workerConfigSent = text;
+}
+
+/** @typedef {import("./spellrules.js").CatalogGroup} CatalogGroup */
+
+/** @type {Promise<CatalogGroup[] | null> | null} */
+let catalog = null;
+
+/**
+ * Harper's rules in its own groups, for the Spellcheck page (spellrules.js).
+ * Loads the engine when needed, also with spellcheck off: the page must work
+ * then too.
+ * @returns {Promise<CatalogGroup[] | null>} null when Harper failed to load.
+ */
+export function ruleCatalog() {
+  catalog ??= (
+    useWorker()
+      ? callWorker({ op: "catalog" })
+      : loadHarper().then((harper) => (harper ? buildCatalog(harper) : null))
+  )
+    .catch(() => null)
+    .then((groups) => {
+      // A failed load is not kept: the page asks again when it next opens.
+      if (!groups) catalog = null;
+      return groups;
+    });
+  return catalog;
 }
 
 /**
@@ -687,6 +763,14 @@ async function spellSource(view) {
   const langs = activeLangs(view.state.facet(noteSpellOff)?.());
   if (!langs.cs && !langs.en) return [];
 
+  if (useWorker()) {
+    try {
+      // Before the document is read: the await gives the user time to type.
+      await sendWorkerConfig();
+    } catch {
+      if (useWorker()) return [];
+    }
+  }
   if (useWorker()) {
     const startDoc = view.state.doc;
     const reqId = ++nextWorkerLintReqId;

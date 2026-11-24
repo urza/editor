@@ -19,6 +19,7 @@ import { createHunspellFromStrings } from "../../vendor/hunspell/dist/Hunspell.j
 import { WORD, twins } from "./diacritics.js";
 import { judge, mergeSuggestions } from "./mixed.js";
 import { segments } from "./textlang.js";
+import { buildCatalog } from "./spellrules.js";
 
 const HARPER_WASM_URL = new URL(
   "../../vendor/harper/harper_wasm_slim_bg.wasm",
@@ -83,6 +84,15 @@ let idleScheduled = false;
 let latestLintReqId = 0;
 
 /**
+ * The spellcheck settings that all devices share, as the main thread sent
+ * them (op "config"; editor/spellcheck.js, sendWorkerConfig). `rules` is the
+ * complete map of the Harper rules the user changed: setLintConfig replaces
+ * Harper's whole map on each call, and a missing rule runs at its default.
+ * @type {{ rules: Record<string, boolean> }}
+ */
+let config = { rules: {} };
+
+/**
  * @typedef {{ kind: number, text: string, name: string }} SerializedAction
  * @typedef {{ from: number, to: number, severity: "warning" | "info", message: string, source: string, actions: SerializedAction[] }} SerializedDiag
  */
@@ -99,6 +109,9 @@ function loadHarper() {
       const binary = harperMod.createBinaryModuleFromUrl(HARPER_WASM_URL, "slim");
       const local = new harperMod.LocalLinter({ binary });
       await local.setup();
+      // Before the first pass: a rule the user turned off must not flash its
+      // marks once at each start.
+      await local.setLintConfig(config.rules);
       harperEngine = local;
       return local;
     })().catch((err) => {
@@ -587,6 +600,15 @@ self.addEventListener("message", async (event) => {
       } else {
         result = await lintDocument(msg.text, msg.langs, msg.reqId);
       }
+    } else if (op === "config") {
+      config = { rules: msg.rules ?? {} };
+      if (harperEngine) await harperEngine.setLintConfig(config.rules);
+      // Every cached paragraph was linted with the old settings.
+      paraCache.clear();
+      result = true;
+    } else if (op === "catalog") {
+      const h = await loadHarper();
+      result = h ? await buildCatalog(h) : null;
     } else if (op === "harperLint") {
       result = await rawHarperLint(msg.text, msg.options);
     } else if (op === "isLikelyEnglish") {
