@@ -52,11 +52,25 @@ function makeButton(className, text) {
 }
 
 /**
- * @param {{ store: ReturnType<import("../model/docs.js").createDocStore> }} deps
+ * @param {{ store: ReturnType<import("../model/docs.js").createDocStore>,
+ *           sync: ReturnType<import("../sync/client.js").createSyncClient> | null }} deps
  * @returns {{ title: string, element: HTMLElement, shown: () => void, hidden: () => void, escape: () => boolean }}
  */
-export function buildSpellPage({ store }) {
+export function buildSpellPage({ store, sync }) {
   const element = make("div", "spell-page");
+
+  // Where these settings live. They are the only settings of the app that
+  // travel to the other devices (architecture.md §29), so the page says it,
+  // and it says so too when they cannot travel.
+  const syncLine = make("p", "spell-note spell-sync");
+  element.appendChild(syncLine);
+
+  function paintSync() {
+    if (!sync?.isConfigured) syncLine.textContent = "These settings stay on this device.";
+    else if (sync.settingsRefused) {
+      syncLine.textContent = "The sync server is older than this app, so these settings stay on this device.";
+    } else syncLine.textContent = "These settings sync to all your devices.";
+  }
 
   // ---- Rules ---------------------------------------------------------------
   const rulesSection = make("section", "settings-section");
@@ -356,9 +370,14 @@ export function buildSpellPage({ store }) {
 
   function paint() {
     if (!visible) return;
+    paintSync();
     paintRules();
     paintWords();
   }
+  // The answer of an older server arrives with a sync round.
+  sync?.events.addEventListener("status", () => {
+    if (visible) paintSync();
+  });
 
   store.events.addEventListener("shared-settings", paint);
 

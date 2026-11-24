@@ -260,20 +260,25 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
         return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
     }
 
-    // The keyring space skips the plain-text check and every registered device writes it,
-    // removed devices too. So it holds exactly one document, the keyring record, and never
-    // a tombstone: any other document there would reach each device as a readable note.
-    if ((id == SpaceLog.KeyringDoc) != (space == SpaceLog.Keyring))
+    // Every registered device reads and writes the keyring space, removed devices too. So
+    // it holds exactly two documents under fixed ids, the keyring record and the shared
+    // settings, and never a tombstone: any other document there would reach each device
+    // as a note.
+    var reserved = id is SpaceLog.KeyringDoc or SpaceLog.SettingsDoc;
+    if (reserved != (space == SpaceLog.Keyring))
     {
-        return Results.BadRequest(new ErrorResponse("only the keyring document lives in keyring"));
+        return Results.BadRequest(new ErrorResponse("only the keyring and the shared settings live in keyring"));
     }
 
     if (space == SpaceLog.Keyring && request.Kind != "text")
     {
-        return Results.BadRequest(new ErrorResponse("the keyring document cannot be removed"));
+        return Results.BadRequest(new ErrorResponse("a document of the keyring space cannot be removed"));
     }
 
-    if (space != SpaceLog.Keyring && Sealed.Check(request.Kind, request.Content, request.Meta) is { } refused)
+    // The keyring record is the one document that skips the plain-text check: it holds
+    // public keys and device names. The shared settings hold the user's own words, which
+    // come from the notes, so they are an age file like a note.
+    if (id != SpaceLog.KeyringDoc && Sealed.Check(request.Kind, request.Content, request.Meta) is { } refused)
     {
         return Results.BadRequest(new ErrorResponse(refused));
     }

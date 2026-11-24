@@ -592,7 +592,9 @@ dismisses it. No modal library, no routing.
   place for them, as the status bar dropped both),
   About (vendored licenses, the Twemoji CC-BY attribution).
 - Storage: localStorage per device for now. A `settings` IndexedDB store (and
-  later sync for the sharable subset) arrives with the sync phase.
+  later sync for the sharable subset) arrives with the sync phase. The first
+  synced settings are the spellcheck rules and "My words" (§29); they live in
+  a hidden record, not in either of these stores.
 - Buttons that need instant reach (new buffer, save indicator, update) stay
   outside the panel; the panel is for the rest, so chrome stays sparse.
 
@@ -948,7 +950,8 @@ better than Sublime's. Czech comes later via Hunspell (section 8 item 4).
 - Toggle: command `spell.toggle`, persisted per device, default on, plus a
   small statusbar indicator button. Runs on the main thread with a lint
   debounce; a worker only if typing measurably lags.
-- Custom dictionary ("add word") comes later, with sync in mind.
+- Custom dictionary ("add word"): shipped 2026-11-24 as "My words", with the
+  rule switches and their sync. See §29.
 
 ### Czech via Hunspell, per paragraph (agreed 2026-09-08, shipped)
 
@@ -3770,3 +3773,163 @@ from `userTrashed` (`tombstone === "deleted" && trashedAt`):
   record; `ui/desktop.js` guards `reopenAtLaunch()` with `!record.space` so a
   Space Window is never dissolved for starting with blank tabs. Losing a space
   in `loseSpace()` dissolves and closes its Space Window.
+
+## 29. Spellcheck settings: rule switches, My words, and their sync (agreed 2026-11-24)
+
+Harper ran with no settings, so its 814 default rules were all on and a blue
+mark such as "This sentence is 51 words long." could not be dismissed. A
+correct word that no dictionary has ("vrtti") stayed red. This section adds a
+switch for each Harper rule, a word list of the user ("My words"), quick
+buttons on a mark, one device switch, and the sync of the first two to all
+devices.
+
+### What the user sees
+
+- **Settings › Editor › Spellcheck rules and words** opens the Spellcheck
+  page, a second view inside the Settings panel (`ui/settings.js` `openSub`,
+  `ui/spellpage.js`). "← Settings", Escape and Back on a phone go back to the
+  rows first.
+- **Rules**: a search over names and descriptions, Harper's 15 groups, a
+  switch for each of the 823 rules, "823 rules · N changed" (a click shows
+  only the changed rules) and "Reset to defaults" (the rules only). The
+  groups, names, descriptions and defaults come from harper.js at run time
+  (`ruleCatalog()` in `editor/spellcheck.js`, built by `editor/spellrules.js`
+  in the worker, op `catalog`), so the app keeps no list of rules. A rule
+  shows as its identifier with spaces (`displayName`).
+- **My words**: one field filters and adds, the words stand in columns, a ×
+  removes one, and "Edit as text" takes a paste of many words (split at
+  spaces, commas and line ends). A word covers its forms with capital letters
+  and no other ending.
+- **Quick buttons** in the three places where a mark shows its fixes (hover
+  tooltip, Ctrl+. menu, phone box): "Add to my words" on a red mark and on
+  the blue "Czech without diacritics" mark, and `Turn off "<Rule>"` on a blue
+  mark of a Harper rule. The status bar shows a notice; there is no Undo.
+- **Settings › Editor › Mark Czech without diacritics**: a device switch
+  (`vrtti.spellcheck.plain` in localStorage). Off, such a word is accepted and
+  gets no mark; it does not turn red. It is the app's own mark, not a Harper
+  rule, so it is not on the Spellcheck page and does not sync.
+
+### The record
+
+The rule switches and the words live in one hidden buffer record with the
+fixed id `shared-settings` and the kind `shared-settings`, written through
+`putSystemRecord()` like the keyring record and hidden by the same test
+(`isSystemRecord()` in `model/lifecycle.js`). A record, not localStorage,
+because it syncs on the existing path and reaches the other windows on the
+existing `buffer` message. It is plain JSON on the device, like every setting.
+
+```
+{ v: 1,
+  rules: { LongSentences: { on: false, at: 1795556131000 } },
+  words: { vrtti: { word: "vrtti", at: 1795556131000 } } }
+```
+
+- Each entry carries the time of its last change (`at`).
+- `on: null` means "Harper's default". A switch writes `null` when the new
+  state equals the default, so "N changed" counts the entries that are not
+  `null`.
+- A word is keyed by its form in small letters (`wordKey`). A removed word
+  keeps its entry with `gone: true`.
+- Nothing is ever deleted. Without the entry of a removed word or a reset
+  rule, the older copy of another device would bring it back in a merge. An
+  entry is about 50 bytes.
+
+`model/spellsettings.js` holds all of this as pure functions, so
+`tests/spellsettings.test.mjs` runs it in Node.
+
+### How the settings reach the checkers
+
+`main.js` hands the settings to `editor/spellcheck.js` (`setShared`) at the
+start and on each `shared-settings` event of the store: a change in this
+window, in another window, or from a pull.
+
+The checkers run in `editor/spellcheck.worker.js`, and on the main thread
+only where a browser has no workers. The main thread sends the settings to
+the worker ahead of each request whose answer depends on them
+(`sendWorkerConfig`, op `config`): the map of changed rules, the keys of the
+words, and the device switch for Czech without diacritics. It sends them on
+demand and awaits the answer, so the worker never lints a text with the
+settings of a moment ago, and the worker thread does not start at each app
+start. The worker applies the rules to Harper, keeps the words and the
+switch for `judge()`, and drops its cached paragraphs. The fallback path on
+the main thread does the same steps in place.
+
+- **Rules.** Harper's `setLintConfig` replaces its whole map on each call and
+  runs a missing rule at its default. So the call always gets the complete
+  map of changed rules (`lintConfig`), after the engine loads and after each
+  change.
+- **Words.** The app filters the marks itself. `judge()` (`editor/mixed.js`)
+  answers "ok" first for a word of the list, and a red Harper mark on one
+  word of the list is dropped. Harper's own dictionary (`importWords`) is not
+  used: it covers the rule SpellCheck only, it does nothing in a note with
+  English off, it has no removal of one word, and each window would have to
+  load the list into its own engine. The price: a word of the list is never
+  offered as a fix for a typo.
+- **The rule of a mark.** A Harper lint does not name its rule. The pass
+  calls `organizedLints()`, which returns the same lints by rule, and each
+  mark that the worker returns carries `rule` for the "Turn off" button.
+- **The quick button** is the last entry of `diagnostic.actions` with
+  `quick: true`. The main thread adds it (`withQuick`), because an action is
+  a function and reaches into the app. The three places read that list as
+  before; the limit of five fixes and the text "No suggestions" count the
+  fixes alone.
+
+### Sync to all devices
+
+The settings belong to the user, not to a space, and the app has no user
+account. One thing already reaches every registered device, whatever its
+spaces: the keyring space (§13.3, §27). The settings record is the second
+document there.
+
+- **Server.** `POST /api/docs/{id}/revisions` accepts two ids in the space
+  `keyring`: `keyring` and `shared-settings` (`SpaceLog.SettingsDoc`). The
+  keyring record still skips the plain-text check. The settings do not: they
+  must be an armored age file, because the words come from the notes. No new
+  table, endpoint or environment variable.
+- **Readers.** `pushPayload()` encrypts the JSON with `codec.encode()` for
+  the known devices (`knownRecipients()` in `sync/client.js`, the recipients
+  of `knownSet()`): the devices of the grid in Settings › Devices. The
+  recovery keys are in every recipient set of `keyring.recipientsFor()`, so
+  they read the settings too.
+- **Merge.** `applyRemoteSettings()` handles a pulled row and the `current`
+  of a 409 alike: decrypt, `mergeSettings(local, remote)` (the newer entry
+  wins for each rule and each word), store. The record is dirty when the
+  merged text differs from the remote merged alone, as with the keyring
+  union. There is never a conflict copy. The times are the clocks of the
+  devices, so a device with a wrong clock can win by mistake (accepted).
+- **A new device.** The list of readers travels inside the encrypted text
+  (`readers`, the sorted recipients), because an age file hides who can open
+  it. A device keeps the list of the server's current revision in
+  `sync.readers`: the list of the revision it pulled last, or of its own last
+  push. Before each push round `refreshSharedSettings()` marks the record
+  dirty when a known device is missing from that list, so the next push
+  encrypts for it too. Without this a new device could not read the settings
+  until the user next changed a rule or a word. The test is "is a subset",
+  not "is equal": a device that knows fewer devices than the sender must not
+  push a copy that leaves the others out. A join costs one revision (measured
+  in `tests/e2e/spellcheck-sync-e2e.test.mjs`).
+- **A revision this device cannot read** (a locked device, or a device the
+  sender did not know yet) is kept in `record.unread`, because the pull
+  position moves past it. It merges after the unlock or at the next round.
+  While it is kept, the device pushes nothing for this record (`pushable()`
+  in `sync/client.js`): a push would go on top of a revision whose entries
+  it does not have, and a new device in the middle of its join would push an
+  empty copy that only it can read. Its own changes stay dirty and go out
+  with the merge, as one revision.
+- **An older client** drops the second document of the keyring space (its
+  `applyRemote` accepts only the keyring id there). **An older server**
+  answers 400 with the sentence "only the keyring document lives in keyring";
+  the client then stops pushing the settings until the next start of the app
+  (`settingsRefused`), and the Spellcheck page says that the settings stay on
+  the device. Without the stop, every round would fail and the status bar
+  would read "sync failed". Any other 400 is an error like every other.
+- **Limits.** A device that was removed from every space still receives the
+  settings: the server cannot remove a device. It gets the rule switches and
+  the words, and no note. The server keeps every revision of the settings; a
+  revision is a few kB.
+
+### Not built
+
+A button that ignores one single mark (Harper's `ignoreLint`), a choice of
+the English dialect (Harper stays American), the words of the list as fixes
+for a typo, and the sync of any other setting.

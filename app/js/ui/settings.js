@@ -1794,7 +1794,7 @@ export function mountSettings(deps = {}) {
   }
 
   if (store) {
-    const spellPage = buildSpellPage({ store });
+    const spellPage = buildSpellPage({ store, sync });
     openSpellPage = () => openSub(spellPage);
   }
 

@@ -131,6 +131,7 @@ async function start() {
       defaultSpace: () => (sync ? sync.defaultSpace() : null),
       modeOf: (space) => (sync ? sync.modeOf(space) : undefined),
       recipients: (space) => (sync ? sync.recipients(space) : []),
+      knownRecipients: () => (sync ? sync.knownRecipients() : []),
       logSeq: (space) => (sync ? sync.logSeq(space) : 0),
     },
     workspaces,
@@ -1824,6 +1825,12 @@ async function start() {
   // another device (a pull).
   setShared(store.sharedSettings());
   store.events.addEventListener("shared-settings", () => setShared(store.sharedSettings()));
+  // A locked device keeps a revision of the settings it could not read
+  // (model/docs.js, applyRemoteSettings). The unlock is the moment to merge
+  // it; a sync round does the same, but it can be a minute away.
+  keyring.addEventListener("change", () => {
+    if (keyring.isUnlocked) void store.refreshSharedSettings();
+  });
 
   if (ownSpace && initialSpaceBoot && sync.isConfigured) {
     const initialBlankId = hadTabsBeforeStart ? null : store.activeId;

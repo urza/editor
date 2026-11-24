@@ -62,6 +62,9 @@
  * @property {string} [space]  The server space the doc lives in (architecture.md
  *                           §25, §27). A move changes it. Absent only before
  *                           the v6 backfill ran.
+ * @property {string} [readers]  Only on the shared settings record: the
+ *                           devices that can open the server's current
+ *                           revision (model/docs.js, refreshSharedSettings).
  * @property {true} [rewrap]  The only change waiting for a push is a new
  *                           encryption for the current members, which every
  *                           member makes on its own. A 409 on such a push
@@ -118,6 +121,10 @@
  *                            the sidebar never shows it.
  * @property {FileLink} [file]  Present exactly when kind is 'file'.
  * @property {SyncState} [sync]  Present exactly when the doc has a server target.
+ * @property {string} [unread]  Only on the shared settings record: a revision
+ *                           from the server that this device could not
+ *                           decrypt yet, kept until it can (model/docs.js,
+ *                           applyRemoteSettings).
  * @property {EncMeta} [enc]  Present exactly when `content` is age ciphertext.
  * @property {string} [lang]  Language mode id from js/editor/lang.js ("markdown",
  *                            "json", …). Absent means nothing has decided one yet,

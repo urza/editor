@@ -24,6 +24,14 @@ public static partial class SpaceLog
     /// </summary>
     public const string KeyringDoc = "keyring";
 
+    /// <summary>
+    /// The second document of the keyring space: the settings that all devices of the
+    /// user share (SETTINGS_ID in app/js/model/docs.js, architecture.md section 29). It
+    /// is in this space because each registered device receives it, a device with no
+    /// space too. Unlike the keyring record, it is an age file.
+    /// </summary>
+    public const string SettingsDoc = "shared-settings";
+
     public const string BadSpaceName = "space must be 1-32 letters, digits, - or _";
 
     // A space name goes into URLs, settings keys and the sidebar, so it stays a plain

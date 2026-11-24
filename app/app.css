@@ -2247,6 +2247,9 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 }
 .spell-rules { padding-left: 20px; }
 .spell-rules > .settings-row:first-of-type { border-top: 0; }
+/* The first line of the page: whether these settings sync. Two classes, so
+   it wins over the padding of .spell-note below. */
+.spell-note.spell-sync { padding: 12px 0 0; }
 .spell-note {
   margin: 0;
   padding: 6px 0;
