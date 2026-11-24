@@ -43,10 +43,13 @@ import { marks } from "./markdown.js";
 import { noteSpellOff, relintAll, spellcheck } from "./spellcheck.js";
 import { joinLines, lowerCase, upperCase } from "./transform.js";
 import {
+  PLAIN_SIZE_LIMIT,
+  docHasGiantNonBlankBlock,
   extensionForLang,
   langCompartment,
   langForRecord,
   pasteDominates,
+  shouldAutoPlain,
   sniff,
 } from "./lang.js";
 
@@ -224,9 +227,22 @@ const wrapCompartment = new Compartment();
 const wrapExtension = () => (wordWrap ? EditorView.lineWrapping : []);
 
 /**
+ * Stop at the first non-whitespace character instead of flattening `doc.toString()`.
+ * @param {import("@codemirror/state").Text} doc
+ */
+function isBlankDoc(doc) {
+  if (doc.length === 0) return true;
+  const iter = doc.iterLines();
+  while (!iter.next().done) {
+    if (/\S/.test(iter.value)) return false;
+  }
+  return true;
+}
+
+/**
  * @param {string} lang Language id for the whole document (editor/lang.js).
- * @param {(content: string) => void} [onDocChanged]
- * @param {(content: string) => void} [onDominantPaste] Called after a paste
+ * @param {(content: any) => void} [onDocChanged]
+ * @param {(doc: import("@codemirror/state").Text) => void} [onDominantPaste] Called after a paste
  *   large enough to redefine what the buffer is. See pasteDominates.
  * @param {() => readonly string[] | undefined} [spellOff] See createEditorState.
  */
@@ -345,9 +361,9 @@ function baseExtensions(lang, onDocChanged, onDominantPaste, spellOff) {
       }
       if (!pasted) return;
       const before = update.startState.doc;
-      const blankBefore = before.length === 0 || !/\S/.test(before.toString());
+      const blankBefore = isBlankDoc(before);
       if (!pasteDominates(inserted, update.state.doc.length, blankBefore)) return;
-      onDominantPaste(update.state.doc.toString());
+      onDominantPaste(update.state.doc);
     }),
   ];
 }
@@ -451,19 +467,68 @@ export function mountEditor(host, store) {
   }
 
   /**
+   * Buffers currently running under an automatic size/leaf `"plain"` fallback
+   * (without persisting `lang = "plain"` to the record). A manual syntax choice
+   * (`langSource === "user"`) clears the entry and wins.
+   * @type {Set<string>}
+   */
+  const autoPlainIds = new Set();
+
+  /** @param {string} id */
+  function notifyPlainIfActive(id) {
+    if (autoPlainIds.has(id) && id === store.activeId) {
+      queueMicrotask(() => {
+        if (autoPlainIds.has(id) && id === store.activeId) {
+          editorEvents.dispatchEvent(new CustomEvent("plain-fallback", { detail: { id } }));
+        }
+      });
+    }
+  }
+
+  /**
    * A paste that redefines the buffer re-runs detection. The id is captured
    * per state, not read from store.activeId: one state belongs to exactly one
    * buffer for its whole life, so the capture cannot go stale, while
    * store.activeId is momentarily the *next* buffer during a switch.
-   * @param {string} id @param {string} content
+   * @param {string} id @param {import("@codemirror/state").Text} doc
    */
-  function detectAfterPaste(id, content) {
+  function detectAfterPaste(id, doc) {
     const record = store.get(id);
-    // A file-backed buffer is named by its extension and stays that way.
-    // Pasting JSON into a .js file does not make the file JSON.
-    if (!record || record.kind === "file") return;
+    // A file-backed buffer is named by its extension and stays that way,
+    // unless a giant pasted dump forces a temporary `"plain"` fallback.
+    if (!record || record.langSource === "user") return;
+    if (record.kind === "file") {
+      const fileLang = langForRecord(record);
+      const fallback =
+        fileLang !== "plain" &&
+        (fileLang !== "markdown"
+          ? doc.length > PLAIN_SIZE_LIMIT
+          : docHasGiantNonBlankBlock(doc));
+      if (fallback && !autoPlainIds.has(id)) {
+        autoPlainIds.add(id);
+        const effects = langCompartment.reconfigure(extensionForLang("plain"));
+        if (id === store.activeId) view.dispatch({ effects });
+        notifyPlainIfActive(id);
+      }
+      return;
+    }
+    const sample = doc.sliceString(0, 262144);
+    const detected = sniff(sample);
+    const fallback =
+      detected !== "plain" &&
+      (detected !== "markdown"
+        ? doc.length > PLAIN_SIZE_LIMIT
+        : docHasGiantNonBlankBlock(doc));
+    if (fallback) {
+      autoPlainIds.add(id);
+      const effects = langCompartment.reconfigure(extensionForLang("plain"));
+      if (id === store.activeId) view.dispatch({ effects });
+      notifyPlainIfActive(id);
+      return;
+    }
+    autoPlainIds.delete(id);
     // "auto" here: the store drops it when the user has set the syntax by hand.
-    store.setLang(id, sniff(content), "auto");
+    store.setLang(id, detected, "auto");
   }
 
   // The buffer whose state is on screen as the locked placeholder, or null.
@@ -500,11 +565,18 @@ export function mountEditor(host, store) {
     // The copy with the decoded text is for encrypted docs: sniffing
     // record.content would sniff ciphertext and always land on the default.
     const forLang = record && record.enc ? { ...record, content: text } : record;
+    let lang = langForRecord(forLang);
+    if (record?.langSource !== "user" && shouldAutoPlain(lang, text)) {
+      lang = "plain";
+      autoPlainIds.add(id);
+    } else {
+      autoPlainIds.delete(id);
+    }
     return createEditorState(
       text,
-      langForRecord(forLang),
+      lang,
       (content) => store.updateContent(id, content),
-      (content) => detectAfterPaste(id, content),
+      (doc) => detectAfterPaste(id, doc),
       // Read by id, as detectAfterPaste does, never through store.activeId.
       () => store.get(id)?.spellOff
     );
@@ -591,6 +663,7 @@ export function mountEditor(host, store) {
         placeholderId = null;
         view.setState(state);
         restoreScroll(id);
+        notifyPlainIfActive(id);
         if (!phoneListOpen()) view.focus();
         // The document is finally up, so a search hit can be selected in it.
         runPendingReveal(id);
@@ -697,7 +770,10 @@ export function mountEditor(host, store) {
       scrolls.set(previousId, view.scrollSnapshot());
     }
     view.setState(stateFor(id));
-    if (placeholderId !== id) restoreScroll(id);
+    if (placeholderId !== id) {
+      restoreScroll(id);
+      notifyPlainIfActive(id);
+    }
     // Do not focus a hidden editor behind the phone note list: it steals focus
     // from the list and can pull up the on-screen keyboard.
     if (!phoneListOpen()) view.focus();
@@ -749,6 +825,7 @@ export function mountEditor(host, store) {
     const { id } = /** @type {CustomEvent} */ (event).detail;
     states.delete(id);
     scrolls.delete(id);
+    autoPlainIds.delete(id);
     // A closed buffer's placeholder is gone with it; leaving the id here would
     // make the next "active" skip parking a state that is a real document.
     if (placeholderId === id) placeholderId = null;
@@ -763,6 +840,7 @@ export function mountEditor(host, store) {
   // history all survive it.
   store.events.addEventListener("lang", (event) => {
     const { id, lang } = /** @type {CustomEvent} */ (event).detail;
+    autoPlainIds.delete(id);
     const effects = langCompartment.reconfigure(extensionForLang(lang));
     if (id === store.activeId) {
       view.dispatch({ effects });

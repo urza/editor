@@ -16,7 +16,7 @@ import { desktopHostname } from "../model/capabilities.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { editorEvents } from "../editor/editor.js";
 import { activeLangs } from "../editor/mixed.js";
-import { countWords, deviceLabel, positionText, readTime, stateSign } from "./statustext.js";
+import { countWordsInDoc, deviceLabel, positionText, readTime, stateSign } from "./statustext.js";
 import { ZOOM } from "./zoom.js";
 
 /**
@@ -35,6 +35,9 @@ export const SYNC_LABEL = {
 // A word count reads the whole note. Typing changes the note on every key, so
 // the count waits for a pause; the position updates at once.
 const COUNT_DELAY = 250;
+// Above this size, both initial document counts and selection counts debounce
+// so opening or pressing Ctrl+A in a multi-MB file never blocks the frame.
+const SYNC_COUNT_LIMIT = 20000;
 
 /**
  * @param {ReturnType<import("../model/docs.js").createDocStore>} store
@@ -80,8 +83,12 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
   /** @type {import("@codemirror/state").Text | null} */
   let countedDoc = null;
   let words = 0;
+  /** @type {{ doc: import("@codemirror/state").Text, from: number, to: number, words: number } | null} */
+  let cachedSel = null;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let countTimer;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let selCountTimer;
 
   function renderPos() {
     const state = view.state;
@@ -91,11 +98,11 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
       return;
     }
     if (countedDoc !== state.doc && countTimer === undefined) {
-      // The first count of a note is at once, so a note never opens with a
-      // wrong number; later counts wait for a pause in typing.
-      if (countedDoc === null) {
+      // Small notes count at once so they never open with 0; large notes wait
+      // for the debounce so multi-MB opens stay instantaneous.
+      if (countedDoc === null && state.doc.length <= SYNC_COUNT_LIMIT) {
         countedDoc = state.doc;
-        words = countWords(state.doc.toString());
+        words = countWordsInDoc(state.doc);
       } else countTimer = setTimeout(count, COUNT_DELAY);
     }
     const main = state.selection.main;
@@ -103,11 +110,43 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
     /** @type {{ lines: number, chars: number, words: number } | undefined} */
     let selected;
     if (!main.empty) {
+      const chars = main.to - main.from;
+      let selWords = 0;
+      if (
+        cachedSel &&
+        cachedSel.doc === state.doc &&
+        cachedSel.from === main.from &&
+        cachedSel.to === main.to
+      ) {
+        selWords = cachedSel.words;
+      } else if (chars <= SYNC_COUNT_LIMIT) {
+        selWords = countWordsInDoc(state.doc, main.from, main.to);
+        cachedSel = { doc: state.doc, from: main.from, to: main.to, words: selWords };
+      } else {
+        selWords = cachedSel?.words ?? 0;
+        clearTimeout(selCountTimer);
+        selCountTimer = setTimeout(() => {
+          selCountTimer = undefined;
+          const cur = view.state;
+          const m = cur.selection.main;
+          if (m.empty) return;
+          cachedSel = {
+            doc: cur.doc,
+            from: m.from,
+            to: m.to,
+            words: countWordsInDoc(cur.doc, m.from, m.to),
+          };
+          renderPos();
+        }, COUNT_DELAY);
+      }
       selected = {
         lines: state.doc.lineAt(main.to).number - state.doc.lineAt(main.from).number + 1,
-        chars: main.to - main.from,
-        words: countWords(state.sliceDoc(main.from, main.to)),
+        chars,
+        words: selWords,
       };
+    } else if (selCountTimer !== undefined) {
+      clearTimeout(selCountTimer);
+      selCountTimer = undefined;
     }
     statusPos.textContent = positionText({
       line: line.number,
@@ -121,16 +160,25 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
   function count() {
     countTimer = undefined;
     countedDoc = view.state.doc;
-    words = countWords(countedDoc.toString());
+    words = countWordsInDoc(countedDoc);
     renderPos();
   }
 
   editorEvents.addEventListener("update", renderPos);
+  editorEvents.addEventListener("plain-fallback", (event) => {
+    const id = /** @type {CustomEvent} */ (event).detail?.id;
+    if (id && id === store.activeId) {
+      notice("Plain text mode (large note)");
+    }
+  });
   // A note switch is view.setState, which runs no update listener.
   store.events.addEventListener("active", () => {
     clearTimeout(countTimer);
+    clearTimeout(selCountTimer);
     countTimer = undefined;
+    selCountTimer = undefined;
     countedDoc = null;
+    cachedSel = null;
     // After the editor's own "active" handler put the new state up.
     queueMicrotask(renderPos);
   });

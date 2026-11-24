@@ -31,6 +31,7 @@ import { language } from "@codemirror/language";
 import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
 import { openMenu } from "../ui/menu.js";
 import * as hunspell from "./hunspell.js";
+import { plainLang } from "./lang.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
 import { WORD } from "./diacritics.js";
 import { segments } from "./textlang.js";
@@ -91,6 +92,10 @@ const MARKDOWN = "markdown";
 
 /** @param {EditorView} view */
 function isProse(view) {
+  // Explicit `"plain"` mode (`.log`, `.csv`, `.tsv`, or size-fallback giant
+  // dumps) carries `plainLang` and skips prose spellcheck, while a bare test
+  // state with no language compartment still lints as before.
+  if (view.state.facet(plainLang)) return false;
   const mode = view.state.facet(language);
   return !mode || mode.name === MARKDOWN;
 }
@@ -946,7 +951,8 @@ export function spellcheck() {
       // stay on screen until the user typed again.
       needsRefresh: (update) =>
         generation !== lintedGeneration ||
-        update.startState.facet(language) !== update.state.facet(language),
+        update.startState.facet(language) !== update.state.facet(language) ||
+        update.startState.facet(plainLang) !== update.state.facet(plainLang),
     }),
     trackViews,
     phoneBox,
