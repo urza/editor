@@ -104,7 +104,9 @@ function isMine(word) {
 
 /**
  * @typedef {{ kind: number, text: string, name: string }} SerializedAction
- * @typedef {{ from: number, to: number, severity: "warning" | "info", message: string, source: string, actions: SerializedAction[] }} SerializedDiag
+ * @typedef {{ from: number, to: number, severity: "warning" | "info", message: string, source: string, actions: SerializedAction[], rule?: string }} SerializedDiag
+ *   `rule` is the Harper rule that made the mark ("LongSentences"), for the
+ *   button "Turn off" of the main thread. The app's own marks have none.
  */
 
 /** @param {Response} res */
@@ -344,8 +346,12 @@ function serializeSuggestion(suggestion) {
   return { kind, text, name: kind === REMOVE ? "Remove" : text };
 }
 
-/** @param {any} lint @returns {SerializedDiag} */
-function serializeHarperLint(lint) {
+/**
+ * @param {any} lint
+ * @param {string} rule  The Harper rule that made the lint.
+ * @returns {SerializedDiag}
+ */
+function serializeHarperLint(lint, rule) {
   const span = lint.span();
   const from = span.start;
   const to = span.end;
@@ -367,6 +373,9 @@ function serializeHarperLint(lint) {
     message: lint.message(),
     source: lint.lint_kind_pretty(),
     actions,
+    // A kind ("Readability") is shared by many rules, so the rule cannot be
+    // guessed from it.
+    rule,
   };
   lint.free();
   return d;
@@ -456,9 +465,14 @@ async function lintDocument(text, requestedLangs, reqId) {
     const relDiags = [];
 
     if (useEnglishPass) {
-      const lints = await harperEngine.lint(paraText);
-      for (const raw of lints) {
-        const d = serializeHarperLint(raw);
+      // organizedLints and not lint: it gives the same lints by rule, and a
+      // lint alone does not say which rule made it.
+      const byRule = await harperEngine.organizedLints(paraText);
+      const lints = Object.entries(byRule).flatMap(([rule, list]) =>
+        /** @type {any[]} */ (list).map((raw) => ({ raw, rule }))
+      );
+      for (const { raw, rule } of lints) {
+        const d = serializeHarperLint(raw, rule);
         const word = paraText.slice(d.from, d.to);
         // My words: no red mark on a word of the list, whichever Harper rule
         // made the mark and also for a token the word rule below does not

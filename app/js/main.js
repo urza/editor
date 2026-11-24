@@ -46,7 +46,8 @@ import { decodeInvite, encodeInvite, normalizeCode, PALETTE } from "./crypto/spa
 import * as codec from "./model/codec.js";
 import { mountEditor } from "./editor/editor.js";
 import { mountTransforms } from "./editor/transform.js";
-import { isEnabled, setEnabled, setShared } from "./editor/spellcheck.js";
+import { isEnabled, setEnabled, setQuickActions, setShared } from "./editor/spellcheck.js";
+import { addWord, displayName, setRule } from "./model/spellsettings.js";
 import { activeLangs, switchLang } from "./editor/mixed.js";
 import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
@@ -1743,6 +1744,24 @@ async function start() {
   sidebar = mountSidebar(store, folders, sync, workspaces);
   const statusbar = mountStatusbar(store, sync, zoom, editor.view, keyring);
   const pin = mountPin({ store, notice: (text) => statusbar.notice(text) });
+  // The quick buttons of a mark (editor/spellcheck.js, withQuick). Each one
+  // writes the shared settings record; the "shared-settings" event then
+  // repaints the marks in every note. There is no Undo button: the notice
+  // says what happened, and Settings > Spellcheck is the way back.
+  setQuickActions({
+    addWord: (word) => {
+      void store.writeSharedSettings(addWord(store.sharedSettings(), word, Date.now()));
+      statusbar.notice(`“${word}” is in My words`);
+    },
+    ruleOff: (rule) => {
+      const settings = store.sharedSettings();
+      // A mark exists, so the rule is on. It is on by default unless the
+      // user turned it on, and that is the one case with an entry `on: true`.
+      const byDefault = settings.rules[rule]?.on !== true;
+      void store.writeSharedSettings(setRule(settings, rule, false, byDefault, Date.now()));
+      statusbar.notice(`“${displayName(rule)}” is off`);
+    },
+  });
   // After the status bar exists: autoUpdate reports through it.
   setTimeout(autoUpdate, 3000);
   document.addEventListener("visibilitychange", () => {

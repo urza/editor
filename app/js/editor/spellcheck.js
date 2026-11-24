@@ -36,7 +36,7 @@ import { plainLang } from "./lang.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
 import { WORD } from "./diacritics.js";
 import { segments } from "./textlang.js";
-import { emptySettings, lintConfig, wordKey, wordKeys } from "../model/spellsettings.js";
+import { displayName, emptySettings, lintConfig, wordKey, wordKeys } from "../model/spellsettings.js";
 import { buildCatalog } from "./spellrules.js";
 
 // Resolved against the document, which is index.html, not against this
@@ -317,6 +317,72 @@ export function ruleCatalog() {
   return catalog;
 }
 
+// ---- The quick button of a mark ---------------------------------------------
+//
+// A mark offers its fixes in three places: the hover tooltip, the Ctrl+. menu
+// and the phone box. All three read `diagnostic.actions`. The quick button
+// ("Add to my words", or "Turn off" with the rule of the mark) is the last
+// entry of that list, with `quick: true`, so it reaches the three places with
+// no second data path; each place draws a flagged entry in its own look. It
+// is not a fix: the limit of MAX_ACTIONS and the text "No suggestions" count
+// the fixes alone.
+
+/**
+ * What a quick button does, set by main.js: writing the settings record and
+ * showing a notice are the app's work, not the editor's.
+ * @type {{ addWord: (word: string) => void, ruleOff: (rule: string) => void } | null}
+ */
+let quickActions = null;
+
+/** @param {NonNullable<typeof quickActions>} actions */
+export function setQuickActions(actions) {
+  quickActions = actions;
+}
+
+/** @typedef {import("@codemirror/lint").Action & { quick?: boolean }} MarkAction */
+/** @typedef {import("@codemirror/lint").Diagnostic & { rule?: string }} Mark */
+
+/** @param {readonly MarkAction[] | undefined} actions The fixes, without the quick button. */
+function fixesOf(actions) {
+  return (actions ?? []).filter((action) => !action.quick);
+}
+
+/**
+ * The mark with its quick button, when it has one.
+ * - A red mark, and the blue "Czech without diacritics", are about one word:
+ *   "Add to my words". Not on a mark of several words, which has no single
+ *   word to add.
+ * - Any other blue mark comes from a Harper rule: "Turn off" that rule. A
+ *   red Harper mark gets no "Turn off" on purpose: its rule is SpellCheck,
+ *   and one tap would remove every spelling mark.
+ * @param {Mark} d
+ * @param {string} text  The marked text.
+ * @returns {Mark}
+ */
+function withQuick(d, text) {
+  if (!quickActions) return d;
+  /** @type {MarkAction | null} */
+  let quick = null;
+  if (d.severity === "warning" || d.source === PLAIN_SOURCE) {
+    if (text && !/\s/.test(text)) {
+      quick = {
+        name: "Add to my words",
+        // The word as it stands now: the lint package maps from/to through
+        // every edit made since the pass ran (see toAction).
+        apply: (view, from, to) => quickActions?.addWord(view.state.sliceDoc(from, to)),
+      };
+    }
+  } else if (d.rule) {
+    const rule = d.rule;
+    quick = { name: `Turn off "${displayName(rule)}"`, apply: () => quickActions?.ruleOff(rule) };
+  }
+  if (!quick) return d;
+  quick.quick = true;
+  // The class the hover tooltip puts on the button (spellcheckTheme).
+  quick.markClass = "cm-quick";
+  return { ...d, actions: [...(d.actions ?? []), quick] };
+}
+
 /**
  * One Harper suggestion becomes one diagnostic action button.
  * @param {any} suggestion
@@ -364,9 +430,10 @@ function toAction(suggestion) {
  * memory drift upward. Everything needed is copied out first.
  *
  * @param {any} lint
- * @returns {import("@codemirror/lint").Diagnostic}
+ * @param {string} rule  The Harper rule that made the lint, e.g. "LongSentences".
+ * @returns {Mark}
  */
-function toDiagnostic(lint) {
+function toDiagnostic(lint, rule) {
   const span = lint.span();
   const from = span.start;
   const to = span.end;
@@ -387,9 +454,12 @@ function toDiagnostic(lint) {
     // Rendered small under the message, e.g. "Spelling", "Word Choice".
     source: lint.lint_kind_pretty(),
     actions,
+    // For "Turn off": a kind ("Readability") is shared by many rules, so the
+    // rule cannot be guessed from it.
+    rule,
   };
   lint.free();
-  return /** @type {import("@codemirror/lint").Diagnostic} */ (diagnostic);
+  return /** @type {Mark} */ (diagnostic);
 }
 
 /**
@@ -794,14 +864,22 @@ async function spellSource(view) {
       if (res.stale || reqId !== nextWorkerLintReqId || view.state.doc !== startDoc) {
         return [];
       }
-      return (res.diagnostics ?? []).map((/** @type {any} */ d) => ({
-        from: d.from,
-        to: d.to,
-        severity: d.severity,
-        message: d.message,
-        source: d.source,
-        actions: (d.actions ?? []).map(actionFromSerialized),
-      }));
+      // The quick button is added here and not in the worker: an action is
+      // a function, and it reaches into the app (setQuickActions).
+      return (res.diagnostics ?? []).map((/** @type {any} */ d) =>
+        withQuick(
+          {
+            from: d.from,
+            to: d.to,
+            severity: d.severity,
+            message: d.message,
+            source: d.source,
+            actions: (d.actions ?? []).map(actionFromSerialized),
+            rule: d.rule,
+          },
+          text.slice(d.from, d.to)
+        )
+      );
     } catch {
       if (useWorker()) return [];
     }
@@ -847,17 +925,24 @@ async function spellSource(view) {
     twins: (/** @type {string} */ w) => hunspell.twinsOf(w, budget),
   };
 
-  /** @type {import("@codemirror/lint").Diagnostic[]} */
+  /** @type {Mark[]} */
   const out = [];
+  /** Every mark leaves through here, so each one gets its quick button. */
+  const add = (/** @type {Mark} */ d) => out.push(withQuick(d, text.slice(d.from, d.to)));
 
   if (englishParas.length > 0) {
     // No `language` option: Harper defaults to Markdown, which is what the
     // editor's own language mode assumes, and it keeps code fences out.
-    const lints = await harper.lint(blank(text, wordParas));
-    for (const lint of lints) {
+    // organizedLints and not lint: it gives the same lints by rule, and a
+    // lint alone does not say which rule made it ("Turn off" needs that).
+    const byRule = await harper.organizedLints(blank(text, wordParas));
+    const lints = Object.entries(byRule).flatMap(([rule, list]) =>
+      /** @type {any[]} */ (list).map((lint) => ({ lint, rule }))
+    );
+    for (const { lint, rule } of lints) {
       // toDiagnostic frees the wasm objects either way. A lint that leaks
       // into a blanked range is whitespace noise, never a finding.
-      const d = toDiagnostic(lint);
+      const d = toDiagnostic(lint, rule);
       if (overlaps(d, wordParas)) continue;
       const word = text.slice(d.from, d.to);
       // My words: no red mark on a word of the list, whichever Harper rule
@@ -869,7 +954,7 @@ async function spellSource(view) {
       // something our word rule does not cover ("USB", "5km"): in an English
       // paragraph Harper is the judge of those.
       if (d.severity !== "warning" || !/^[\p{L}\p{M}'’-]+$/u.test(word)) {
-        out.push(d);
+        add(d);
         continue;
       }
       const verdict = judge(word, langs, { ...ask, english: () => false });
@@ -878,8 +963,8 @@ async function spellSource(view) {
         const names = (d.actions ?? []).map((a) => a.name);
         // Harper's own actions first: they also carry inserts and removals.
         const extra = czech.filter((c) => !names.includes(c)).map(replaceWith);
-        out.push({ ...d, actions: [...(d.actions ?? []), ...extra].slice(0, MAX_ACTIONS) });
-      } else if (verdict !== "ok" && verdict !== "pending") out.push(plainMark(d.from, d.to, verdict.plain));
+        add({ ...d, actions: [...(d.actions ?? []), ...extra].slice(0, MAX_ACTIONS) });
+      } else if (verdict !== "ok" && verdict !== "pending") add(plainMark(d.from, d.to, verdict.plain));
     }
   }
 
@@ -898,8 +983,8 @@ async function spellSource(view) {
       if (verdict === "typo") {
         const czech = langs.cs ? hunspell.suggest(word, budget) ?? [] : [];
         const eng = langs.en ? await englishFixes(harper, word, budget) : [];
-        out.push(typoMark(from, to, word, mergeSuggestions(czech, eng)));
-      } else out.push(plainMark(from, to, verdict.plain));
+        add(typoMark(from, to, word, mergeSuggestions(czech, eng)));
+      } else add(plainMark(from, to, verdict.plain));
     }
   }
 
@@ -1086,6 +1171,9 @@ const spellcheckTheme = EditorView.theme({
     borderRadius: "2px",
   },
   ".cm-diagnosticAction:hover": { backgroundColor: "#393F46" },
+  // The quick button ("Add to my words", "Turn off ...") on a line of its
+  // own under the fixes: it changes a setting, not the text.
+  ".cm-diagnosticAction.cm-quick": { display: "block", marginLeft: "0", marginTop: "4px" },
 
   // The phone box: one row of fixes, each a 44 px touch target.
   ".cm-tooltip.cm-spell-box": {
@@ -1131,9 +1219,18 @@ function fixAtCursor(view) {
   // from/to are the diagnostic's current positions, as the lint package
   // maps them (see toAction). A menu without a fix still has one item, so
   // Enter or Escape dismisses it like any other.
-  const items = d.actions?.length
-    ? d.actions.map((action) => ({ label: action.name, act: () => action.apply(view, from, to) }))
-    : [{ label: "No suggestions" }];
+  /** @param {MarkAction} action */
+  const toItem = (action) => ({ label: action.name, act: () => action.apply(view, from, to) });
+  const actions = /** @type {MarkAction[]} */ (d.actions ?? []);
+  const fixes = fixesOf(actions);
+  const quick = actions.filter((action) => action.quick);
+  /** @type {import("../ui/menu.js").MenuItem[]} */
+  const items = fixes.map(toItem);
+  // The quick button below a line: it is no spelling of the word. With no
+  // fix it stands alone, in place of "No suggestions".
+  if (fixes.length > 0 && quick.length > 0) items.push({ separator: true });
+  items.push(...quick.map(toItem));
+  if (items.length === 0) items.push({ label: "No suggestions" });
   const at = view.coordsAtPos(from);
   if (!at) return false;
   // The editor's content is the anchor: that is where the focus returns.
@@ -1186,7 +1283,8 @@ function boxDom(view, box) {
   // color of a dotted line is the only other sign.
   const message = document.createElement("div");
   message.className = "cm-spell-box-message";
-  message.textContent = box.actions.length ? box.message : box.message + " No suggestions.";
+  // The quick button is no suggestion, so it does not change this text.
+  message.textContent = fixesOf(box.actions).length ? box.message : box.message + " No suggestions.";
   dom.appendChild(message);
   for (const action of box.actions) {
     const button = document.createElement("button");
