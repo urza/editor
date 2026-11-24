@@ -20,6 +20,7 @@ import { WORD, twins } from "./diacritics.js";
 import { judge, mergeSuggestions } from "./mixed.js";
 import { segments } from "./textlang.js";
 import { buildCatalog } from "./spellrules.js";
+import { wordKey } from "../model/spellsettings.js";
 
 const HARPER_WASM_URL = new URL(
   "../../vendor/harper/harper_wasm_slim_bg.wasm",
@@ -88,9 +89,18 @@ let latestLintReqId = 0;
  * them (op "config"; editor/spellcheck.js, sendWorkerConfig). `rules` is the
  * complete map of the Harper rules the user changed: setLintConfig replaces
  * Harper's whole map on each call, and a missing rule runs at its default.
- * @type {{ rules: Record<string, boolean> }}
+ * `words` holds the keys of "My words" (wordKey).
+ * @type {{ rules: Record<string, boolean>, words: Set<string> }}
  */
-let config = { rules: {} };
+let config = { rules: {}, words: new Set() };
+
+/**
+ * Whether the user's own list has this word, in any capitalization.
+ * @param {string} word
+ */
+function isMine(word) {
+  return config.words.size > 0 && config.words.has(wordKey(word));
+}
 
 /**
  * @typedef {{ kind: number, text: string, name: string }} SerializedAction
@@ -423,6 +433,7 @@ async function lintDocument(text, requestedLangs, reqId) {
   /** @type {{ incomplete: boolean }} */
   let deferred = { incomplete: false };
   const ask = {
+    mine: isMine,
     czech: (/** @type {string} */ w) => isCzechWord(w),
     twins: (/** @type {string} */ w) => answerCzech("t" + w, budget, deferred),
   };
@@ -449,6 +460,12 @@ async function lintDocument(text, requestedLangs, reqId) {
       for (const raw of lints) {
         const d = serializeHarperLint(raw);
         const word = paraText.slice(d.from, d.to);
+        // My words: no red mark on a word of the list, whichever Harper rule
+        // made the mark and also for a token the word rule below does not
+        // cover ("v2ray"). After "Add to my words" the mark must be gone,
+        // and a filter by rule would leave the marks of every rule but
+        // SpellCheck.
+        if (d.severity === "warning" && isMine(word)) continue;
         if (d.severity !== "warning" || !/^[\p{L}\p{M}'’-]+$/u.test(word)) {
           relDiags.push(d);
           continue;
@@ -472,7 +489,7 @@ async function lintDocument(text, requestedLangs, reqId) {
       /** @type {Map<string, boolean | null>} */
       const english = new Map();
       for (const { word, from, to } of proseWordsInPara(paraText)) {
-        if (langs.en && !english.has(word) && !(langs.cs && isCzechWord(word))) {
+        if (langs.en && !english.has(word) && !isMine(word) && !(langs.cs && isCzechWord(word))) {
           english.set(word, await englishWord(word, budget, deferred));
         }
         const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
@@ -601,7 +618,7 @@ self.addEventListener("message", async (event) => {
         result = await lintDocument(msg.text, msg.langs, msg.reqId);
       }
     } else if (op === "config") {
-      config = { rules: msg.rules ?? {} };
+      config = { rules: msg.rules ?? {}, words: new Set(msg.words ?? []) };
       if (harperEngine) await harperEngine.setLintConfig(config.rules);
       // Every cached paragraph was linted with the old settings.
       paraCache.clear();

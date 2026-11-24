@@ -21,11 +21,18 @@
  * @param {Langs} langs  The active languages of the note.
  * @param {{ czech: (w: string) => boolean,
  *           english: (w: string) => boolean | null,
- *           twins: (w: string) => string[] | null }} ask
- *   `english` returns null while its answer is not known yet.
+ *           twins: (w: string) => string[] | null,
+ *           mine?: (w: string) => boolean }} ask
+ *   `english` returns null while its answer is not known yet. `mine` says
+ *   whether the word is in the user's own list ("My words").
  * @returns {Verdict}
  */
 export function judge(word, langs, ask) {
+  // First, and whatever languages are on: the user declared this word
+  // correct. This is the one place both checkers pass through, which is why
+  // the list lives here and not in Harper's own dictionary: Harper is never
+  // asked in a note with English off, and its list covers one rule only.
+  if (ask.mine?.(word)) return "ok";
   if (langs.cs && ask.czech(word)) return "ok";
   let unknown = false;
   if (langs.en) {

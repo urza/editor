@@ -36,7 +36,7 @@ import { plainLang } from "./lang.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
 import { WORD } from "./diacritics.js";
 import { segments } from "./textlang.js";
-import { emptySettings, lintConfig } from "../model/spellsettings.js";
+import { emptySettings, lintConfig, wordKey, wordKeys } from "../model/spellsettings.js";
 import { buildCatalog } from "./spellrules.js";
 
 // Resolved against the document, which is index.html, not against this
@@ -133,6 +133,17 @@ let enabled = readEnabled();
 // the settings in at the start and after each change (setShared), so the
 // editor layer stays free of the model, as with `noteSpellOff`.
 let shared = emptySettings();
+/** The keys of "My words" (wordKey), rebuilt on each change. @type {Set<string>} */
+let myWords = new Set();
+
+/**
+ * Whether the user's own list has this word, in any capitalization. Also for
+ * the diacritics commands, which must leave such a word alone.
+ * @param {string} word
+ */
+export function isMyWord(word) {
+  return myWords.size > 0 && myWords.has(wordKey(word));
+}
 
 // Whether this module already asked hunspell.js to load. One request is
 // enough: the load promise is shared, and its completion repaints once.
@@ -250,6 +261,9 @@ function loadHarper() {
 export function setShared(settings) {
   const rulesChanged = JSON.stringify(lintConfig(settings)) !== JSON.stringify(lintConfig(shared));
   shared = settings;
+  // The words reach no engine: the marks are filtered (judge, and the filter
+  // of red Harper marks), so the cached answers of the engines stay valid.
+  myWords = wordKeys(settings);
   // With the worker, the pass that relintAll starts sends the settings ahead
   // of its text (sendWorkerConfig). Without an engine yet, loadHarper applies
   // the rules when it arrives.
@@ -270,7 +284,7 @@ let workerConfigSent = "";
  * app start, before any note asked for a check.
  */
 async function sendWorkerConfig() {
-  const config = { rules: lintConfig(shared) };
+  const config = { rules: lintConfig(shared), words: [...myWords].sort() };
   const text = JSON.stringify(config);
   if (text === workerConfigSent) return;
   await callWorker({ op: "config", ...config });
@@ -828,6 +842,7 @@ async function spellSource(view) {
   let budget = hunspell.newBudget();
 
   const ask = {
+    mine: isMyWord,
     czech: (/** @type {string} */ w) => hunspell.isWord(w),
     twins: (/** @type {string} */ w) => hunspell.twinsOf(w, budget),
   };
@@ -845,6 +860,11 @@ async function spellSource(view) {
       const d = toDiagnostic(lint);
       if (overlaps(d, wordParas)) continue;
       const word = text.slice(d.from, d.to);
+      // My words: no red mark on a word of the list, whichever Harper rule
+      // made the mark and also for a token the word rule below does not
+      // cover ("v2ray"). After "Add to my words" the mark must be gone, and
+      // a filter by rule would leave the marks of every rule but SpellCheck.
+      if (d.severity === "warning" && isMyWord(word)) continue;
       // A grammar hint stays as it is. So does a spelling finding on
       // something our word rule does not cover ("USB", "5km"): in an English
       // paragraph Harper is the judge of those.
@@ -870,7 +890,7 @@ async function spellSource(view) {
     /** @type {Map<string, boolean | null>} */
     const english = new Map();
     for (const { word, from, to } of proseWords(text, wordParas)) {
-      if (langs.en && !english.has(word) && !(langs.cs && hunspell.isWord(word))) {
+      if (langs.en && !english.has(word) && !isMyWord(word) && !(langs.cs && hunspell.isWord(word))) {
         english.set(word, await englishWord(harper, word, budget));
       }
       const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });

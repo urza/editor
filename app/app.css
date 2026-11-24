@@ -2255,10 +2255,62 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   line-height: 1.5;
   color: var(--st-gutter-fg);
 }
+/* My words. One field filters and adds; the button shows only when the
+   typed word is not in the list yet. */
+.spell-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.spell-field > .spell-search { flex: 1 1 auto; width: auto; margin-top: 0; }
+/* Columns, so hundreds of short words take a few screens and not one long
+   strip. The width makes the count: three on a phone, more on a PC. */
+.spell-words {
+  column-width: calc(140px * var(--ui-scale));
+  column-gap: 24px;
+}
+.spell-word {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  break-inside: avoid;
+  font-size: var(--ui-md);
+  color: var(--st-sidebar-label);
+}
+.spell-word > span { min-width: 0; overflow-wrap: anywhere; }
+.spell-word > button {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--st-gutter-fg);
+  font: inherit;
+  cursor: pointer;
+}
+.spell-word > button:hover { color: var(--st-danger); }
+/* "Edit as text": the list as one field, for a paste of many words. */
+.spell-text {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 14em;
+  resize: vertical;
+  line-height: 1.5;
+}
+/* The rows above are flex or block by class, which would beat the browser's
+   own [hidden] rule; the page switches between the list and the text. */
+.spell-field[hidden],
+.spell-bar[hidden],
+.spell-words[hidden],
+.spell-text[hidden] { display: none; }
+
 /* A finger needs the height of a tap target on each row that opens, and on
    the way back. */
 html.phone .spell-group { min-height: var(--tap); align-items: center; }
 html.phone #settings-back { min-height: var(--tap); }
+html.phone .spell-word > button { min-width: var(--tap); min-height: var(--tap); }
 
 /* Phone rows are about 350px wide. Keep half of that for the label and its
    hint, or a medium-length value squeezes the hint into one word per line;

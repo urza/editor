@@ -128,3 +128,31 @@ test("checkAnswer reads decomposed diacritics (NFD) as the same letters", () => 
   const r = checkAnswer("ze", nfd, (w) => w === "že");
   assert.equal(r?.text, "že");
 });
+
+test("a word of My words gets no mark, whatever languages are on", () => {
+  const mine = (w) => w.toLowerCase() === "vrtti";
+  const withMine = (langs) => ({ ...ask(langs), mine });
+  // Without the list the word is a typo in each setting.
+  assert.equal(judge("vrtti", { cs: true, en: true }, ask()), "typo");
+  for (const langs of [{ cs: true, en: true }, { cs: true, en: false }, { cs: false, en: true }]) {
+    assert.equal(judge("vrtti", langs, withMine(langs)), "ok");
+    assert.equal(judge("Vrtti", langs, withMine(langs)), "ok");
+    // Another ending is another word.
+    assert.equal(judge("vrttis", langs, withMine(langs)), "typo");
+  }
+});
+
+test("My words also takes a word that has a Czech twin", () => {
+  // "tlacitko" alone is Czech without diacritics: a blue mark.
+  assert.deepEqual(judge("tlacitko", { cs: true, en: true }, ask()), { plain: ["tlačítko"] });
+  const mine = (w) => w === "tlacitko";
+  assert.equal(judge("tlacitko", { cs: true, en: true }, { ...ask(), mine }), "ok");
+});
+
+test("My words is asked before a checker whose answer is not known yet", () => {
+  // English still loading its answer (null) would mean "pending", and the
+  // word would flash a mark later. The list answers first.
+  const pending = { czech: () => false, english: () => null, twins: () => [], mine: (w) => w === "vrtti" };
+  assert.equal(judge("vrtti", { cs: true, en: true }, pending), "ok");
+  assert.equal(judge("other", { cs: true, en: true }, pending), "pending");
+});

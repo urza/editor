@@ -1,7 +1,8 @@
 // @ts-check
 // The Spellcheck page: a second view inside the Settings panel
 // (ui/settings.js, openSub). It has a switch for each rule of the English
-// checker (Harper), in Harper's own groups, with a search.
+// checker (Harper), in Harper's own groups, with a search, and the user's
+// own list of words ("My words"), which both checkers accept.
 //
 // The design follows the settings page of the Harper browser extension, not
 // its code: that page is Svelte with a build step, and this app has neither.
@@ -16,7 +17,18 @@
 // on the same event, so the page never shows a state of its own.
 
 import { ruleCatalog } from "../editor/spellcheck.js";
-import { changedCount, displayName, resetRules, setRule } from "../model/spellsettings.js";
+import {
+  addWord,
+  changedCount,
+  displayName,
+  parseWords,
+  removeWord,
+  replaceWords,
+  resetRules,
+  setRule,
+  wordKey,
+  wordList,
+} from "../model/spellsettings.js";
 
 /**
  * @param {string} tag @param {string} [className] @param {string} [text]
@@ -194,22 +206,158 @@ export function buildSpellPage({ store }) {
 
   search.addEventListener("input", paintRules);
 
+  // ---- My words ------------------------------------------------------------
+  // The list must stay usable with hundreds of words: one field filters it
+  // and adds to it, the words stand in columns, and "Edit as text" takes a
+  // paste of many words at once.
+  const wordsSection = make("section", "settings-section");
+  wordsSection.appendChild(make("h3", "", "My words"));
+  wordsSection.appendChild(
+    make("p", "spell-note", "A word of this list gets no mark, in English and in Czech text. Capital letters make no difference.")
+  );
+  const field = /** @type {HTMLInputElement} */ (make("input", "settings-input spell-search"));
+  field.type = "text";
+  field.placeholder = "Filter or add a word";
+  field.setAttribute("aria-label", "Filter or add a word");
+  field.spellcheck = false;
+  field.autocapitalize = "off";
+  field.autocomplete = "off";
+  const addButton = makeButton("settings-button", "");
+  const fieldRow = make("div", "spell-field");
+  fieldRow.append(field, addButton);
+  const wordsBar = make("div", "spell-bar");
+  const wordsCount = make("span", "spell-count");
+  const editButton = makeButton("settings-button", "Edit as text");
+  wordsBar.append(wordsCount, editButton);
+  const wordsBox = make("div", "spell-words");
+  // "Edit as text": the same list as one text, one word in each line.
+  const textBar = make("div", "spell-bar");
+  const cancelButton = makeButton("settings-button", "Cancel");
+  const saveButton = makeButton("settings-button", "Save");
+  textBar.append(make("span", "spell-count", "One word in each line."), cancelButton, saveButton);
+  const textArea = /** @type {HTMLTextAreaElement} */ (make("textarea", "settings-input spell-text"));
+  textArea.setAttribute("aria-label", "My words as text");
+  textArea.spellcheck = false;
+  textArea.autocapitalize = "off";
+  wordsSection.append(fieldRow, wordsBar, wordsBox, textBar, textArea);
+  element.appendChild(wordsSection);
+
+  let editing = false;
+
+  /** The typed word when the button "Add" applies to it, else "". */
+  function addable() {
+    const typed = field.value.trim();
+    if (!typed || /\s/.test(typed)) return "";
+    const key = wordKey(typed);
+    return wordList(store.sharedSettings()).some((word) => wordKey(word) === key) ? "" : typed;
+  }
+
+  function paintWords() {
+    fieldRow.hidden = wordsBar.hidden = wordsBox.hidden = editing;
+    textBar.hidden = textArea.hidden = !editing;
+    // The text field is the user's draft while it is open. A change from
+    // another device must not replace what they typed; Save merges by word.
+    if (editing) return;
+
+    const active = /** @type {HTMLElement | null} */ (document.activeElement);
+    const focusKey = active && wordsBox.contains(active) ? active.dataset.focusKey : undefined;
+
+    const all = wordList(store.sharedSettings());
+    const query = wordKey(field.value);
+    const shown = query ? all.filter((word) => wordKey(word).includes(query)) : all;
+    const typed = addable();
+    addButton.hidden = !typed;
+    addButton.textContent = `Add “${typed}”`;
+
+    if (all.length === 0) wordsCount.textContent = "No words yet.";
+    else if (!query) wordsCount.textContent = `${all.length} ${all.length === 1 ? "word" : "words"}`;
+    else if (shown.length === 0) wordsCount.textContent = `No word contains “${field.value.trim()}”.`;
+    else wordsCount.textContent = `${shown.length} of ${all.length} words`;
+
+    wordsBox.replaceChildren(
+      ...shown.map((word) => {
+        const item = make("span", "spell-word");
+        const remove = makeButton("", "×");
+        remove.dataset.focusKey = "word:" + wordKey(word);
+        remove.setAttribute("aria-label", `Remove ${word}`);
+        remove.title = "Remove";
+        remove.addEventListener("click", () => write(removeWord(store.sharedSettings(), word, Date.now())));
+        item.append(make("span", "", word), remove);
+        return item;
+      })
+    );
+    if (focusKey) {
+      for (const el of wordsBox.querySelectorAll("[data-focus-key]")) {
+        if (/** @type {HTMLElement} */ (el).dataset.focusKey === focusKey) /** @type {HTMLElement} */ (el).focus();
+      }
+    }
+  }
+
+  function addTyped() {
+    const typed = addable();
+    if (!typed) return;
+    // Cleared first: the repaint that follows the write then shows the whole
+    // list again, with the new word in it.
+    field.value = "";
+    write(addWord(store.sharedSettings(), typed, Date.now()));
+  }
+
+  field.addEventListener("input", paintWords);
+  field.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addTyped();
+  });
+  addButton.addEventListener("click", () => {
+    addTyped();
+    field.focus();
+  });
+
+  /** @param {boolean} on */
+  function setEditing(on) {
+    editing = on;
+    if (on) textArea.value = wordList(store.sharedSettings()).join("\n");
+    paintWords();
+    if (on) textArea.focus();
+    else editButton.focus();
+  }
+  editButton.addEventListener("click", () => setEditing(true));
+  cancelButton.addEventListener("click", () => setEditing(false));
+  saveButton.addEventListener("click", () => {
+    write(replaceWords(store.sharedSettings(), parseWords(textArea.value), Date.now()));
+    setEditing(false);
+  });
+
   /**
-   * Escape in a filled search field clears the search; the next Escape goes
-   * back to Settings. The panel owns the key (ui/settings.js, onKeydown) and
+   * Escape takes one step back inside the page before it leaves the page: it
+   * clears a filled search or word field, and it closes "Edit as text"
+   * without saving. The panel owns the key (ui/settings.js, onKeydown) and
    * asks here first.
    * @returns {boolean} True when this page used the key.
    */
   function escape() {
-    if (document.activeElement !== search || !search.value) return false;
-    search.value = "";
-    paintRules();
-    return true;
+    const active = document.activeElement;
+    if (active === search && search.value) {
+      search.value = "";
+      paintRules();
+      return true;
+    }
+    if (active === field && field.value) {
+      field.value = "";
+      paintWords();
+      return true;
+    }
+    if (editing) {
+      setEditing(false);
+      return true;
+    }
+    return false;
   }
 
   function paint() {
     if (!visible) return;
     paintRules();
+    paintWords();
   }
 
   store.events.addEventListener("shared-settings", paint);
@@ -231,6 +379,8 @@ export function buildSpellPage({ store }) {
   function hidden() {
     visible = false;
     search.value = "";
+    field.value = "";
+    editing = false;
     onlyChanged = false;
   }
 
