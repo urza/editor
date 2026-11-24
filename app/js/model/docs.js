@@ -40,10 +40,12 @@ import {
   deleteRemote,
   getAllBuffers,
   getAllHandles,
+  getBuffer,
   getHandle,
   getRemotes,
   newBufferRecord,
   putBuffer,
+  putBuffersBatch,
   putHandle,
   putRemote,
   MAIN_WORKSPACE,
@@ -113,6 +115,11 @@ const SAVE_DELAY = 300;
 // only covers a window that stays focused while another program writes.
 const WATCH_INTERVAL = 30000;
 const TITLE_MAX = 40;
+// Scan only the opening window when deriving a row's title so multi-MB notes
+// never split into hundreds of thousands of substrings.
+const FIRST_LINE_HEAD = 4096;
+/** Transient first-line titles for unencrypted records whose latest edits sit in a CodeMirror Text rope. @type {WeakMap<BufferRecord, string>} */
+const liveFirstLines = new WeakMap();
 
 /**
  * The first non-blank line of a text, truncated to a row's width. The derived
@@ -121,7 +128,35 @@ const TITLE_MAX = 40;
  * @param {string} [text] @returns {string}
  */
 export function firstLineTitle(text) {
-  for (const line of (text || "").split("\n")) {
+  if (!text) return "";
+  const head = text.length > FIRST_LINE_HEAD ? text.slice(0, FIRST_LINE_HEAD) : text;
+  let pos = 0;
+  while (pos < head.length) {
+    const nl = head.indexOf("\n", pos);
+    const line = nl < 0 ? head.slice(pos) : head.slice(pos, nl);
+    const trimmed = line.trim();
+    if (trimmed) {
+      return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
+    }
+    if (nl < 0) break;
+    pos = nl + 1;
+  }
+  return "";
+}
+
+/**
+ * Same derived first-line rule directly over a CodeMirror `Text` rope so
+ * keystrokes never flatten `doc.toString()`.
+ * @param {import("@codemirror/state").Text} doc
+ * @returns {string}
+ */
+function firstLineTitleFromDoc(doc) {
+  if (doc.length === 0) return "";
+  const iter = doc.iterLines();
+  let scanned = 0;
+  while (!iter.next().done && scanned < FIRST_LINE_HEAD) {
+    const line = iter.value;
+    scanned += line.length + 1;
     const trimmed = line.trim();
     if (trimmed) {
       return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
@@ -186,6 +221,7 @@ export function titleOf(record) {
     return "encrypted";
   }
 
+  if (liveFirstLines.has(record)) return liveFirstLines.get(record) || "untitled";
   return firstLineTitle(record.content) || "untitled";
 }
 
@@ -226,6 +262,14 @@ export function createDocStore({
    * @type {Map<string, string>}
    */
   const plain = new Map();
+  /**
+   * Unmaterialized CodeMirror `Text` ropes from recent keystrokes, keyed by
+   * buffer id. Flattened on demand by `materialize(id)` when the 300 ms save
+   * debounce fires or a reader asks for the full string. Cleared for encrypted
+   * docs on lock, just like `plain`.
+   * @type {Map<string, import("@codemirror/state").Text>}
+   */
+  const liveDocs = new Map();
   /** @type {Map<string, number>} */
   const saveTimers = new Map();
   // Live handles, keyed by handleId. IndexedDB holds the durable copy; this is
@@ -264,6 +308,40 @@ export function createDocStore({
   }
 
   /**
+   * Flatten any pending CodeMirror `Text` rope for `id` into `plain` (encrypted)
+   * or `record.content` (plaintext). Safe and O(1) when no rope is pending.
+   * @param {string} id
+   */
+  function materialize(id) {
+    const doc = liveDocs.get(id);
+    if (!doc) return;
+    liveDocs.delete(id);
+    const record = buffers.get(id);
+    if (!record) return;
+    liveFirstLines.delete(record);
+    const text = doc.toString();
+    if (record.enc) {
+      if (plain.has(id) && keyring.isUnlocked) plain.set(id, text);
+    } else {
+      record.content = text;
+    }
+  }
+
+  /**
+   * Broadcast a stored buffer row to sibling windows, omitting bodies above
+   * 64 KB so autosaving a multi-MB note never structured-clones megabytes on
+   * the main thread; recipients read the stored row via `getBuffer(id)`.
+   * @param {BufferRecord} row
+   */
+  function postBuffer(row) {
+    if (typeof row.content === "string" && row.content.length > 65536) {
+      post("buffer", { record: { ...withoutBody(row), bodyOmitted: true } });
+    } else {
+      post("buffer", { record: row });
+    }
+  }
+
+  /**
    * IndexedDB, then the other windows (architecture.md §14.2). Every buffer
    * write in this module goes through here, so no window ever needs to
    * re-read the store to learn what another one wrote.
@@ -279,7 +357,7 @@ export function createDocStore({
     const row =
       record.file && !record.file.unwritten ? withoutBody(record) : record;
     await putBuffer(row);
-    post("buffer", { record: row });
+    postBuffer(row);
     // A stub dies the moment a record with its id exists here (§25).
     // createFromChange removes it already; this catches every other door a
     // record can come in by, so the sidebar never lists a note twice.
@@ -384,6 +462,8 @@ export function createDocStore({
    * @param {BufferRecord} record
    */
   function dropBody(record) {
+    liveDocs.delete(record.id);
+    liveFirstLines.delete(record);
     plain.delete(record.id);
     if (record.file && !record.file.unwritten) delete record.content;
   }
@@ -511,6 +591,7 @@ export function createDocStore({
    */
   async function demoteToStub(record) {
     if (!record || !isDocument(record) || !record.sync) return false;
+    materialize(record.id);
     if (record.sync.dirty || record.sync.rev <= 0 || record.sync.tombstone) return false;
     if (record.file || record.trashedAt) return false;
     if (workspaces.openSet().has(record.id)) return false;
@@ -560,6 +641,8 @@ export function createDocStore({
     record.trashedAt ??= Date.now();
     delete record.closedAt;
     delete record.sync;
+    liveDocs.delete(record.id);
+    liveFirstLines.delete(record);
     plain.delete(record.id);
     await persist({ ...record });
   }
@@ -574,6 +657,7 @@ export function createDocStore({
   async function trashBuffer(id) {
     const record = buffers.get(id);
     if (!record || !isDocument(record) || record.trashedAt) return false;
+    materialize(id);
     const pending = saveTimers.has(id);
     dropTimers(id);
     if (pending) await persistNow(id);
@@ -726,6 +810,8 @@ export function createDocStore({
     delete record.title;
     delete record.firstLine;
     record.content = "";
+    liveDocs.delete(record.id);
+    liveFirstLines.delete(record);
     plain.delete(record.id);
     if (record.sync) {
       const tombstone = record.sync.tombstone ?? "deleted";
@@ -917,12 +1003,22 @@ export function createDocStore({
    */
   async function stampMissingClosedAt(now = Date.now()) {
     const open = workspaces.openSet();
+    /** @type {BufferRecord[]} */
+    const puts = [];
     for (const record of [...buffers.values()]) {
       if (open.has(record.id) || !isDocument(record)) continue;
       if (record.trashedAt || record.sync || record.closedAt !== undefined) continue;
       if (isEmpty(record)) continue;
       record.closedAt = now;
-      await persist({ ...record });
+      const copy = { ...record };
+      puts.push(copy.file && !copy.file.unwritten ? withoutBody(copy) : copy);
+    }
+    if (puts.length > 0) {
+      await putBuffersBatch({ puts });
+      for (const row of puts) {
+        postBuffer(row);
+        if (remotes.has(row.id)) await dropRemote(row.id);
+      }
     }
   }
 
@@ -936,6 +1032,8 @@ export function createDocStore({
   async function expireOldRecent(now = Date.now()) {
     const open = workspaces.openSet();
     let changed = false;
+    /** @type {BufferRecord[]} */
+    const puts = [];
     for (const record of [...buffers.values()]) {
       if (open.has(record.id)) continue;
       if (!isRecentExpired(record, now)) continue;
@@ -944,10 +1042,19 @@ export function createDocStore({
       } else {
         record.trashedAt = now;
         delete record.closedAt;
+        liveDocs.delete(record.id);
+        liveFirstLines.delete(record);
         plain.delete(record.id);
-        await persist({ ...record });
+        puts.push({ ...record });
       }
       changed = true;
+    }
+    if (puts.length > 0) {
+      await putBuffersBatch({ puts });
+      for (const row of puts) {
+        postBuffer(row);
+        if (remotes.has(row.id)) await dropRemote(row.id);
+      }
     }
     if (changed) emit("change");
   }
@@ -955,12 +1062,28 @@ export function createDocStore({
   /** Once at start: what has sat in the trash for thirty days goes for good. */
   async function emptyOldTrash(now = Date.now()) {
     const limit = now - TRASH_KEEP;
+    /** @type {string[]} */
+    const deletes = [];
     for (const record of trashed()) {
       if ((record.trashedAt ?? 0) >= limit) continue;
       // Do not forget a record whose tombstone still waits to push offline:
       // wipe its local body from Trash and keep the hidden tombstone queued.
-      if (record.sync?.tombstone) await hidePendingDelete(record);
-      else await forget(record.id);
+      if (record.sync?.tombstone) {
+        await hidePendingDelete(record);
+      } else if (record.file) {
+        await forget(record.id);
+      } else {
+        buffers.delete(record.id);
+        liveDocs.delete(record.id);
+        liveFirstLines.delete(record);
+        plain.delete(record.id);
+        deletes.push(record.id);
+      }
+    }
+    if (deletes.length > 0) {
+      await putBuffersBatch({ deletes });
+      for (const id of deletes) post("buffer-deleted", { id });
+      emit("change");
     }
   }
 
@@ -1011,6 +1134,7 @@ export function createDocStore({
    * @param {BufferRecord} record @returns {Promise<boolean>}
    */
   async function encodeForRecord(record) {
+    materialize(record.id);
     if (record.enc) {
       const text = plain.get(record.id);
       if (text === undefined || !keyring.isUnlocked) {
@@ -1061,7 +1185,9 @@ export function createDocStore({
    * @param {BufferRecord} record @param {string} [content] The encoded body.
    * @returns {Promise<string | undefined>}
    */
-  async function plainOf(record, content = record.content) {
+  async function plainOf(record, content) {
+    materialize(record.id);
+    if (content === undefined) content = record.content;
     const cached = plain.get(record.id);
     if (cached !== undefined) return cached;
     if (typeof content !== "string") return undefined;
@@ -1160,6 +1286,7 @@ export function createDocStore({
   async function persistNow(id) {
     const record = buffers.get(id);
     if (!record) return false;
+    materialize(id);
     // A file body this window never read has nothing to write. Only a
     // Ctrl+S on a "File not available" placeholder gets here.
     if (record.file && typeof record.content !== "string") return false;
@@ -1284,6 +1411,8 @@ export function createDocStore({
     if (!disk.enc) delete record.enc;
     else if (!record.enc) record.enc = disk.enc;
     // The old decoded text belongs to the old ciphertext.
+    liveDocs.delete(record.id);
+    liveFirstLines.delete(record);
     plain.delete(record.id);
     if (record.file) {
       record.file.mtime = disk.mtime;
@@ -1477,6 +1606,7 @@ export function createDocStore({
   async function bodyOf(id) {
     const record = buffers.get(id);
     if (!record) return { content: "" };
+    materialize(id);
     if (typeof record.content === "string") {
       return { content: record.content, mtime: record.file?.mtime, enc: record.enc };
     }
@@ -1523,6 +1653,7 @@ export function createDocStore({
       err.name = "LockedError";
       return Promise.reject(err);
     }
+    materialize(id);
     if (typeof record.content !== "string") {
       return bodyOf(id).then(({ content, enc }) =>
         enc ? decodeText(id, content, enc) : content
@@ -1552,8 +1683,31 @@ export function createDocStore({
     if (!record) return undefined;
     // A note behind the PIN shows no text in a preview (§27).
     if (isPinLocked(record)) return undefined;
+    materialize(id);
     if (record.enc) return plain.get(id);
     return typeof record.content === "string" ? record.content : undefined;
+  }
+
+  /**
+   * Bounded opening slice (at most 2,300 chars, matching `preview.js`
+   * `HEAD_MAX + PREVIEW_MAX`) of a buffer's in-memory text. Reads directly
+   * from `liveDocs` in O(log N) when an unmaterialized `Text` rope is live so
+   * phone row previews never flatten multi-megabyte documents on keystrokes.
+   * @param {string} id @returns {string | undefined}
+   */
+  function loadedPreviewHead(id) {
+    const record = buffers.get(id);
+    if (!record || isPinLocked(record)) return undefined;
+    const live = liveDocs.get(id);
+    if (live) {
+      if (record.enc && !plain.has(id)) return undefined;
+      return live.sliceString(0, 2300);
+    }
+    if (record.enc) {
+      const p = plain.get(id);
+      return p === undefined ? undefined : p.slice(0, 2300);
+    }
+    return typeof record.content === "string" ? record.content.slice(0, 2300) : undefined;
   }
 
   /**
@@ -1583,34 +1737,74 @@ export function createDocStore({
     return codec.decode(content, enc, keyring);
   }
 
-  /** @param {string} id @param {string} content */
+  /**
+   * Record a document edit from the editor (`Text` rope) or a programmatic
+   * caller (`string`). `Text` ropes stay unmaterialized in `liveDocs` until
+   * `persistNow` or a reader calls `materialize(id)`, and emit `"buffer-edit"`
+   * instead of `"change"` so the sidebar patches only the edited row.
+   * @param {string} id
+   * @param {string | import("@codemirror/state").Text} content
+   */
   function updateContent(id, content) {
     const record = buffers.get(id);
     if (!record) return;
     // No working copy: a file body this window has not read. The editor only
     // ever edits a state built from a read, so this cannot happen; it guards
     // the next line from turning an unknown body into an edit.
-    if (typeof record.content !== "string" && !record.enc) return;
-    // For an encrypted doc the comparison is against the plaintext map, never
-    // against record.content: the record holds ciphertext, which differs from
-    // the text on every save anyway (age wraps a fresh file key each time).
+    if (typeof record.content !== "string" && !liveDocs.has(id) && !record.enc) return;
+
+    const isRope =
+      typeof content === "object" && content !== null && typeof content.iterLines === "function";
+
     if (record.enc) {
-      // No plaintext in memory means the doc is locked, and the state on
-      // screen is the read-only placeholder. Nothing arriving from there is
-      // this document's text, so it must never become its content.
-      if (!plain.has(id)) return;
-      if (plain.get(id) === content) return;
-      plain.set(id, content);
+      if (isRope) {
+        // No plaintext in memory means the doc is locked, and the state on
+        // screen is the read-only placeholder. Nothing arriving from there is
+        // this document's text, so it must never become its content.
+        if (!plain.has(id)) return;
+        const prevDoc = liveDocs.get(id);
+        if (prevDoc === content) return;
+        if (!prevDoc) {
+          const cur = plain.get(id) ?? "";
+          if (content.length === cur.length && content.length <= 4096 && content.toString() === cur) {
+            return;
+          }
+        }
+        liveDocs.set(id, content);
+        record.firstLine = firstLineTitleFromDoc(content);
+      } else {
+        // Programmatic `updateContent(id, string)` callers may write to an
+        // unlocked background tab whose preview was not pre-warmed on desktop (C3).
+        if (!keyring.isUnlocked || isPinLocked(record)) return;
+        materialize(id);
+        if (plain.get(id) === content) return;
+        plain.set(id, content);
+        record.firstLine = firstLineTitle(content);
+      }
+    } else if (isRope) {
+      const prevDoc = liveDocs.get(id);
+      if (prevDoc === content) return;
+      if (!prevDoc) {
+        const cur = record.content ?? "";
+        if (content.length === cur.length && content.length <= 4096 && content.toString() === cur) {
+          return;
+        }
+      }
+      liveDocs.set(id, content);
+      if (!record.title && record.kind !== "file") {
+        liveFirstLines.set(record, firstLineTitleFromDoc(content));
+      }
     } else {
+      materialize(id);
       // A replace (silent reload from disk) echoes straight back here through
-      // the editor's update listener. Without this guard that echo would
-      // start a persist and push a revision nobody typed.
+      // the editor's update listener if unannotated. Without this guard that
+      // echo would start a persist and push a revision nobody typed.
       if (record.content === content) return;
       record.content = content;
     }
     record.updatedAt = Date.now();
     if (id === activeId) emit("save", { status: "…" });
-    emit("change");
+    emit("buffer-edit", { id });
     persistSoon(id);
   }
 
@@ -1799,6 +1993,9 @@ export function createDocStore({
    */
   function lockAll() {
     plain.clear();
+    for (const [id] of [...liveDocs]) {
+      if (buffers.get(id)?.enc) liveDocs.delete(id);
+    }
     const ids = [...buffers.values()].filter((b) => b.enc).map((b) => b.id);
     // The editor drops the cached states of these docs, which drops their undo
     // history too. Accepted and necessary: an undo buffer is plaintext.
@@ -1833,61 +2030,49 @@ export function createDocStore({
    * @type {Map<string, string>}
    */
   const undecodable = new Map();
+  /** @type {Set<string>} */
+  const warmQueue = new Set();
   let warming = false;
-  let warmAgain = false;
 
   /**
-   * Decode every encrypted note of the list into `plain`, in the background,
-   * so that loadedText has a preview for it. Since all notes are encrypted,
-   * a list that showed only what was opened by hand showed almost no
-   * previews. The sidebar itself still never decodes: it draws on every
-   * keystroke and reads loadedText only.
-   *
-   * One note at a time, and only what is missing: after the first pass a run
-   * is a walk over the records with a map lookup each. Runs at load, after
-   * an unlock (keys or PIN) and after every "change", which is how a synced
-   * note with new ciphertext (plain.delete in adoptFromWindow) gets its
-   * preview back. A run that starts while one is busy only asks it to walk
-   * once more.
-   *
-   * Plaintext stays in memory only, and lockAll clears it as before. A note
-   * behind the PIN and a file body that is not in the record are skipped.
+   * Decode only the requested encrypted row ids into `plain` in the background
+   * so visible rows of the phone note list show a 2-line preview without
+   * decoding every encrypted note in the vault on desktop or off-screen (C3).
+   * Plaintext stays in memory only, and `lockAll()` clears it as before.
+   * @param {Iterable<string>} ids
    */
-  async function warmPreviews() {
-    if (warming) {
-      warmAgain = true;
-      return;
-    }
+  async function warmPreviewsFor(ids) {
+    for (const id of ids) warmQueue.add(id);
+    if (warming || warmQueue.size === 0 || !keyring.isUnlocked) return;
     warming = true;
-    let decoded = false;
+    /** @type {string[]} */
+    const decodedIds = [];
     try {
-      do {
-        warmAgain = false;
-        for (const record of [...openBuffers(), ...closedBuffers()]) {
-          if (!keyring.isUnlocked) return;
-          const { id, content, enc } = record;
-          if (!enc || typeof content !== "string" || isPinLocked(record)) continue;
-          if (plain.has(id) || undecodable.get(id) === content) continue;
-          try {
-            // decodeText caches only if the record still holds this body and
-            // the keyring is still open, so a lock during the await is safe.
-            await decodeText(id, content, enc);
-            undecodable.delete(id);
-            decoded = true;
-          } catch {
-            undecodable.set(id, content);
-          }
+      while (warmQueue.size > 0 && keyring.isUnlocked) {
+        const next = warmQueue.values().next();
+        if (next.done) break;
+        const id = next.value;
+        warmQueue.delete(id);
+        const record = buffers.get(id);
+        if (!record || !record.enc || typeof record.content !== "string" || isPinLocked(record)) {
+          continue;
         }
-      } while (warmAgain);
+        if (plain.has(id) || undecodable.get(id) === record.content) continue;
+        const content = record.content;
+        try {
+          await decodeText(id, content, record.enc);
+          undecodable.delete(id);
+          if (plain.has(id)) decodedIds.push(id);
+        } catch {
+          undecodable.set(id, content);
+        }
+      }
     } finally {
       warming = false;
-      // One redraw for the whole pass. The "change" starts another run, which
-      // finds nothing to do and so sends nothing: no loop.
-      if (decoded) emit("change");
+      if (!keyring.isUnlocked) warmQueue.clear();
+      if (decodedIds.length > 0) emit("previews", { ids: decodedIds });
     }
   }
-  events.addEventListener("change", () => void warmPreviews());
-  events.addEventListener("unlock", () => void warmPreviews());
 
   /**
    * Is this document encrypted for an older recipient set than it should be?
@@ -3179,6 +3364,7 @@ export function createDocStore({
         : (record.sync.dirty && !record.sync.rewrap) ||
           saveTimers.has(id) ||
           Boolean(record.file?.unwritten);
+      if (dirty && !emptyDiscard) materialize(id);
       if (dirty && !emptyDiscard && typeof record.content === "string") {
         forked = record.content;
         await forkConflict(record);
@@ -3456,6 +3642,9 @@ export function createDocStore({
     const oldIndex = activeId ? tabs.indexOf(activeId) : 0;
     const visibleBefore = openBuffers().filter(isTabVisible);
     const oldVisIndex = activeId ? visibleBefore.findIndex((b) => b.id === activeId) : 0;
+    // Materialize any live Text rope before dropping theworking copy and
+    // evicting the cached EditorState.
+    for (const id of ids) materialize(id);
     for (const id of ids) {
       const record = buffers.get(id);
       emit("evict", { id });
@@ -3497,6 +3686,7 @@ export function createDocStore({
     const dirty = Boolean(record.sync?.dirty && !record.sync.rewrap) || saveTimers.has(id);
     // The text, not the ciphertext: a lost note may be encrypted for members
     // this device is not one of any more, but what it typed is in memory.
+    materialize(id);
     const typed = record.enc ? plain.get(id) : undefined;
     dropTimers(id);
     // A file body not in memory needs no copy: it is the file, and the trash
@@ -4003,6 +4193,7 @@ export function createDocStore({
    */
   function isEmpty(record) {
     if (!isDocument(record) || record.kind === "file" || record.title) return false;
+    materialize(record.id);
     if (record.enc) {
       // A synced note is encrypted even while empty (§27), so its decoded
       // text decides. Without it in memory (after a restart) the first line
@@ -4039,6 +4230,8 @@ export function createDocStore({
   async function forget(id) {
     const record = buffers.get(id);
     buffers.delete(id);
+    liveDocs.delete(id);
+    if (record) liveFirstLines.delete(record);
     plain.delete(id);
     await remove(id);
     // Nothing else owns a file record's handle row (linkFile makes one per
@@ -4063,10 +4256,26 @@ export function createDocStore({
    */
   async function discardEmpty(ids) {
     const open = workspaces.openSet();
+    /** @type {string[]} */
+    const deletes = [];
     for (const id of ids) {
       const record = buffers.get(id);
       if (!record || open.has(id) || record.sync?.tombstone === "deleted") continue;
-      if (isEmpty(record)) await discard(record);
+      if (!isEmpty(record)) continue;
+      if ((record.sync && record.sync.rev > 0) || record.file) {
+        await discard(record);
+      } else {
+        buffers.delete(id);
+        liveDocs.delete(id);
+        liveFirstLines.delete(record);
+        plain.delete(id);
+        deletes.push(id);
+      }
+    }
+    if (deletes.length > 0) {
+      await putBuffersBatch({ deletes });
+      for (const id of deletes) post("buffer-deleted", { id });
+      emit("change");
     }
   }
 
@@ -4080,6 +4289,8 @@ export function createDocStore({
     if (!record || index < 0) return;
     const visibleBefore = openBuffers().filter(isTabVisible);
     const visIndex = visibleBefore.findIndex((b) => b.id === id);
+    // Materialize any live Text rope before `evict` drops the cached EditorState.
+    materialize(id);
     emit("evict", { id });
     // The flush: a keystroke still in its debounce reaches its storage now,
     // because the working copy goes next (§23).
@@ -4161,9 +4372,6 @@ export function createDocStore({
         needsPermission.add(stored.id);
       }
     }
-    // The keys can be open before the records are here (a device key that
-    // unlocks at start), and then no "unlock" comes after this.
-    void warmPreviews();
   }
 
   // ---- Other windows (architecture.md §14.2) ------------------------------
@@ -4184,6 +4392,12 @@ export function createDocStore({
   /** @param {BufferRecord} record */
   async function adoptFromWindow(record) {
     const id = record.id;
+    if (isMyTab(id) && saveTimers.has(id)) return;
+    if (/** @type {any} */ (record).bodyOmitted) {
+      const stored = await getBuffer(id);
+      if (!stored) return;
+      record = stored;
+    }
     const mine = isMyTab(id);
     if (mine && saveTimers.has(id)) return;
     const previous = buffers.get(id);
@@ -4238,7 +4452,11 @@ export function createDocStore({
       previous.content !== record.content ||
       Boolean(previous.enc) !== Boolean(record.enc);
     // The decoded text belongs to the old ciphertext.
-    if (contentChanged) plain.delete(id);
+    if (contentChanged) {
+      liveDocs.delete(id);
+      if (previous) liveFirstLines.delete(previous);
+      plain.delete(id);
+    }
     if (mine && contentChanged && typeof record.content === "string") {
       await announceReplace(record);
     }
@@ -4248,7 +4466,10 @@ export function createDocStore({
   /** @param {string} id */
   async function evictFromWindow(id) {
     if (!buffers.has(id)) return;
+    const prev = buffers.get(id);
     buffers.delete(id);
+    liveDocs.delete(id);
+    if (prev) liveFirstLines.delete(prev);
     plain.delete(id);
     emit("evict", { id });
     if (workspaces.current().tabs.includes(id)) await workspaces.removeTab(id);
@@ -4396,6 +4617,8 @@ export function createDocStore({
     activate,
     textOf,
     loadedText,
+    loadedPreviewHead,
+    warmPreviewsFor,
     // The encoded body of any record, read from its file when this window
     // holds none (§23). The one door for a caller that needs the bytes.
     body,

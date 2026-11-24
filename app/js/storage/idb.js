@@ -415,6 +415,12 @@ export async function getAllBuffers() {
   return request(db.transaction(STORE, "readonly").objectStore(STORE).getAll());
 }
 
+/** @param {string} id @returns {Promise<BufferRecord | undefined>} */
+export async function getBuffer(id) {
+  const db = await openDb();
+  return request(db.transaction(STORE, "readonly").objectStore(STORE).get(id));
+}
+
 export async function putBuffer(record) {
   const db = await openDb();
   const tx = db.transaction(STORE, "readwrite");
@@ -435,6 +441,25 @@ export async function deleteBuffer(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Commit multiple buffer puts and deletes in one readwrite transaction so
+ * startup housekeeping does not pay N separate IndexedDB fsyncs.
+ * @param {{puts?: BufferRecord[], deletes?: string[]}} ops
+ */
+export async function putBuffersBatch({ puts = [], deletes = [] }) {
+  if (puts.length === 0 && deletes.length === 0) return;
+  const db = await openDb();
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  for (const record of puts) store.put(record);
+  for (const id of deletes) store.delete(id);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 

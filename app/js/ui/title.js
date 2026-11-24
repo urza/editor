@@ -42,6 +42,9 @@ export function mountTitle(store, { secondary = false, space = "" } = {}) {
   }
 
   store.events.addEventListener("change", render);
+  store.events.addEventListener("buffer-edit", (event) => {
+    if (/** @type {CustomEvent} */ (event).detail?.id === store.activeId) render();
+  });
   store.events.addEventListener("active", render);
   render();
 }

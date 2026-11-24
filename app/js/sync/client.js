@@ -195,6 +195,9 @@ export function createSyncClient({ store, keyring }) {
   // once per round: a file that stays missing would fill the console.
   /** @type {Set<string>} */
   const unreadable = new Set();
+  /** Cached deviceId -> display name; cleared whenever logs, introductions, or keyring change. @type {Map<string, string>} */
+  const deviceNames = new Map();
+  keyring.addEventListener("change", () => deviceNames.clear());
 
   function isConfigured() {
     return Boolean(config && config.v === 2 && config.url && config.token);
@@ -258,6 +261,7 @@ export function createSyncClient({ store, keyring }) {
 
   /** Replay every log; the store and the UI read the result. */
   function rebuild() {
+    deviceNames.clear();
     const next = dict();
     for (const [space, entry] of Object.entries(logs)) {
       const state = replay(entry.log, entry.creator, space);
@@ -610,11 +614,21 @@ export function createSyncClient({ store, keyring }) {
    * signed, else from the keyring record (names only, §27). @param {string} id
    */
   function deviceName(id) {
+    const cached = deviceNames.get(id);
+    if (cached !== undefined) return cached;
+    let resolved = "";
     for (const key of knownSet()) {
       const parsed = parseEntryKey(key);
-      if (parsed?.id === id) return parsed.name;
+      if (parsed?.id === id) {
+        resolved = parsed.name;
+        break;
+      }
     }
-    return keyring.content?.devices.find((d) => d.id === id)?.name ?? "";
+    if (!resolved) {
+      resolved = keyring.content?.devices.find((d) => d.id === id)?.name ?? "";
+    }
+    deviceNames.set(id, resolved);
+    return resolved;
   }
 
   // ---- The device directory (architecture.md §27) -------------------------
@@ -639,6 +653,7 @@ export function createSyncClient({ store, keyring }) {
   /** @param {import("../crypto/spaces.js").Introduction[]} entries New ones only; the caller checked them. */
   async function remember(entries) {
     if (!entries.length) return;
+    deviceNames.clear();
     introductions = [...introductions, ...entries];
     await putSetting(INTRODUCTIONS_KEY, introductions);
     post("setting", { key: INTRODUCTIONS_KEY });
@@ -1647,20 +1662,22 @@ export function createSyncClient({ store, keyring }) {
     window.addEventListener("online", () => syncNow());
     setInterval(() => syncNow(), POLL);
 
-    // Every keystroke emits "change", so this debounce is what turns a burst of
-    // typing into one push.
+    // Every keystroke emits "buffer-edit" (and metadata edits emit "change"),
+    // so this debounce is what turns a burst of typing into one push.
     //
     // The dirty test is at the END of the wait, not at the start: a keystroke
-    // emits "change" immediately but only marks the record dirty 300 ms later,
-    // after the codec stage of the persist debounce (model/docs.js). Testing it
-    // on arrival would find nothing dirty and never arm the timer at all.
-    store.events.addEventListener("change", () => {
+    // emits "buffer-edit" immediately but only marks the record dirty 300 ms
+    // later, after the codec stage of the persist debounce (model/docs.js).
+    // Testing it on arrival would find nothing dirty and never arm the timer.
+    const armPushDebounce = () => {
       if (!isConfigured()) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         if (store.dirtyRecords().length > 0 || keyringNeedsAttach()) syncNow();
       }, DEBOUNCE);
-    });
+    };
+    store.events.addEventListener("change", armPushDebounce);
+    store.events.addEventListener("buffer-edit", armPushDebounce);
 
     // A window can wait long for the lock, and the old leader moved the
     // cursors meanwhile: read them fresh, or the first run replays all of it.

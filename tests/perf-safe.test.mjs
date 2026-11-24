@@ -98,3 +98,15 @@ test("countRecipients reads only the age header and matches exact recipient coun
   assert.equal(count, 1);
   assert.ok(elapsed < 50, `expected fast header parse, got ${elapsed.toFixed(2)} ms`);
 });
+
+test("firstLineTitle reads only the opening window on multi-MB strings", async () => {
+  globalThis.window ??= /** @type {any} */ ({});
+  const { firstLineTitle } = await import("../app/js/model/docs.js");
+  const big = "\n\n  # Shopping List for Friday  \n" + "item line\n".repeat(200000);
+  const t0 = performance.now();
+  const title = firstLineTitle(big);
+  const elapsed = performance.now() - t0;
+  assert.equal(title, "# Shopping List for Friday");
+  assert.ok(elapsed < 10, `expected O(1) firstLineTitle, got ${elapsed.toFixed(2)} ms`);
+});
+

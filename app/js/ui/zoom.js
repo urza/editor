@@ -69,13 +69,25 @@ export function mountZoom(host, store) {
   // Safe only because main.js mounts this after store.load(), which reads
   // every record, closed, trashed and locked ones too: an entry the store
   // does not know belongs to a note that is gone for good.
-  const zooms = load();
-  for (const id of zooms.keys()) if (!store.get(id)) zooms.delete(id);
-  save(zooms);
+  /** @type {Map<string, number> | null} */
+  let cachedZooms = load();
+  for (const id of cachedZooms.keys()) if (!store.get(id)) cachedZooms.delete(id);
+  save(cachedZooms);
+
+  // Drop the read cache when another window updates localStorage; set() below
+  // still loads fresh before mutating so two windows never clobber each other.
+  window.addEventListener("storage", (event) => {
+    if (!event.key || event.key === KEY) {
+      cachedZooms = null;
+      apply();
+    }
+  });
 
   /** The open note's percent. Absent from the saved map means 100. */
   function percent() {
-    return (store.activeId && load().get(store.activeId)) || ZOOM.default;
+    if (!store.activeId) return ZOOM.default;
+    if (!cachedZooms) cachedZooms = load();
+    return cachedZooms.get(store.activeId) || ZOOM.default;
   }
 
   /** Put the open note's factor on the host. */
@@ -98,6 +110,7 @@ export function mountZoom(host, store) {
     if (next === ZOOM.default) zooms.delete(id);
     else zooms.set(id, next);
     save(zooms);
+    cachedZooms = zooms;
     apply();
   }
 

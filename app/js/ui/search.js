@@ -23,6 +23,7 @@ import { phoneMode } from "./shell.js";
  * cancelled run's numbers can never leak into the one that replaced it.
  * @typedef {Object} Run
  * @property {number} gen       Its generation; a newer one ends this run.
+ * @property {string} needle    The literal query string.
  * @property {RegExp} re        The query, escaped, case flag applied.
  * @property {number} len       Match length. Plain text, so it is the query's.
  * @property {boolean} exact    The query was in quotes: case must match.
@@ -30,8 +31,14 @@ import { phoneMode } from "./shell.js";
  * @property {number} files
  * @property {number} locked    Encrypted documents skipped (§5).
  * @property {boolean} capped   The cap cut the scan short.
+ * @property {number} lastYield Timestamp of last main-thread yield.
  * @property {{text: string, folderId?: string}[]} notes  Per-folder trouble.
  * @property {Set<string>} paths  file.path of every tab searched.
+ */
+
+/**
+ * Deferred hit record behind `"… N more"`, materialized into DOM only on click.
+ * @typedef {{line: string, number: number, col: number, len: number, data: Record<string, string>}} DeferredHit
  */
 
 // The list is a snapshot in the DOM; a search of a source tree can match
@@ -51,6 +58,8 @@ const TYPE_DELAY = 250;
 // Hits a file shows before a "… N more" row. One file that matches on every
 // line would otherwise push every other file far down the list.
 const FILE_HITS = 20;
+// Cooperative main-thread slice budget before yielding to input/paint.
+const YIELD_BUDGET_MS = 12;
 
 /** @param {string} text */
 function escapeRegExp(text) {
@@ -180,66 +189,91 @@ export function mountSearch({ store, folders, workspaces, editor }) {
   }
 
   /**
-   * The matching lines of one text, as rows. Counts them into the run and sets
-   * `capped` when the last one fits no more.
-   * @param {Run} run @param {string} text @param {Record<string, string>} data
-   * @returns {HTMLElement[]}
-   */
-  function matchRows(run, text, data) {
-    const lines = text.split(/\r?\n/);
-    /** @type {HTMLElement[]} */
-    const rows = [];
-    for (let i = 0; i < lines.length; i++) {
-      // One hit per line, like grep: a row is a line, and a second match in it
-      // has nowhere of its own to go.
-      const col = lines[i].search(run.re);
-      if (col < 0) continue;
-      if (run.hits >= MAX_HITS) {
-        run.capped = true;
-        break;
-      }
-      run.hits++;
-      rows.push(hitRow(lines[i], i + 1, col, run.len, data));
-    }
-    return rows;
-  }
-
-  /**
    * Append one file's group, when it has hits at all.
+   * Pre-checks `text` before scanning lines so non-matching multi-MB files skip
+   * line slicing altogether, appends visible rows in one `DocumentFragment`,
+   * and defers DOM creation for hits past `FILE_HITS` until `"… N more"` is clicked.
    * @param {Run} run @param {string} label @param {Record<string, string>} data
    * @param {string} text @returns {boolean} Did anything match?
    */
   function addFile(run, label, data, text) {
-    const rows = matchRows(run, text, data);
-    if (!rows.length) return false;
+    if (run.exact ? !text.includes(run.needle) : !run.re.test(text)) return false;
+
+    /** @type {HTMLElement[]} */
+    const visible = [];
+    /** @type {DeferredHit[]} */
+    const deferred = [];
+    let pos = 0;
+    let lineNo = 1;
+    while (pos <= text.length) {
+      const nl = text.indexOf("\n", pos);
+      const rawEnd = nl < 0 ? text.length : nl;
+      const lineEnd = rawEnd > pos && text.charCodeAt(rawEnd - 1) === 13 ? rawEnd - 1 : rawEnd;
+      const line = text.slice(pos, lineEnd);
+      // One hit per line, like grep: a row is a line, and a second match in it
+      // has nowhere of its own to go.
+      const col = run.exact ? line.indexOf(run.needle) : line.search(run.re);
+      if (col >= 0) {
+        if (run.hits >= MAX_HITS) {
+          run.capped = true;
+          break;
+        }
+        run.hits++;
+        if (visible.length < FILE_HITS) {
+          visible.push(hitRow(line, lineNo, col, run.len, data));
+        } else {
+          deferred.push({ line, number: lineNo, col, len: run.len, data });
+        }
+      }
+      if (nl < 0) break;
+      pos = nl + 1;
+      lineNo++;
+    }
+
+    if (!visible.length) return false;
     run.files++;
     // Groups append as each file finishes, so a slow folder shows its first
     // hits long before the scan ends (architecture.md §16).
-    results.append(fileHeading(label, data), ...rows.slice(0, FILE_HITS));
-    if (rows.length > FILE_HITS) {
-      const rest = rows.slice(FILE_HITS);
+    const frag = document.createDocumentFragment();
+    frag.appendChild(fileHeading(label, data));
+    for (const row of visible) frag.appendChild(row);
+    if (deferred.length > 0) {
       const more = document.createElement("li");
       more.className = "search-more";
       more.tabIndex = 0;
-      more.textContent = "… " + rest.length + " more";
-      hiddenRows.set(more, rest);
-      results.append(more);
+      more.textContent = "… " + deferred.length + " more";
+      hiddenRows.set(more, deferred);
+      frag.appendChild(more);
     }
+    results.appendChild(frag);
     return true;
   }
 
-  // The rows behind each "… N more", built with the others: the count is
-  // exact and a click only puts them on screen.
-  /** @type {WeakMap<Element, HTMLElement[]>} */
+  // Deferred hit metadata behind each "… N more"; DOM nodes are built lazily on click.
+  /** @type {WeakMap<Element, DeferredHit[]>} */
   const hiddenRows = new WeakMap();
 
   /** @param {Element} more */
   function showMore(more) {
     const rest = hiddenRows.get(more) || [];
-    more.replaceWith(...rest);
+    const built = rest.map((h) => hitRow(h.line, h.number, h.col, h.len, h.data));
+    more.replaceWith(...built);
     // Focus moves to the first new row, or a keyboard user would land on
     // nothing: the row that had it is gone.
-    rest[0]?.focus();
+    built[0]?.focus();
+  }
+
+  /**
+   * Yield to the event loop when the current slice spent its frame budget so
+   * typing in the search field stays responsive across hundreds of tabs/files.
+   * @param {Run} run
+   * @returns {Promise<boolean>} false when superseded by a newer search.
+   */
+  async function maybeYield(run) {
+    if (performance.now() - run.lastYield < YIELD_BUDGET_MS) return run.gen === generation;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    run.lastYield = performance.now();
+    return run.gen === generation;
   }
 
   /** @param {Run} run @param {boolean} running */
@@ -336,6 +370,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
         handles.set(handleKey(folder.id, entry.path), entry.handle);
       }
       if (run.capped) return false;
+      if (!(await maybeYield(run))) return false;
     }
     return true;
   }
@@ -377,6 +412,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
 
       addFile(run, titleOf(record), { id: record.id }, text);
       if (run.capped) return false;
+      if (!(await maybeYield(run))) return false;
     }
     return true;
   }
@@ -423,6 +459,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
     /** @type {Run} */
     const run = {
       gen: ++generation,
+      needle: text,
       // Plain text, not a pattern: §16 keeps regular expressions out of this
       // unit, so the query is escaped and the match length is its length.
       re: new RegExp(escapeRegExp(text), exact ? "" : "i"),
@@ -432,6 +469,7 @@ export function mountSearch({ store, folders, workspaces, editor }) {
       files: 0,
       locked: 0,
       capped: false,
+      lastYield: performance.now(),
       notes: [],
       paths: new Set(),
     };

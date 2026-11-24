@@ -2,7 +2,7 @@
 // highlight style. We assemble the extensions by hand instead of using
 // `basicSetup` so the defaults can match Sublime Text 4 exactly.
 
-import { Compartment, EditorState, Prec } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state";
 import {
   EditorView,
   drawSelection,
@@ -58,6 +58,8 @@ import {
 // state: every state gets the same listener from baseExtensions, and the bar
 // reads the view, which holds whichever state is on screen.
 export const editorEvents = new EventTarget();
+/** Marks programmatic `"replace"` dispatches so `onDocChanged` ignores external reload echoes. */
+const replaceAnnotation = Annotation.define();
 
 // Mariana palette (sublime-defaults.md part 2.3).
 const BACKGROUND = "#303841";
@@ -335,8 +337,15 @@ function baseExtensions(lang, onDocChanged, onDominantPaste, spellOff) {
     syntaxHighlighting(marianaHighlight),
     marianaTheme,
     EditorView.updateListener.of((update) => {
-      if (update.docChanged && onDocChanged) {
-        onDocChanged(update.state.doc.toString());
+      if (
+        update.docChanged &&
+        onDocChanged &&
+        !update.transactions.some((tr) => tr.annotation(replaceAnnotation))
+      ) {
+        // Hand CodeMirror's O(1) immutable Text rope to the store instead of
+        // calling doc.toString() on every keystroke; the store materializes a
+        // flat string lazily when the 300 ms save debounce fires.
+        onDocChanged(update.state.doc);
       }
       if (update.docChanged || update.selectionSet) {
         editorEvents.dispatchEvent(new CustomEvent("update", { detail: { docChanged: update.docChanged } }));
@@ -865,9 +874,9 @@ export function mountEditor(host, store) {
     if (!base) return;
     const transaction = base.update({
       changes: { from: 0, to: base.doc.length, insert: content },
-      // Own undo step. Without this the reload merges into whatever the user
-      // typed in the last half second, and one Ctrl+Z would undo both.
-      annotations: isolateHistory.of("full"),
+      // Own undo step, and marked with replaceAnnotation so baseExtensions
+      // never echoes an external reload back into store.updateContent.
+      annotations: [isolateHistory.of("full"), replaceAnnotation.of(true)],
     });
     if (live) {
       view.dispatch(transaction);
