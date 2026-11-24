@@ -3535,12 +3535,13 @@ export function createDocStore({
           stagedBuffers.delete(id);
         }
       }
-      /** @type {import("../storage/idb.js").WorkspaceRecord[]} */
-      const putWorkspaces = [];
+      /** @type {import("./workspace.js").PreparedWorkspaceTabs[]} */
+      const preparedWorkspaces = [];
       for (const [wsId, ids] of stagedTabsByWs) {
-        const wsRec = await workspaces.prepareAddTabs(ids, wsId);
-        if (wsRec) putWorkspaces.push(wsRec);
+        const prep = await workspaces.prepareAddTabs(ids, wsId);
+        if (prep) preparedWorkspaces.push(prep);
       }
+      const putWorkspaces = preparedWorkspaces.map((p) => p.record);
       const committedBuffers = [...stagedBuffers.values()];
       const putBuffers = committedBuffers.map((b) => ({ ...b }));
       const putRemotes = [...stagedRemotes.values()];
@@ -3559,7 +3560,9 @@ export function createDocStore({
       for (const row of putBuffers) postBuffer(row);
       for (const stub of putRemotes) post("remote", { stub });
       for (const id of deleteRemotes) post("remote-deleted", { id });
-      for (const wsRec of putWorkspaces) workspaces.commitPreparedWorkspace(wsRec);
+      for (const prep of preparedWorkspaces) {
+        await workspaces.commitPreparedWorkspace(prep);
+      }
       emit("change");
     };
 
