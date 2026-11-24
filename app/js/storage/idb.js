@@ -463,6 +463,54 @@ export async function putBuffersBatch({ puts = [], deletes = [] }) {
   });
 }
 
+/**
+ * Commit an entire sync pull page's buffer, stub, and workspace mutations in
+ * one atomic readwrite transaction instead of 200-400 separate transactions (H4).
+ * @param {{
+ *   putBuffers?: BufferRecord[],
+ *   deleteBuffers?: string[],
+ *   putRemotes?: RemoteStub[],
+ *   deleteRemotes?: string[],
+ *   putWorkspaces?: WorkspaceRecord[]
+ * }} ops
+ */
+export async function applySyncBatch({
+  putBuffers = [],
+  deleteBuffers = [],
+  putRemotes = [],
+  deleteRemotes = [],
+  putWorkspaces = [],
+}) {
+  /** @type {string[]} */
+  const stores = [];
+  if (putBuffers.length > 0 || deleteBuffers.length > 0) stores.push(STORE);
+  if (putRemotes.length > 0 || deleteRemotes.length > 0) stores.push(REMOTE);
+  if (putWorkspaces.length > 0) stores.push(WORKSPACES);
+  if (stores.length === 0) return;
+
+  const db = await openDb();
+  const tx = db.transaction(stores, "readwrite");
+  if (putBuffers.length > 0 || deleteBuffers.length > 0) {
+    const bufStore = tx.objectStore(STORE);
+    for (const r of putBuffers) bufStore.put(r);
+    for (const id of deleteBuffers) bufStore.delete(id);
+  }
+  if (putRemotes.length > 0 || deleteRemotes.length > 0) {
+    const remStore = tx.objectStore(REMOTE);
+    for (const s of putRemotes) remStore.put(s);
+    for (const id of deleteRemotes) remStore.delete(id);
+  }
+  if (putWorkspaces.length > 0) {
+    const wsStore = tx.objectStore(WORKSPACES);
+    for (const ws of putWorkspaces) wsStore.put(ws);
+  }
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 // Remote store (architecture.md §25): the From server stubs. model/docs.js
 // owns them; the sync leader writes them, every window reads them at start.
 

@@ -164,6 +164,45 @@ export function createWorkspaces({ id }) {
     await save(record);
   }
 
+  /**
+   * Stage adding multiple tabs to `wsId` in memory and return the updated
+   * WorkspaceRecord for `applySyncBatch` so a 200-tab sync page updates the
+   * workspace once instead of writing 200 separate IndexedDB transactions (H4).
+   * Call `notifySaved(record)` once the batch transaction commits.
+   * @param {string[]} bufferIds
+   * @param {string} [wsId]
+   * @returns {Promise<WorkspaceRecord | null>}
+   */
+  async function stageAddTabs(bufferIds, wsId = id) {
+    if (bufferIds.length === 0 || (dissolved && wsId === id)) return null;
+    let record = get(wsId);
+    if (wsId !== id) {
+      record = (await getWorkspace(wsId)) ?? record;
+      records.set(wsId, record);
+    }
+    const existing = new Set(record.tabs);
+    let added = false;
+    for (const bufferId of bufferIds) {
+      if (existing.has(bufferId)) continue;
+      existing.add(bufferId);
+      record.tabs.push(bufferId);
+      added = true;
+    }
+    if (!added) return null;
+    record.updatedAt = Date.now();
+    records.set(record.id, record);
+    return { ...record, tabs: [...record.tabs], folderIds: [...record.folderIds] };
+  }
+
+  /**
+   * Broadcast and emit `"change"` after `stageAddTabs` committed via `applySyncBatch`.
+   * @param {WorkspaceRecord} record
+   */
+  function notifySaved(record) {
+    post("workspace", { record });
+    emit("change", { id: record.id });
+  }
+
   /** @param {string} bufferId */
   async function removeTab(bufferId) {
     const record = current();
@@ -483,6 +522,8 @@ export function createWorkspaces({ id }) {
     spaceOwner,
     liveSet,
     addTab,
+    stageAddTabs,
+    notifySaved,
     removeTab,
     removeTabs,
     moveTab,

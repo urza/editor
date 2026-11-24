@@ -35,6 +35,7 @@
 // byte-agnostic, which is what keeps encryption orthogonal to storage.
 
 import {
+  applySyncBatch,
   deleteBuffer,
   deleteHandle,
   deleteRemote,
@@ -301,9 +302,15 @@ export function createDocStore({
   const events = new EventTarget();
   /** @type {string | null} */
   let activeId = null;
+  let batchDepth = 0;
+  let batchChanged = false;
 
   /** @param {string} type @param {object} [detail] */
   function emit(type, detail) {
+    if (type === "change" && batchDepth > 0) {
+      batchChanged = true;
+      return;
+    }
     events.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
@@ -405,17 +412,12 @@ export function createDocStore({
   });
 
   /**
-   * A pulled change for a document this device does not hold, in a `list`
-   * space: keep its title, drop its text (§25). The text stays on the server
-   * until a click fetches it (remote.open).
+   * Build a `RemoteStub` from a pulled text `change`, unsealing `meta.sealed`
+   * when unlocked. Shared between `applyStub` and `applyRemoteBatch`.
    * @param {Change} change @param {string} space
+   * @returns {Promise<RemoteStub>}
    */
-  async function applyStub(change, space) {
-    const existing = remotes.get(change.docId);
-    // Same rule as the echo test of applyRemote: a cursor reset re-delivers
-    // older rows, and they must not bring back an older title.
-    if (existing && change.rev <= existing.rev) return;
-    if (change.kind !== "text") return dropRemote(change.docId);
+  async function buildStub(change, space) {
     const meta = change.meta || {};
     const sealed = meta.sealed ? await unseal(meta.sealed) : null;
     // The title travels sealed (§27); PIN-locked notes never leak their first
@@ -441,6 +443,22 @@ export function createDocStore({
     }
     // Locked: the title opens at the next unlock (unsealPending).
     if (meta.sealed && !sealed) stub.sealed = meta.sealed;
+    return stub;
+  }
+
+  /**
+   * A pulled change for a document this device does not hold, in a `list`
+   * space: keep its title, drop its text (§25). The text stays on the server
+   * until a click fetches it (remote.open).
+   * @param {Change} change @param {string} space
+   */
+  async function applyStub(change, space) {
+    const existing = remotes.get(change.docId);
+    // Same rule as the echo test of applyRemote: a cursor reset re-delivers
+    // older rows, and they must not bring back an older title.
+    if (existing && change.rev <= existing.rev) return;
+    if (change.kind !== "text") return dropRemote(change.docId);
+    const stub = await buildStub(change, space);
     await putStub(stub);
   }
 
@@ -3007,7 +3025,10 @@ export function createDocStore({
    */
   async function adoptRemote(record, change, forked) {
     const id = record.id;
-    const incoming = change.content ?? "";
+    if (change.content === null || change.content === undefined) {
+      throw new Error("sync: missing content for text revision " + id);
+    }
+    const incoming = change.content;
     // The pull replaces the text; a pending persist would write the old
     // working copy over it (applyRemote forked that copy already).
     dropTimers(id);
@@ -3032,6 +3053,8 @@ export function createDocStore({
     };
     record.updatedAt = Date.now();
     // The decoded text belongs to the ciphertext this just replaced.
+    liveDocs.delete(id);
+    liveFirstLines.delete(record);
     plain.delete(id);
     // At once, not through a debounce: the pull has landed when the file
     // holds it (§23). A failure keeps the pulled text as `unwritten`.
@@ -3431,10 +3454,13 @@ export function createDocStore({
     // record for one id would split the buffer's one writer in two.
     const existing = buffers.get(id);
     if (existing) return existing;
+    if (change.content === null || change.content === undefined) {
+      throw new Error("sync: missing content for text revision " + id);
+    }
     /** @type {BufferRecord} */
     const created = {
       id,
-      content: change.content ?? "",
+      content: change.content,
       createdAt: Date.now(),
       // The other device's clock: it is what the row's age should show, and
       // this device never saw the document before now.
@@ -3448,6 +3474,184 @@ export function createDocStore({
     await workspaces.addTab(id, ws);
     emit("change");
     return created;
+  }
+
+  /**
+   * Apply a page of pulled `/api/changes` rows, committing new tabs and stubs
+   * in one IndexedDB transaction per batch (`applySyncBatch`) and emitting
+   * `"change"` once per page instead of 200-400 times (H4). When a `?content=0`
+   * Titles-only pull hits an existing local buffer (or a legacy unsealed row,
+   * or a Space Window opened mid-flight), fetches its full revision via
+   * `fetchDoc` before applying so local text is never wiped (S3).
+   * @param {Change[]} changes
+   * @param {{fetchDoc?: (id: string) => Promise<Change>}} [opts]
+   */
+  async function applyRemoteBatch(changes, { fetchDoc } = {}) {
+    if (!Array.isArray(changes) || changes.length === 0) return;
+
+    /** @type {Map<string, BufferRecord>} */
+    const putBuffersMap = new Map();
+    /** @type {Map<string, RemoteStub>} */
+    const putRemotesMap = new Map();
+    /** @type {Set<string>} */
+    const deleteRemotesSet = new Set();
+    /** @type {Map<string, string[]>} */
+    const tabsByWs = new Map();
+
+    const flushStaged = async () => {
+      if (
+        putBuffersMap.size === 0 &&
+        putRemotesMap.size === 0 &&
+        deleteRemotesSet.size === 0 &&
+        tabsByWs.size === 0
+      ) {
+        return;
+      }
+      /** @type {import("../storage/idb.js").WorkspaceRecord[]} */
+      const putWorkspaces = [];
+      for (const [wsId, ids] of tabsByWs) {
+        const wsRec = await workspaces.stageAddTabs(ids, wsId);
+        if (wsRec) putWorkspaces.push(wsRec);
+      }
+      const putBuffers = [...putBuffersMap.values()];
+      const putRemotes = [...putRemotesMap.values()];
+      const deleteRemotes = [...deleteRemotesSet];
+      putBuffersMap.clear();
+      putRemotesMap.clear();
+      deleteRemotesSet.clear();
+      tabsByWs.clear();
+
+      await applySyncBatch({ putBuffers, putRemotes, deleteRemotes, putWorkspaces });
+      for (const row of putBuffers) postBuffer(row);
+      for (const stub of putRemotes) post("remote", { stub });
+      for (const id of deleteRemotes) post("remote-deleted", { id });
+      for (const wsRec of putWorkspaces) workspaces.notifySaved(wsRec);
+      batchChanged = true;
+    };
+
+    /** @type {Map<string, string | null>} */
+    const spaceWindows = new Map();
+    /** @param {string} space */
+    const cachedSpaceWin = async (space) => {
+      if (space === KEYRING_SPACE) return null;
+      if (!spaceWindows.has(space)) {
+        spaceWindows.set(space, await liveSpaceWindow(space));
+      }
+      return spaceWindows.get(space) ?? null;
+    };
+
+    batchDepth++;
+    try {
+      for (let change of changes) {
+        if (!change || !change.docId) continue;
+        const id = change.docId;
+        const record = buffers.get(id);
+        if (record && record.sync && change.rev <= record.sync.rev) continue;
+
+        const meta = change.meta || {};
+        change.space ??= DEFAULT_SPACE;
+        const space = change.space;
+        const isKeyring = id === KEYRING_ID;
+        if (!isKeyring && meta.kind === "keyring") continue;
+        if ((space === KEYRING_SPACE) !== isKeyring) continue;
+        if (record && !isKeyring && record.trashedAt && !record.sync) continue;
+
+        const spaceWin = await cachedSpaceWin(space);
+
+        // Fast path 1: unknown id in a `list` space (or non-text/non-member) -> stub ops.
+        if (!record && !isKeyring) {
+          const mode = spaces.modeOf(space);
+          if (mode === undefined || change.kind !== "text") {
+            if (remotes.delete(id)) {
+              putRemotesMap.delete(id);
+              deleteRemotesSet.add(id);
+            }
+            continue;
+          }
+          if (mode === "list" && !spaceWin) {
+            const existingStub = remotes.get(id);
+            if (existingStub && change.rev <= existingStub.rev) continue;
+            if (
+              (change.content === null || change.content === undefined) &&
+              !meta.enc &&
+              !meta.sealed &&
+              fetchDoc
+            ) {
+              change = await fetchDoc(id);
+              if (change.kind !== "text") {
+                if (remotes.delete(id)) {
+                  putRemotesMap.delete(id);
+                  deleteRemotesSet.add(id);
+                }
+                continue;
+              }
+            }
+            const stub = await buildStub(change, space);
+            remotes.set(id, stub);
+            deleteRemotesSet.delete(id);
+            putRemotesMap.set(id, stub);
+            continue;
+          }
+
+          // Fast path 2: brand-new synced text record owned by this window.
+          const targetWs = spaceWin ?? MAIN_WORKSPACE;
+          const routed = await routeTarget(id, undefined, meta, spaceWin);
+          if (!routed) {
+            if ((change.content === null || change.content === undefined) && fetchDoc) {
+              change = await fetchDoc(id);
+              if (change.kind !== "text") continue;
+            }
+            if (change.content !== null && change.content !== undefined) {
+              /** @type {BufferRecord} */
+              const created = {
+                id,
+                content: change.content,
+                createdAt: Date.now(),
+                updatedAt: change.clientTime || Date.now(),
+                sync: { rev: change.rev, dirty: false, space: change.space ?? DEFAULT_SPACE },
+              };
+              applyMeta(created, change.meta || {}, await unseal(change.meta?.sealed));
+              buffers.set(id, created);
+              putBuffersMap.set(id, { ...created });
+              if (remotes.delete(id)) {
+                putRemotesMap.delete(id);
+                deleteRemotesSet.add(id);
+              }
+              let wsTabs = tabsByWs.get(targetWs);
+              if (!wsTabs) {
+                wsTabs = [];
+                tabsByWs.set(targetWs, wsTabs);
+              }
+              wsTabs.push(id);
+              continue;
+            }
+          }
+        }
+
+        // Complex or existing-record case (keyring, conflict, tombstone, routed
+        // window, or open note in a `?content=0` space): flush staged batch
+        // first so seq ordering holds, fetch missing text body if needed, and
+        // delegate to applyRemote.
+        await flushStaged();
+        if (
+          change.kind === "text" &&
+          (change.content === null || change.content === undefined) &&
+          spaces.modeOf(space) !== undefined &&
+          fetchDoc
+        ) {
+          change = await fetchDoc(id);
+        }
+        await applyRemote(change);
+      }
+
+      await flushStaged();
+    } finally {
+      batchDepth--;
+      if (batchDepth === 0 && batchChanged) {
+        batchChanged = false;
+        emit("change");
+      }
+    }
   }
 
   /**
@@ -4660,6 +4864,9 @@ export function createDocStore({
     clearSync,
     clearPurge,
     applyRemote,
+    applyRemoteBatch,
+    /** @param {string} space */
+    hasLiveSpaceWindow: (space) => liveSpaceWindow(space).then(Boolean),
     // From server (architecture.md §25).
     remotes: remoteList,
     dropRemote,
