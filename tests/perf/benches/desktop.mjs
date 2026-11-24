@@ -164,13 +164,19 @@ export async function runB9({ runs = 5, chromePath = null, onChromeVersion } = {
 
   const fsSummary = medianObjects(fsRuns);
   const ipc = await measureSaveIpcCalls(chromePath, onChromeVersion);
+  // Only ipcCallsPerSave exercises real app code (docs.js + storage/native.js).
+  // referenceHostFs runs Node's fs/JSON to mirror disk.rs patterns; fixes to
+  // src-tauri/src/disk.rs require a Rust benchmark in src-tauri to measure directly.
   return {
-    ...fsSummary,
     ipcCallsPerSave: ipc.ipcCallsPerSave,
     ipcCommands: ipc.ipcCommands,
-    diskList5000StatP95Ms: percentile(
-      fsRuns.map((r) => r.diskList5000StatMs),
-      0.95
-    ),
+    referenceHostFs: {
+      note: "Node fs/JSON host reference only (not compiled src-tauri/src/disk.rs)",
+      ...fsSummary,
+      diskList5000StatP95Ms: percentile(
+        fsRuns.map((r) => r.diskList5000StatMs),
+        0.95
+      ),
+    },
   };
 }

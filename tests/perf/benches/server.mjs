@@ -36,7 +36,10 @@ export async function runB8({ runs = 5 } = {}) {
   if (!hasDotnet()) return { skipped: "dotnet not installed" };
   if (!hasPython3()) return { skipped: "python3 not installed" };
 
-  const trials = Math.max(5, runs);
+  // Use 30 timed samples per route after 3 warm-up calls so p95 reflects steady-state
+  // latency rather than first-call JIT or cold SQLite page cache outliers.
+  const samplesPerRoute = Math.max(30, runs * 6);
+  const warmupCalls = 3;
   const out = {};
 
   for (const tier of TIERS) {
@@ -56,18 +59,24 @@ export async function runB8({ runs = 5 } = {}) {
       await timedFetch(`${srv.url}/api/health`, seeded.devToken);
 
       // 1. GET /api/spaces
+      for (let i = 0; i < warmupCalls; i++) {
+        await timedFetch(`${srv.url}/api/spaces`, seeded.devToken);
+      }
       const spacesSamples = [];
       let spacesBytes = 0;
-      for (let i = 0; i < trials; i++) {
+      for (let i = 0; i < samplesPerRoute; i++) {
         const r = await timedFetch(`${srv.url}/api/spaces`, seeded.devToken);
         spacesSamples.push(r.ms);
         spacesBytes = r.bytes;
       }
 
       // 2. GET /api/changes page 1 (since=0, limit=200, personal)
+      for (let i = 0; i < warmupCalls; i++) {
+        await timedFetch(`${srv.url}/api/changes?since=0&limit=200&spaces=personal`, seeded.devToken);
+      }
       const page1Samples = [];
       let page1Bytes = 0;
-      for (let i = 0; i < trials; i++) {
+      for (let i = 0; i < samplesPerRoute; i++) {
         const r = await timedFetch(`${srv.url}/api/changes?since=0&limit=200&spaces=personal`, seeded.devToken);
         page1Samples.push(r.ms);
         page1Bytes = r.bytes;
@@ -96,15 +105,18 @@ export async function runB8({ runs = 5 } = {}) {
       }
 
       // 4. GET /api/docs/big-doc-001/revisions (history list)
+      for (let i = 0; i < warmupCalls; i++) {
+        await timedFetch(`${srv.url}/api/docs/big-doc-001/revisions`, seeded.devToken);
+      }
       const historySamples = [];
       let historyBytes = 0;
-      for (let i = 0; i < trials; i++) {
+      for (let i = 0; i < samplesPerRoute; i++) {
         const r = await timedFetch(`${srv.url}/api/docs/big-doc-001/revisions`, seeded.devToken);
         historySamples.push(r.ms);
         historyBytes = r.bytes;
       }
 
-      // 5. POST push 4 KB and 1 MB
+      // 5. POST push 4 KB and 1 MB (warm up each route first)
       const header = "-----BEGIN AGE ENCRYPTED FILE-----\n";
       const footer = "\n-----END AGE ENCRYPTED FILE-----\n";
       const body4KB = header + "X".repeat(4000) + footer;
@@ -117,38 +129,38 @@ export async function runB8({ runs = 5 } = {}) {
 
       const push4kSamples = [];
       let revSmall = tier.revsPerDoc;
-      for (let i = 0; i < trials; i++) {
+      for (let i = 0; i < warmupCalls + samplesPerRoute; i++) {
         const r = await timedFetch(`${srv.url}/api/docs/doc-000000/revisions`, seeded.devToken, {
           method: "POST",
           body: { baseRev: revSmall, kind: "text", content: body4KB, meta: sealedMeta, clientTime: Date.now(), space: "personal" },
         });
         if (r.status !== 201) throw new Error(`B8 4KB push failed (${r.status})`);
         revSmall++;
-        push4kSamples.push(r.ms);
+        if (i >= warmupCalls) push4kSamples.push(r.ms);
       }
 
       const push1mSamples = [];
       let revBig = tier.bigDocRevs;
-      for (let i = 0; i < trials; i++) {
+      for (let i = 0; i < warmupCalls + samplesPerRoute; i++) {
         const r = await timedFetch(`${srv.url}/api/docs/big-doc-001/revisions`, seeded.devToken, {
           method: "POST",
           body: { baseRev: revBig, kind: "text", content: body1MB, meta: sealedMeta, clientTime: Date.now(), space: "personal" },
         });
         if (r.status !== 201) throw new Error(`B8 1MB push failed (${r.status})`);
         revBig++;
-        push1mSamples.push(r.ms);
+        if (i >= warmupCalls) push1mSamples.push(r.ms);
       }
 
       out[tier.name] = {
         dbSizeMB,
         totalRevs: seeded.totalRevs,
+        samplesPerRoute,
         spaces: { p50Ms: percentile(spacesSamples, 0.5), p95Ms: percentile(spacesSamples, 0.95), bytes: spacesBytes },
         changesPage1: { p50Ms: percentile(page1Samples, 0.5), p95Ms: percentile(page1Samples, 0.95), bytes: page1Bytes },
         fullPullPersonal: medianObjects(fullPullRuns),
         historyBigDoc: { p50Ms: percentile(historySamples, 0.5), p95Ms: percentile(historySamples, 0.95), bytes: historyBytes },
         push4KB: { p50Ms: percentile(push4kSamples, 0.5), p95Ms: percentile(push4kSamples, 0.95) },
         push1MB: { p50Ms: percentile(push1mSamples, 0.5), p95Ms: percentile(push1mSamples, 0.95) },
-        plans: seeded.plans,
       };
     } finally {
       if (srv) await srv.close();

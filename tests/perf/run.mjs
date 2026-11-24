@@ -85,13 +85,22 @@ async function main() {
   };
 
   const results = {};
+  let failures = 0;
   try {
     for (const id of selected) {
       const t0 = performance.now();
       process.stderr.write(`[perf] Running ${id} (runs=${opts.runs})... `);
-      results[id] = await runners[id]();
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-      process.stderr.write(`done (${elapsed}s)\n`);
+      try {
+        results[id] = await runners[id]();
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+        process.stderr.write(`done (${elapsed}s)\n`);
+      } catch (err) {
+        failures++;
+        const msg = err instanceof Error ? err.message : String(err);
+        results[id] = { error: msg };
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+        process.stderr.write(`FAILED (${elapsed}s): ${msg}\n`);
+      }
     }
   } finally {
     cleanupServerBuild();
@@ -102,6 +111,7 @@ async function main() {
     runs: opts.runs,
     phoneIncluded: opts.phone,
     selected,
+    failures,
     env: collectEnvInfo(state.chromiumVersion),
     results,
   };
@@ -113,11 +123,11 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
   process.stderr.write(`[perf] Wrote ${outPath}\n`);
   console.log(JSON.stringify(payload, null, 2));
+  // Exit explicitly so lingering HTTP keep-alive sockets from fetch() never stall the CLI.
+  process.exit(failures > 0 ? 1 : 0);
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

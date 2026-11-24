@@ -14,7 +14,7 @@ This suite measures vrtti across the browser client, the `.NET 10` SQLite sync s
 | `B6` | Update size (no browser) | Raw and GitHub-Pages wire bytes of `app/sw-precache.js`, app-only deploy size, and Fast 3G transfer seconds. |
 | `B7` | Sync client (real server + CDP) | Pulling 2,000 `Open as tabs` notes and 2,000 `Titles only` notes: wall time, IDB transactions, `"change"` events, and HTTP bytes. |
 | `B8` | Sync server (`Release` `.NET 10`) | Seeded 1k/5k, 5k/50k, and 10k/100k SQLite DBs: `GET /api/spaces`, `/api/changes`, full pull, history list, 4 KB and 1 MB pushes. |
-| `B9` | Desktop disk & IPC | 5,000-file `disk_list` (`stat` vs `d_type`), atomic writes with `fsync` (10 KB / 1 MB / 5 MB), JSON IPC overhead, and IPC calls per save. |
+| `B9` | Desktop disk & IPC | Real IPC calls per file save in `docs.js` + `native.js`, plus Node host reference timings mirroring `disk.rs` patterns. |
 
 ## Usage
 

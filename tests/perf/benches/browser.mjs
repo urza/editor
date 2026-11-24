@@ -635,8 +635,9 @@ export async function runB7({ runs = 5, chromePath, onChromeVersion }) {
     const runPullOnce = async (cursorsObj, expectExpr) => {
       await browser.cdp.eval(`(async () => {
         sessionStorage.setItem("__perfGateSync", "1");
+        // Open without a version number so future DB_VERSION bumps do not break B7.
         const db = await new Promise((res, rej) => {
-          const q = indexedDB.open("vrtti", 8);
+          const q = indexedDB.open("vrtti");
           q.onsuccess = () => res(q.result);
           q.onerror = () => rej(q.error);
         });
@@ -654,7 +655,10 @@ export async function runB7({ runs = 5, chromePath, onChromeVersion }) {
       await browser.reload();
 
       changesBytes = 0;
-      const metrics = await browser.cdp.eval(`(async () => {
+      // Pass a 300 s CDP eval timeout (above the 240 s inner deadline) because
+      // unfixed Open-as-tabs pulls are O(N^2) and exceed the default 120 s limit.
+      const metrics = await browser.cdp.eval(
+        `(async () => {
         let changeEvents = 0;
         const onChange = () => changeEvents++;
         window.vrtti.store.events.addEventListener("change", onChange);
@@ -683,7 +687,9 @@ export async function runB7({ runs = 5, chromePath, onChromeVersion }) {
           pulledBuffers: window.vrtti.buffers.size,
           pulledStubs: window.vrtti.remotes().length,
         };
-      })()`);
+      })()`,
+        300000
+      );
       return { ...metrics, bytesDownloaded: changesBytes };
     };
 

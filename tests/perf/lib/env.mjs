@@ -221,7 +221,7 @@ export class CdpClient {
 
 export async function launchBrowser(
   chromePath,
-  { width = 1280, height = 800, mobile = false, cpuThrottle = 1, spellcheckOff = true } = {}
+  { width = 1280, height = 800, mobile = false, cpuThrottle = 1, spellcheckOff = true, disableSw = true } = {}
 ) {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vrtti-perf-prof-"));
   const proc = spawn(
@@ -290,6 +290,29 @@ export async function launchBrowser(
   if (spellcheckOff) {
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
       source: `localStorage.setItem("vrtti.spellcheck", "off");`,
+    });
+  }
+  if (disableSw) {
+    // Prevent sw.js from precaching ~23 MB in the background while benchmarks
+    // measure CPU, RAM, and typing latency on fresh Chromium profiles.
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `
+        if ("serviceWorker" in navigator) {
+          try {
+            Object.defineProperty(navigator, "serviceWorker", {
+              configurable: true,
+              value: {
+                register: () => new Promise(() => {}),
+                getRegistration: () => Promise.resolve(undefined),
+                getRegistrations: () => Promise.resolve([]),
+                ready: new Promise(() => {}),
+                addEventListener: () => {},
+                removeEventListener: () => {},
+              },
+            });
+          } catch {}
+        }
+      `,
     });
   }
 

@@ -223,8 +223,8 @@ Each dataset included one `big-doc-001` note with 50 to 200 historical revisions
 
 **Root causes (verified in `B7` against real `Vrtti.Server`):**
 1. `MAX_PAGES = 100` (20,000 rows) caps `pullSpace()` and `allNotes()`. Backups of spaces above 20,000 notes silently drop notes with no error.
-2. `pullSpace()` loops `for (const change of body.changes) await store.applyRemote(change)`. In `B7`, pulling 2,000 `Open as tabs` notes hit **90.0 s** with only **1,508 / 2,000** applied. It fired **3,023 IDB transactions** and **3,012 `"change"` events**, triggering `O(N^2)` sidebar rebuilds.
-3. In `B7`, pulling 2,000 `Titles only` notes took **2,974.5 ms** with **2,013 IDB transactions** and **2,000 `"change"` events**. It downloaded **13.84 MB** of bodies that `applyStub()` discarded (**91.4% to 93.4%** waste).
+2. `pullSpace()` loops `for (const change of body.changes) await store.applyRemote(change)`. In `B7`, pulling 2,000 `Open as tabs` notes took **114.4 s**. It fired **4,014 IDB transactions** and **4,000 `"change"` events**, triggering `O(N^2)` sidebar rebuilds.
+3. In `B7`, pulling 2,000 `Titles only` notes took **1,956.9 ms** with **2,013 IDB transactions** and **2,000 `"change"` events**. It downloaded **13.84 MB** of bodies that `applyStub()` discarded (**91.4% to 93.4%** waste).
 
 **Safe fixes now:** Remove the 100-page ceiling (loop while `body.more` is true, stopping with an error if `next` does not advance). Add `store.applyRemoteBatch(changes)` to commit one 200-item page in a single IDB transaction with one `"change"` event. Pass `?content=0` for `Titles only` spaces (paired with S3).
 
@@ -380,4 +380,4 @@ Commit the `tests/perf/` harness (`B1` to `B9` plus `compare.mjs`) in this PR so
 | Service Worker app-only deploy on Fast 3G (1.6 Mbps) | **~1.1 MB wire (< 10 s)**, well under 30 s timeout |
 | Main-thread Long Tasks during spellcheck load or 95 KB lint (Phone 4x) | **0 tasks > 50 ms** |
 | `GET /api/docs/{id}/revisions` (203 x 512 KB revs) | **< 5 ms (p95)** |
-| Desktop `disk_list` (5,000 files) and file save IPC count | **< 5 ms** and **1 IPC call per save** |
+| Desktop file save IPC count (`B9`) | **1 IPC call per save** (keeping `sync_all()`; `disk_list` needs a Rust bench in `src-tauri`) |

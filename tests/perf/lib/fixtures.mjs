@@ -101,8 +101,10 @@ export async function seedVaultInPage(
   { openCount, recentCount, closedSyncedCount = 0, stubCount = 0, trashCount = 0, noteSizeBytes = 4096, encrypted = false }
 ) {
   return cdp.eval(`(async () => {
+    // Open without a version number: the page already created the database at
+    // the app's current DB_VERSION, so future schema bumps will not break seeding.
     const db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open("vrtti", 8);
+      const req = indexedDB.open("vrtti");
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -285,41 +287,8 @@ conn.commit()
 
 total_revs = conn.execute("SELECT COUNT(*) FROM revisions").fetchone()[0]
 max_seq = conn.execute("SELECT MAX(seq) FROM revisions").fetchone()[0]
-
-plans = {}
-queries = {
-    "changes_initial": """
-        SELECT doc_id, rev, k AS seq, kind, content, meta, device_id, client_time, server_time, space
-        FROM (SELECT r.*,
-                     CASE WHEN r.space IN ('personal') THEN r.seq
-                          ELSE (SELECT MAX(r3.seq) FROM revisions r3
-                                WHERE r3.doc_id = r.doc_id AND r3.prev_space IN ('personal'))
-                     END AS k
-              FROM revisions r
-              WHERE r.seq > 0
-                AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id))
-        WHERE k > 0
-        ORDER BY k
-        LIMIT 201
-    """,
-    "spaces_of": """
-        SELECT m.space,
-               (SELECT COUNT(*) FROM revisions r
-                WHERE r.space = m.space AND r.kind = 'text'
-                  AND r.seq = (SELECT MAX(r2.seq) FROM revisions r2 WHERE r2.doc_id = r.doc_id)),
-               (SELECT MAX(l.seq) FROM space_log l WHERE l.space = m.space)
-        FROM members m
-        WHERE m.device_id = 'dev-1'
-        ORDER BY m.space
-    """,
-    "readable": "SELECT space FROM members WHERE device_id = 'dev-1'",
-    "history": "SELECT rev, seq, kind, device_id, client_time, server_time, COALESCE(LENGTH(content), 0) FROM revisions WHERE doc_id = 'big-doc-001' AND space IN ('personal','work','archive','keyring') ORDER BY rev DESC",
-}
-for name, q in queries.items():
-    plans[name] = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + q).fetchall()]
-
 conn.close()
-print(json.dumps({"totalRevs": total_revs, "maxSeq": max_seq, "plans": plans}))
+print(json.dumps({"totalRevs": total_revs, "maxSeq": max_seq}))
 `;
   const raw = execFileSync(
     "python3",
