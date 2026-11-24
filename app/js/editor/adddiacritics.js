@@ -120,7 +120,9 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
     const sent = after.slice(p.from, p.to);
     try {
       const answer = await model.ask(sent, `${paras.indexOf(p) + 1}/${paras.length}`);
-      const answerWords = [...new Set([...answer.matchAll(WORD)].map((m) => m[0]))];
+      // Normalize to NFC before extracting tokens because `checkAnswer` normalizes
+      // `answer` to NFC before testing `validCzech.has(w)`.
+      const answerWords = [...new Set([...answer.normalize("NFC").matchAll(WORD)].map((m) => m[0]))];
       const validCzech = await checkCzechWords(answerWords);
       const checked = checkAnswer(sent, answer, (w) => validCzech.has(w));
       if (!checked) dropped++;

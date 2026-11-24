@@ -165,42 +165,60 @@ export function createWorkspaces({ id }) {
   }
 
   /**
-   * Stage adding multiple tabs to `wsId` in memory and return the updated
-   * WorkspaceRecord for `applySyncBatch` so a 200-tab sync page updates the
-   * workspace once instead of writing 200 separate IndexedDB transactions (H4).
-   * Call `notifySaved(record)` once the batch transaction commits.
+   * Prepare an updated `WorkspaceRecord` with `bufferIds` appended, without
+   * mutating in-memory `records` or `record.tabs` yet. `applyRemoteBatch`
+   * persists the returned record in `applySyncBatch` first and calls
+   * `commitPreparedWorkspace` only after the IndexedDB transaction commits, so
+   * an aborted sync page never leaves uncommitted tabs in memory.
    * @param {string[]} bufferIds
    * @param {string} [wsId]
    * @returns {Promise<WorkspaceRecord | null>}
    */
-  async function stageAddTabs(bufferIds, wsId = id) {
+  async function prepareAddTabs(bufferIds, wsId = id) {
     if (bufferIds.length === 0 || (dissolved && wsId === id)) return null;
-    let record = get(wsId);
+    let base = records.get(wsId) ?? newRecord(wsId);
     if (wsId !== id) {
-      record = (await getWorkspace(wsId)) ?? record;
-      records.set(wsId, record);
+      base = (await getWorkspace(wsId)) ?? base;
     }
-    const existing = new Set(record.tabs);
+    const existing = new Set(base.tabs);
+    const nextTabs = [...base.tabs];
     let added = false;
     for (const bufferId of bufferIds) {
       if (existing.has(bufferId)) continue;
       existing.add(bufferId);
-      record.tabs.push(bufferId);
+      nextTabs.push(bufferId);
       added = true;
     }
     if (!added) return null;
-    record.updatedAt = Date.now();
-    records.set(record.id, record);
-    return { ...record, tabs: [...record.tabs], folderIds: [...record.folderIds] };
+    return {
+      ...base,
+      tabs: nextTabs,
+      folderIds: [...base.folderIds],
+      updatedAt: Date.now(),
+    };
   }
 
   /**
-   * Broadcast and emit `"change"` after `stageAddTabs` committed via `applySyncBatch`.
-   * @param {WorkspaceRecord} record
+   * Commit a `prepareAddTabs` record into memory and notify listeners after
+   * `applySyncBatch` has durably written it to IndexedDB.
+   * @param {WorkspaceRecord} prepared
    */
-  function notifySaved(record) {
-    post("workspace", { record });
-    emit("change", { id: record.id });
+  function commitPreparedWorkspace(prepared) {
+    if (dissolved && prepared.id === id) return;
+    const live = records.get(prepared.id);
+    if (live) {
+      live.tabs = [...prepared.tabs];
+      live.folderIds = [...prepared.folderIds];
+      live.updatedAt = prepared.updatedAt;
+    } else {
+      records.set(prepared.id, {
+        ...prepared,
+        tabs: [...prepared.tabs],
+        folderIds: [...prepared.folderIds],
+      });
+    }
+    post("workspace", { record: prepared });
+    emit("change", { id: prepared.id });
   }
 
   /** @param {string} bufferId */
@@ -522,8 +540,8 @@ export function createWorkspaces({ id }) {
     spaceOwner,
     liveSet,
     addTab,
-    stageAddTabs,
-    notifySaved,
+    prepareAddTabs,
+    commitPreparedWorkspace,
     removeTab,
     removeTabs,
     moveTab,

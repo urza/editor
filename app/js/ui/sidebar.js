@@ -1163,6 +1163,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       const rows = /** @type {HTMLElement[]} */ ([...openList.children]);
       drag.rows = rows;
       drag.from = rows.indexOf(drag.li);
+      drag.scrollTop = sidebarScroll.scrollTop;
       drag.mids = rows.map((row) => {
         const rect = row.getBoundingClientRect();
         return rect.top + rect.height / 2;
@@ -1196,10 +1197,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   function showDropTarget(y) {
     if (!drag || !drag.rows || !drag.mids || drag.from === undefined) return;
     const { rows, mids, from } = drag;
+    // Offset by any `#sidebar-scroll` delta since drag start so wheel-scrolling
+    // during a drag maps `y` to the current row positions without reflowing DOM.
+    const adjustedY = y + (sidebarScroll.scrollTop - (drag.scrollTop ?? 0));
     for (const row of rows) row.classList.remove("drop-before", "drop-after");
     let index = rows.length;
     for (let i = 0; i < mids.length; i++) {
-      if (y < mids[i]) {
+      if (adjustedY < mids[i]) {
         index = i;
         break;
       }

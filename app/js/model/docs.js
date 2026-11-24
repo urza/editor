@@ -116,9 +116,6 @@ const SAVE_DELAY = 300;
 // only covers a window that stays focused while another program writes.
 const WATCH_INTERVAL = 30000;
 const TITLE_MAX = 40;
-// Scan only the opening window when deriving a row's title so multi-MB notes
-// never split into hundreds of thousands of substrings.
-const FIRST_LINE_HEAD = 4096;
 /** Transient first-line titles for unencrypted records whose latest edits sit in a CodeMirror Text rope. @type {WeakMap<BufferRecord, string>} */
 const liveFirstLines = new WeakMap();
 
@@ -130,19 +127,36 @@ const liveFirstLines = new WeakMap();
  */
 export function firstLineTitle(text) {
   if (!text) return "";
-  const head = text.length > FIRST_LINE_HEAD ? text.slice(0, FIRST_LINE_HEAD) : text;
-  let pos = 0;
-  while (pos < head.length) {
-    const nl = head.indexOf("\n", pos);
-    const line = nl < 0 ? head.slice(pos) : head.slice(pos, nl);
-    const trimmed = line.trim();
-    if (trimmed) {
-      return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
+  // Scan in 4 KB slices so V8 never flattens a multi-MB ConsString when the
+  // title sits near the top, while still scanning to the end if > 4 KB of
+  // leading whitespace precedes the first non-blank line (preventing `isEmpty`
+  // / `discardEmpty` from deleting a non-empty note).
+  const CHUNK = 4096;
+  let start = -1;
+  let nl = -1;
+  for (let offset = 0; offset < text.length; offset += CHUNK) {
+    const chunk = text.slice(offset, offset + CHUNK);
+    if (start < 0) {
+      const match = /\S/.exec(chunk);
+      if (!match) continue;
+      start = offset + match.index;
+      const relNl = chunk.indexOf("\n", match.index);
+      if (relNl >= 0) {
+        nl = offset + relNl;
+        break;
+      }
+    } else {
+      const relNl = chunk.indexOf("\n");
+      if (relNl >= 0) {
+        nl = offset + relNl;
+        break;
+      }
     }
-    if (nl < 0) break;
-    pos = nl + 1;
   }
-  return "";
+  if (start < 0) return "";
+  const end = nl < 0 ? text.length : nl;
+  const trimmed = text.slice(start, end).trimEnd();
+  return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
 }
 
 /**
@@ -153,12 +167,11 @@ export function firstLineTitle(text) {
  */
 function firstLineTitleFromDoc(doc) {
   if (doc.length === 0) return "";
+  // Walk rope lines without a character cap so leading blank lines never yield
+  // `firstLine: ""` on a non-empty note.
   const iter = doc.iterLines();
-  let scanned = 0;
-  while (!iter.next().done && scanned < FIRST_LINE_HEAD) {
-    const line = iter.value;
-    scanned += line.length + 1;
-    const trimmed = line.trim();
+  while (!iter.next().done) {
+    const trimmed = iter.value.trim();
     if (trimmed) {
       return trimmed.length > TITLE_MAX ? trimmed.slice(0, TITLE_MAX) : trimmed;
     }
@@ -302,15 +315,9 @@ export function createDocStore({
   const events = new EventTarget();
   /** @type {string | null} */
   let activeId = null;
-  let batchDepth = 0;
-  let batchChanged = false;
 
   /** @param {string} type @param {object} [detail] */
   function emit(type, detail) {
-    if (type === "change" && batchDepth > 0) {
-      batchChanged = true;
-      return;
-    }
     events.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
@@ -3489,44 +3496,71 @@ export function createDocStore({
   async function applyRemoteBatch(changes, { fetchDoc } = {}) {
     if (!Array.isArray(changes) || changes.length === 0) return;
 
+    // Stage fast-path creations and stub updates in local maps until IndexedDB
+    // commits. Mutating `buffers`, `remotes`, or `workspaces` before `fetchDoc`
+    // and `applySyncBatch` succeed would leave unpersisted `rev`s in memory if a
+    // page fails mid-way, causing the retry from the old cursor to skip them.
     /** @type {Map<string, BufferRecord>} */
-    const putBuffersMap = new Map();
+    const stagedBuffers = new Map();
     /** @type {Map<string, RemoteStub>} */
-    const putRemotesMap = new Map();
+    const stagedRemotes = new Map();
     /** @type {Set<string>} */
-    const deleteRemotesSet = new Set();
+    const stagedDeleteRemotes = new Set();
     /** @type {Map<string, string[]>} */
-    const tabsByWs = new Map();
+    const stagedTabsByWs = new Map();
+
+    /** @param {string} id */
+    const effectiveBuffer = (id) => stagedBuffers.get(id) ?? buffers.get(id);
+    /** @param {string} id */
+    const effectiveRemote = (id) =>
+      stagedDeleteRemotes.has(id) ? undefined : (stagedRemotes.get(id) ?? remotes.get(id));
+    /** @param {string} id */
+    const stageDropRemote = (id) => {
+      stagedRemotes.delete(id);
+      if (remotes.has(id)) stagedDeleteRemotes.add(id);
+    };
 
     const flushStaged = async () => {
       if (
-        putBuffersMap.size === 0 &&
-        putRemotesMap.size === 0 &&
-        deleteRemotesSet.size === 0 &&
-        tabsByWs.size === 0
+        stagedBuffers.size === 0 &&
+        stagedRemotes.size === 0 &&
+        stagedDeleteRemotes.size === 0 &&
+        stagedTabsByWs.size === 0
       ) {
         return;
       }
+      for (const [id, created] of stagedBuffers) {
+        const live = buffers.get(id);
+        if (live && live.sync && created.sync && live.sync.rev >= created.sync.rev) {
+          stagedBuffers.delete(id);
+        }
+      }
       /** @type {import("../storage/idb.js").WorkspaceRecord[]} */
       const putWorkspaces = [];
-      for (const [wsId, ids] of tabsByWs) {
-        const wsRec = await workspaces.stageAddTabs(ids, wsId);
+      for (const [wsId, ids] of stagedTabsByWs) {
+        const wsRec = await workspaces.prepareAddTabs(ids, wsId);
         if (wsRec) putWorkspaces.push(wsRec);
       }
-      const putBuffers = [...putBuffersMap.values()];
-      const putRemotes = [...putRemotesMap.values()];
-      const deleteRemotes = [...deleteRemotesSet];
-      putBuffersMap.clear();
-      putRemotesMap.clear();
-      deleteRemotesSet.clear();
-      tabsByWs.clear();
+      const committedBuffers = [...stagedBuffers.values()];
+      const putBuffers = committedBuffers.map((b) => ({ ...b }));
+      const putRemotes = [...stagedRemotes.values()];
+      const deleteRemotes = [...stagedDeleteRemotes];
 
       await applySyncBatch({ putBuffers, putRemotes, deleteRemotes, putWorkspaces });
+
+      stagedBuffers.clear();
+      stagedRemotes.clear();
+      stagedDeleteRemotes.clear();
+      stagedTabsByWs.clear();
+
+      for (const created of committedBuffers) buffers.set(created.id, created);
+      for (const id of deleteRemotes) remotes.delete(id);
+      for (const stub of putRemotes) remotes.set(stub.id, stub);
       for (const row of putBuffers) postBuffer(row);
       for (const stub of putRemotes) post("remote", { stub });
       for (const id of deleteRemotes) post("remote-deleted", { id });
-      for (const wsRec of putWorkspaces) workspaces.notifySaved(wsRec);
-      batchChanged = true;
+      for (const wsRec of putWorkspaces) workspaces.commitPreparedWorkspace(wsRec);
+      emit("change");
     };
 
     /** @type {Map<string, string | null>} */
@@ -3540,118 +3574,98 @@ export function createDocStore({
       return spaceWindows.get(space) ?? null;
     };
 
-    batchDepth++;
-    try {
-      for (let change of changes) {
-        if (!change || !change.docId) continue;
-        const id = change.docId;
-        const record = buffers.get(id);
-        if (record && record.sync && change.rev <= record.sync.rev) continue;
+    for (let change of changes) {
+      if (!change || !change.docId) continue;
+      const id = change.docId;
+      const record = effectiveBuffer(id);
+      if (record && record.sync && change.rev <= record.sync.rev) continue;
 
-        const meta = change.meta || {};
-        change.space ??= DEFAULT_SPACE;
-        const space = change.space;
-        const isKeyring = id === KEYRING_ID;
-        if (!isKeyring && meta.kind === "keyring") continue;
-        if ((space === KEYRING_SPACE) !== isKeyring) continue;
-        if (record && !isKeyring && record.trashedAt && !record.sync) continue;
+      const meta = change.meta || {};
+      change.space ??= DEFAULT_SPACE;
+      const space = change.space;
+      const isKeyring = id === KEYRING_ID;
+      if (!isKeyring && meta.kind === "keyring") continue;
+      if ((space === KEYRING_SPACE) !== isKeyring) continue;
+      if (record && !isKeyring && record.trashedAt && !record.sync) continue;
 
-        const spaceWin = await cachedSpaceWin(space);
+      const spaceWin = await cachedSpaceWin(space);
 
-        // Fast path 1: unknown id in a `list` space (or non-text/non-member) -> stub ops.
-        if (!record && !isKeyring) {
-          const mode = spaces.modeOf(space);
-          if (mode === undefined || change.kind !== "text") {
-            if (remotes.delete(id)) {
-              putRemotesMap.delete(id);
-              deleteRemotesSet.add(id);
-            }
-            continue;
-          }
-          if (mode === "list" && !spaceWin) {
-            const existingStub = remotes.get(id);
-            if (existingStub && change.rev <= existingStub.rev) continue;
-            if (
-              (change.content === null || change.content === undefined) &&
-              !meta.enc &&
-              !meta.sealed &&
-              fetchDoc
-            ) {
-              change = await fetchDoc(id);
-              if (change.kind !== "text") {
-                if (remotes.delete(id)) {
-                  putRemotesMap.delete(id);
-                  deleteRemotesSet.add(id);
-                }
-                continue;
-              }
-            }
-            const stub = await buildStub(change, space);
-            remotes.set(id, stub);
-            deleteRemotesSet.delete(id);
-            putRemotesMap.set(id, stub);
-            continue;
-          }
-
-          // Fast path 2: brand-new synced text record owned by this window.
-          const targetWs = spaceWin ?? MAIN_WORKSPACE;
-          const routed = await routeTarget(id, undefined, meta, spaceWin);
-          if (!routed) {
-            if ((change.content === null || change.content === undefined) && fetchDoc) {
-              change = await fetchDoc(id);
-              if (change.kind !== "text") continue;
-            }
-            if (change.content !== null && change.content !== undefined) {
-              /** @type {BufferRecord} */
-              const created = {
-                id,
-                content: change.content,
-                createdAt: Date.now(),
-                updatedAt: change.clientTime || Date.now(),
-                sync: { rev: change.rev, dirty: false, space: change.space ?? DEFAULT_SPACE },
-              };
-              applyMeta(created, change.meta || {}, await unseal(change.meta?.sealed));
-              buffers.set(id, created);
-              putBuffersMap.set(id, { ...created });
-              if (remotes.delete(id)) {
-                putRemotesMap.delete(id);
-                deleteRemotesSet.add(id);
-              }
-              let wsTabs = tabsByWs.get(targetWs);
-              if (!wsTabs) {
-                wsTabs = [];
-                tabsByWs.set(targetWs, wsTabs);
-              }
-              wsTabs.push(id);
+      // Fast path 1: unknown id in a `list` space (or non-text/non-member) -> stub ops.
+      if (!record && !isKeyring) {
+        const mode = spaces.modeOf(space);
+        if (mode === undefined || change.kind !== "text") {
+          if (effectiveRemote(id)) stageDropRemote(id);
+          continue;
+        }
+        if (mode === "list" && !spaceWin) {
+          const existingStub = effectiveRemote(id);
+          if (existingStub && change.rev <= existingStub.rev) continue;
+          if (
+            (change.content === null || change.content === undefined) &&
+            !meta.enc &&
+            !meta.sealed &&
+            fetchDoc
+          ) {
+            change = await fetchDoc(id);
+            if (change.kind !== "text") {
+              if (effectiveRemote(id)) stageDropRemote(id);
               continue;
             }
           }
+          const stub = await buildStub(change, space);
+          stagedDeleteRemotes.delete(id);
+          stagedRemotes.set(id, stub);
+          continue;
         }
 
-        // Complex or existing-record case (keyring, conflict, tombstone, routed
-        // window, or open note in a `?content=0` space): flush staged batch
-        // first so seq ordering holds, fetch missing text body if needed, and
-        // delegate to applyRemote.
-        await flushStaged();
-        if (
-          change.kind === "text" &&
-          (change.content === null || change.content === undefined) &&
-          spaces.modeOf(space) !== undefined &&
-          fetchDoc
-        ) {
-          change = await fetchDoc(id);
+        // Fast path 2: brand-new synced text record owned by this window.
+        const targetWs = spaceWin ?? MAIN_WORKSPACE;
+        const routed = await routeTarget(id, undefined, meta, spaceWin);
+        if (!routed) {
+          if ((change.content === null || change.content === undefined) && fetchDoc) {
+            change = await fetchDoc(id);
+            if (change.kind !== "text") continue;
+          }
+          if (change.content !== null && change.content !== undefined) {
+            /** @type {BufferRecord} */
+            const created = {
+              id,
+              content: change.content,
+              createdAt: Date.now(),
+              updatedAt: change.clientTime || Date.now(),
+              sync: { rev: change.rev, dirty: false, space: change.space ?? DEFAULT_SPACE },
+            };
+            applyMeta(created, change.meta || {}, await unseal(change.meta?.sealed));
+            stagedBuffers.set(id, created);
+            if (effectiveRemote(id)) stageDropRemote(id);
+            let wsTabs = stagedTabsByWs.get(targetWs);
+            if (!wsTabs) {
+              wsTabs = [];
+              stagedTabsByWs.set(targetWs, wsTabs);
+            }
+            wsTabs.push(id);
+            continue;
+          }
         }
-        await applyRemote(change);
       }
 
+      // Complex or existing-record case (keyring, conflict, tombstone, routed
+      // window, or open note in a `?content=0` space): flush staged batch
+      // first so seq ordering holds, fetch missing text body if needed, and
+      // delegate to applyRemote.
       await flushStaged();
-    } finally {
-      batchDepth--;
-      if (batchDepth === 0 && batchChanged) {
-        batchChanged = false;
-        emit("change");
+      if (
+        change.kind === "text" &&
+        (change.content === null || change.content === undefined) &&
+        spaces.modeOf(space) !== undefined &&
+        fetchDoc
+      ) {
+        change = await fetchDoc(id);
       }
+      await applyRemote(change);
     }
+
+    await flushStaged();
   }
 
   /**

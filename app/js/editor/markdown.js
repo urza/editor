@@ -218,26 +218,25 @@ const VIEWPORT_TABLE_LINE_LIMIT = 1000;
 const VIEWPORT_TABLE_BUFFER_LINES = 40;
 
 /**
- * Find the table row node (`TableHeader`, `TableDelimiter`, or `TableRow`)
- * covering `pos` via O(log N) Lezer tree resolution instead of walking siblings.
- * @param {import("@lezer/common").Tree} tree
- * @param {number} pos
+ * True when `node` is a direct row (`TableHeader`, `TableRow`, or the separator
+ * `TableDelimiter`) of the `Table` starting at `tableFrom`. In `@lezer/markdown`
+ * every cell-separating `|` pipe inside a row is also named `TableDelimiter`
+ * (with `TableHeader` / `TableRow` as parent), so checking `parent.from === tableFrom`
+ * distinguishes the separator row from a pipe token.
+ * @param {import("@lezer/common").SyntaxNodeRef} node
+ * @param {number} tableFrom
  */
-function resolveRowAt(tree, pos) {
-  /** @type {import("@lezer/common").SyntaxNode | null} */
-  let cur = tree.resolveInner(pos, 1);
-  while (cur) {
-    if (cur.name === "TableHeader" || cur.name === "TableDelimiter" || cur.name === "TableRow") {
-      return cur;
-    }
-    if (cur.name === "Table") break;
-    cur = cur.parent;
+function isTableRow(node, tableFrom) {
+  if (node.name !== "TableHeader" && node.name !== "TableRow" && node.name !== "TableDelimiter") {
+    return false;
   }
-  return null;
+  const parent = node.node.parent;
+  return Boolean(parent && parent.name === "Table" && parent.from === tableFrom);
 }
 
 /**
  * Measure lines `[startLine, endLine]` of `table` into `widths`.
+ * @param {import("@lezer/common").SyntaxNode} table
  * @param {import("@lezer/common").Tree} tree
  * @param {import("@codemirror/state").Text} doc
  * @param {number} startLine
@@ -245,29 +244,53 @@ function resolveRowAt(tree, pos) {
  * @param {Map<string, number[]>} lineWidths
  * @param {number[]} widths
  */
-function measureLineSpan(tree, doc, startLine, endLine, lineWidths, widths) {
+function measureLineSpan(table, tree, doc, startLine, endLine, lineWidths, widths) {
   if (startLine > endLine) return;
-  const iter = doc.iterLines(startLine, endLine);
+  // CodeMirror's `doc.iterLines(from, to)` uses an exclusive `to` line number.
+  const iter = doc.iterLines(startLine, endLine + 1);
   let lineNo = startLine;
+  let firstMiss = Infinity;
+  let lastMiss = -1;
   while (!iter.next().done) {
-    const lineText = iter.value;
-    let segWidths = lineWidths.get(lineText);
-    if (!segWidths) {
-      const lineStart = doc.line(lineNo).from;
-      const rowNode = resolveRowAt(tree, lineStart);
-      if (rowNode && rowNode.from <= lineStart + lineText.length) {
-        segWidths = segmentsOf(rowNode, doc).map((s) => s.width);
-        if (lineWidths.size >= ROW_CACHE_LIMIT) lineWidths.clear();
-        lineWidths.set(lineText, segWidths);
+    const cached = lineWidths.get(iter.value);
+    if (cached) {
+      for (let c = 0; c < cached.length; c++) {
+        if (cached[c] > (widths[c] || 0)) widths[c] = cached[c];
       }
-    }
-    if (segWidths) {
-      for (let c = 0; c < segWidths.length; c++) {
-        if (segWidths[c] > (widths[c] || 0)) widths[c] = segWidths[c];
-      }
+    } else {
+      if (lineNo < firstMiss) firstMiss = lineNo;
+      lastMiss = lineNo;
     }
     lineNo++;
   }
+  if (lastMiss < firstMiss) return;
+
+  const spanFrom = Math.max(table.from, doc.line(firstMiss).from);
+  const spanTo = Math.min(table.to, doc.line(lastMiss).to);
+  if (spanTo < spanFrom) return;
+  tree.iterate({
+    from: spanFrom,
+    to: spanTo,
+    enter: (n) => {
+      if (n.to <= table.from || n.from >= table.to) return false;
+      // Descend through Document, Blockquote, ListItem, and Table ancestors so
+      // tables nested inside quotes or lists reach their row nodes.
+      if (!isTableRow(n, table.from)) return;
+      const rowLine = doc.lineAt(n.from);
+      if (rowLine.number >= startLine && rowLine.number <= endLine) {
+        let segWidths = lineWidths.get(rowLine.text);
+        if (!segWidths) {
+          segWidths = segmentsOf(n.node, doc).map((s) => s.width);
+          if (lineWidths.size >= ROW_CACHE_LIMIT) lineWidths.clear();
+          lineWidths.set(rowLine.text, segWidths);
+        }
+        for (let c = 0; c < segWidths.length; c++) {
+          if (segWidths[c] > (widths[c] || 0)) widths[c] = segWidths[c];
+        }
+      }
+      return false;
+    },
+  });
 }
 
 /**
@@ -294,7 +317,7 @@ function tableWidths(table, tree, doc, rangeFrom, rangeTo, treeWidths, lineWidth
     }
     /** @type {number[]} */
     const widths = [];
-    measureLineSpan(tree, doc, firstLine, lastLine, lineWidths, widths);
+    measureLineSpan(table, tree, doc, firstLine, lastLine, lineWidths, widths);
     if (table.tree) treeWidths.set(table.tree, widths);
     return widths;
   }
@@ -302,7 +325,7 @@ function tableWidths(table, tree, doc, rangeFrom, rangeTo, treeWidths, lineWidth
   /** @type {number[]} */
   const widths = [];
   const headEnd = Math.min(lastLine, firstLine + 1);
-  measureLineSpan(tree, doc, firstLine, headEnd, lineWidths, widths);
+  measureLineSpan(table, tree, doc, firstLine, headEnd, lineWidths, widths);
   const visStart = Math.max(
     headEnd + 1,
     doc.lineAt(Math.max(table.from, rangeFrom)).number - VIEWPORT_TABLE_BUFFER_LINES
@@ -311,7 +334,7 @@ function tableWidths(table, tree, doc, rangeFrom, rangeTo, treeWidths, lineWidth
     lastLine,
     doc.lineAt(Math.min(table.to, rangeTo)).number + VIEWPORT_TABLE_BUFFER_LINES
   );
-  measureLineSpan(tree, doc, visStart, visEnd, lineWidths, widths);
+  measureLineSpan(table, tree, doc, visStart, visEnd, lineWidths, widths);
   return widths;
 }
 
@@ -336,10 +359,10 @@ function appendVisibleFills(table, tree, doc, widths, rangeFrom, rangeTo, minPos
     from: clipFrom,
     to: clipTo,
     enter: (n) => {
-      if (n.name === "Table") return;
-      if (n.name !== "TableHeader" && n.name !== "TableDelimiter" && n.name !== "TableRow") {
-        return false;
-      }
+      if (n.to <= table.from || n.from >= table.to) return false;
+      // Return undefined on Document / Blockquote / ListItem / Table so Lezer
+      // descends into ancestors; returning false at Document aborts traversal.
+      if (!isTableRow(n, table.from)) return;
       if (n.to < clipFrom || n.to <= minPos) return false;
       for (const seg of segmentsOf(n.node, doc)) {
         if (seg.at < minPos) continue;
@@ -356,12 +379,12 @@ function appendVisibleFills(table, tree, doc, widths, rangeFrom, rangeTo, minPos
 
 /**
  * The mark classes and the table fillers for everything on screen.
- * @param {EditorView} view
- * @param {WeakMap<object, number[]>} treeWidths
- * @param {Map<string, number[]>} lineWidths
+ * @param {{ state: import("@codemirror/state").EditorState, visibleRanges: readonly { from: number, to: number }[] }} view
+ * @param {WeakMap<object, number[]>} [treeWidths]
+ * @param {Map<string, number[]>} [lineWidths]
  * @returns {DecorationSet}
  */
-function decorate(view, treeWidths, lineWidths) {
+export function decorate(view, treeWidths = new WeakMap(), lineWidths = new Map()) {
   const doc = view.state.doc;
   const tree = syntaxTree(view.state);
   /** @type {{ from: number, to: number, value: Decoration }[]} */

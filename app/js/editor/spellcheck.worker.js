@@ -68,6 +68,8 @@ const englishCache = new Map();
 const englishSuggestions = new Map();
 /** @type {Set<string>} */
 const englishPending = new Set();
+/** @type {Set<string>} */
+const englishFixPending = new Set();
 
 /**
  * Cached diagnostics per paragraph (`langMask + "\0" + paraText`), storing
@@ -150,12 +152,17 @@ function computeCzech(key) {
   return list;
 }
 
-/** @param {string} key @param {{ deadline: number }} budget */
-function answerCzech(key, budget) {
+/**
+ * @param {string} key
+ * @param {{ deadline: number }} budget
+ * @param {{ incomplete: boolean }} [deferred]
+ */
+function answerCzech(key, budget, deferred) {
   const cached = czechCache.get(key);
   if (cached) return cached;
   if (performance.now() > budget.deadline) {
     czechPending.add(key);
+    if (deferred) deferred.incomplete = true;
     return null;
   }
   return computeCzech(key);
@@ -169,22 +176,24 @@ async function askEnglish(word) {
   return ok;
 }
 
-/** @param {string} word @param {{ deadline: number }} budget */
-async function englishWord(word, budget) {
+/**
+ * @param {string} word
+ * @param {{ deadline: number }} budget
+ * @param {{ incomplete: boolean }} [deferred]
+ */
+async function englishWord(word, budget, deferred) {
   const cached = englishCache.get(word);
   if (cached !== undefined) return cached;
   if (performance.now() > budget.deadline) {
     englishPending.add(word);
+    if (deferred) deferred.incomplete = true;
     return null;
   }
   return askEnglish(word);
 }
 
-/** @param {string} word @param {{ deadline: number }} budget */
-async function englishFixes(word, budget) {
-  const cached = englishSuggestions.get(word);
-  if (cached) return cached;
-  if (performance.now() > budget.deadline) return [];
+/** @param {string} word */
+async function computeEnglishFixes(word) {
   if (englishSuggestions.size >= WORD_CACHE_LIMIT) englishSuggestions.clear();
   /** @type {string[]} */
   const list = [];
@@ -200,11 +209,32 @@ async function englishFixes(word, budget) {
     lint.free();
   }
   englishSuggestions.set(word, list);
+  englishFixPending.delete(word);
   return list;
 }
 
+/**
+ * @param {string} word
+ * @param {{ deadline: number }} budget
+ * @param {{ incomplete: boolean }} [deferred]
+ */
+async function englishFixes(word, budget, deferred) {
+  const cached = englishSuggestions.get(word);
+  if (cached) return cached;
+  if (performance.now() > budget.deadline) {
+    englishFixPending.add(word);
+    if (deferred) deferred.incomplete = true;
+    return [];
+  }
+  return computeEnglishFixes(word);
+}
+
+function hasPendingIdleWork() {
+  return czechPending.size > 0 || englishPending.size > 0 || englishFixPending.size > 0;
+}
+
 function scheduleIdleFill() {
-  if (idleScheduled || (czechPending.size === 0 && englishPending.size === 0)) return;
+  if (idleScheduled || !hasPendingIdleWork()) return;
   idleScheduled = true;
   const slice = async () => {
     const stop = performance.now() + SUGGEST_BUDGET_MS;
@@ -222,10 +252,16 @@ function scheduleIdleFill() {
         englishPending.delete(word);
         await askEnglish(word);
       }
+      for (const word of englishFixPending) {
+        if (performance.now() > stop) break;
+        englishFixPending.delete(word);
+        await computeEnglishFixes(word);
+      }
     } else {
       englishPending.clear();
+      englishFixPending.clear();
     }
-    if (czechPending.size > 0 || englishPending.size > 0) {
+    if (hasPendingIdleWork()) {
       setTimeout(slice, 10);
     } else {
       idleScheduled = false;
@@ -361,9 +397,11 @@ async function lintDocument(text, requestedLangs, reqId) {
   const out = [];
   let budget = { deadline: performance.now() + SUGGEST_BUDGET_MS };
 
+  /** @type {{ incomplete: boolean }} */
+  let deferred = { incomplete: false };
   const ask = {
     czech: (/** @type {string} */ w) => isCzechWord(w),
-    twins: (/** @type {string} */ w) => answerCzech("t" + w, budget),
+    twins: (/** @type {string} */ w) => answerCzech("t" + w, budget, deferred),
   };
 
   for (const seg of prose) {
@@ -379,7 +417,7 @@ async function lintDocument(text, requestedLangs, reqId) {
       continue;
     }
 
-    const pendingBefore = czechPending.size + englishPending.size;
+    deferred = { incomplete: false };
     /** @type {SerializedDiag[]} */
     const relDiags = [];
 
@@ -394,11 +432,13 @@ async function lintDocument(text, requestedLangs, reqId) {
         }
         const verdict = judge(word, langs, { ...ask, english: () => false });
         if (verdict === "typo") {
-          const czech = langs.cs ? answerCzech("s" + word, budget) ?? [] : [];
+          const czech = langs.cs ? answerCzech("s" + word, budget, deferred) ?? [] : [];
           const names = d.actions.map((a) => a.name);
           const extra = czech.filter((c) => !names.includes(c)).map(replaceAction);
           relDiags.push({ ...d, actions: [...d.actions, ...extra].slice(0, MAX_ACTIONS) });
-        } else if (verdict !== "ok" && verdict !== "pending") {
+        } else if (verdict === "pending") {
+          deferred.incomplete = true;
+        } else if (verdict !== "ok") {
           relDiags.push(plainDiag(d.from, d.to, verdict.plain));
         }
       }
@@ -410,13 +450,17 @@ async function lintDocument(text, requestedLangs, reqId) {
       const english = new Map();
       for (const { word, from, to } of proseWordsInPara(paraText)) {
         if (langs.en && !english.has(word) && !(langs.cs && isCzechWord(word))) {
-          english.set(word, await englishWord(word, budget));
+          english.set(word, await englishWord(word, budget, deferred));
         }
         const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
-        if (verdict === "ok" || verdict === "pending") continue;
+        if (verdict === "ok") continue;
+        if (verdict === "pending") {
+          deferred.incomplete = true;
+          continue;
+        }
         if (verdict === "typo") {
-          const czech = langs.cs ? answerCzech("s" + word, budget) ?? [] : [];
-          const eng = langs.en ? await englishFixes(word, budget) : [];
+          const czech = langs.cs ? answerCzech("s" + word, budget, deferred) ?? [] : [];
+          const eng = langs.en ? await englishFixes(word, budget, deferred) : [];
           relDiags.push(typoDiag(from, to, word, mergeSuggestions(czech, eng)));
         } else {
           relDiags.push(plainDiag(from, to, verdict.plain));
@@ -424,8 +468,10 @@ async function lintDocument(text, requestedLangs, reqId) {
       }
     }
 
-    // Cache only complete paragraph results (none deferred by budget).
-    if (czechPending.size + englishPending.size === pendingBefore) {
+    // Cache only complete paragraph results: any budget deferral (including
+    // `englishFixes` or words already queued by an earlier paragraph) must
+    // re-lint once `scheduleIdleFill` finishes.
+    if (!deferred.incomplete) {
       if (paraCache.size >= PARA_CACHE_LIMIT) paraCache.clear();
       paraCache.set(cacheKey, relDiags);
     }

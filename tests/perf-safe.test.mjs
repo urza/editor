@@ -25,6 +25,7 @@ if (typeof module.registerHooks === "function") {
 }
 
 const {
+  JSON_PARSE_LIMIT,
   PLAIN_BLOCK_LIMIT,
   PLAIN_SIZE_LIMIT,
   docHasGiantNonBlankBlock,
@@ -35,6 +36,8 @@ const {
   sniff,
 } = await import("../app/js/editor/lang.js");
 const { EditorState, Text } = await import("@codemirror/state");
+const { ensureSyntaxTree } = await import("@codemirror/language");
+const { decorate } = await import("../app/js/editor/markdown.js");
 const { countWords, countWordsInDoc } = await import("../app/js/ui/statustext.js");
 const { countRecipients, encrypt, generateIdentity } = await import("../app/js/crypto/age.js");
 
@@ -64,6 +67,14 @@ test("sniff classifies languages from the opening window without whole-file scan
   const bigJson = '{"rows":[' + '{"id":1,"name":"item"},'.repeat(20000) + '{"id":2}]}';
   assert.ok(bigJson.length > 256 * 1024);
   assert.equal(sniff(bigJson), "json");
+  // Truncated prefix slice of a > 256 KB JSON paste (as in detectAfterPaste)
+  // must still classify as "json", not fall back to "javascript".
+  const pasteSlice = bigJson.slice(0, JSON_PARSE_LIMIT + 4096);
+  assert.ok(pasteSlice.length < bigJson.length);
+  assert.equal(sniff(pasteSlice, bigJson.length), "json");
+
+  const jsoncWithTrailingComma = '{\n  "foo": "bar",\n  "items": [1, 2, 3],\n}\n';
+  assert.equal(sniff(jsoncWithTrailingComma, jsoncWithTrailingComma.length), "javascript");
   assert.equal(sniff("# Heading\n\nParagraph text."), "markdown");
 });
 
@@ -92,21 +103,71 @@ test("countRecipients reads only the age header and matches exact recipient coun
 
   const largePlain = "A".repeat(512 * 1024);
   const largeArmored = /** @type {string} */ (await encrypt(largePlain, [k1.recipient], { armored: true }));
+  largeArmored.charCodeAt(0);
   const t0 = performance.now();
-  const count = countRecipients(largeArmored);
+  let count = 0;
+  for (let i = 0; i < 50; i++) count = countRecipients(largeArmored);
   const elapsed = performance.now() - t0;
   assert.equal(count, 1);
-  assert.ok(elapsed < 50, `expected fast header parse, got ${elapsed.toFixed(2)} ms`);
+  assert.ok(elapsed < 100, `expected fast header parse across 50 calls, got ${elapsed.toFixed(2)} ms`);
 });
 
-test("firstLineTitle reads only the opening window on multi-MB strings", async () => {
+test("firstLineTitle scans without splitting lines and finds titles past > 4 KB leading whitespace", async () => {
   globalThis.window ??= /** @type {any} */ ({});
   const { firstLineTitle } = await import("../app/js/model/docs.js");
   const big = "\n\n  # Shopping List for Friday  \n" + "item line\n".repeat(200000);
+  big.charCodeAt(0); // materialize V8 ConsString before timing repeated calls
   const t0 = performance.now();
-  const title = firstLineTitle(big);
+  let title = "";
+  for (let i = 0; i < 100; i++) title = firstLineTitle(big);
   const elapsed = performance.now() - t0;
   assert.equal(title, "# Shopping List for Friday");
-  assert.ok(elapsed < 10, `expected O(1) firstLineTitle, got ${elapsed.toFixed(2)} ms`);
+  assert.ok(elapsed < 100, `expected O(1) firstLineTitle across 100 calls, got ${elapsed.toFixed(2)} ms`);
+
+  // Notes starting with > 4 KB of whitespace must still find their real title
+  // so `isEmpty` / `discardEmpty` never delete them as blank notes.
+  const deepLeadingBlank = " \n".repeat(3000) + "  Real note after 6 KB blank  \nbody";
+  assert.equal(firstLineTitle(deepLeadingBlank), "Real note after 6 KB blank");
+  assert.equal(firstLineTitle(" \t\n".repeat(2000)), "");
+});
+
+test("markdown table decorate emits column fillers for bare, leading-pipe, and quoted tables", () => {
+  /** @param {string} docText */
+  function fillerPositions(docText) {
+    const state = EditorState.create({
+      doc: docText,
+      extensions: [extensionForLang("markdown")],
+    });
+    ensureSyntaxTree(state, state.doc.length, 5000);
+    const decos = decorate({
+      state,
+      visibleRanges: [{ from: 0, to: state.doc.length }],
+    });
+    /** @type {number[]} */
+    const positions = [];
+    decos.between(0, state.doc.length, (from, to) => {
+      if (from === to) positions.push(from);
+    });
+    return positions;
+  }
+
+  // Bare GFM table: row 1 cell 0 ("x ") and separator ("--") pad at their closing pipes (2, 8).
+  const bare = "x | y\n--|--\n3333 | 4";
+  const barePos = fillerPositions(bare);
+  assert.deepEqual(barePos, [bare.indexOf("| y"), bare.indexOf("|--")]);
+
+  // Leading-pipe GFM table: column 0 max is " cccccc " (8), column 1 max is " bbbb " (6).
+  // Row 1 pads col 0 (at 4), row 2 pads both cols (at 17 and 21), row 3 pads col 1 (at 36).
+  const piped = "| a | bbbb |\n|---|---|\n| cccccc | d |";
+  assert.deepEqual(fillerPositions(piped), [4, 17, 21, 36]);
+
+  // Blockquote-nested leading-pipe GFM table must traverse through Blockquote
+  // and align columns identically.
+  const quoted = "> | a | bbbb |\n> |---|---|\n> | cccccc | d |";
+  assert.equal(fillerPositions(quoted).length, 4);
+
+  // List-nested GFM table must traverse through BulletList / ListItem too.
+  const listed = "- | a | bbbb |\n  |---|---|\n  | cccccc | d |";
+  assert.equal(fillerPositions(listed).length, 4);
 });
 

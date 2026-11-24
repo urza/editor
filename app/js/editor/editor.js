@@ -43,6 +43,7 @@ import { marks } from "./markdown.js";
 import { noteSpellOff, relintAll, spellcheck } from "./spellcheck.js";
 import { joinLines, lowerCase, upperCase } from "./transform.js";
 import {
+  JSON_PARSE_LIMIT,
   PLAIN_SIZE_LIMIT,
   docHasGiantNonBlankBlock,
   extensionForLang,
@@ -495,6 +496,21 @@ export function mountEditor(host, store) {
   }
 
   /**
+   * Reconfigure `langCompartment` on the active view or a parked `EditorState`.
+   * @param {string} id
+   * @param {string} lang
+   */
+  function reconfigureBufferLang(id, lang) {
+    const effects = langCompartment.reconfigure(extensionForLang(lang));
+    if (id === store.activeId) {
+      view.dispatch({ effects });
+      return;
+    }
+    const state = states.get(id);
+    if (state) states.set(id, state.update({ effects }).state);
+  }
+
+  /**
    * A paste that redefines the buffer re-runs detection. The id is captured
    * per state, not read from store.activeId: one state belongs to exactly one
    * buffer for its whole life, so the capture cannot go stale, while
@@ -513,16 +529,19 @@ export function mountEditor(host, store) {
         (fileLang !== "markdown"
           ? doc.length > PLAIN_SIZE_LIMIT
           : docHasGiantNonBlankBlock(doc));
-      if (fallback && !autoPlainIds.has(id)) {
-        autoPlainIds.add(id);
-        const effects = langCompartment.reconfigure(extensionForLang("plain"));
-        if (id === store.activeId) view.dispatch({ effects });
+      if (fallback) {
+        if (!autoPlainIds.has(id)) {
+          autoPlainIds.add(id);
+          reconfigureBufferLang(id, "plain");
+        }
         notifyPlainIfActive(id);
+      } else if (autoPlainIds.delete(id)) {
+        reconfigureBufferLang(id, fileLang);
       }
       return;
     }
-    const sample = doc.sliceString(0, 262144);
-    const detected = sniff(sample);
+    const sample = doc.sliceString(0, JSON_PARSE_LIMIT + 4096);
+    const detected = sniff(sample, doc.length);
     const fallback =
       detected !== "plain" &&
       (detected !== "markdown"
@@ -530,14 +549,20 @@ export function mountEditor(host, store) {
         : docHasGiantNonBlankBlock(doc));
     if (fallback) {
       autoPlainIds.add(id);
-      const effects = langCompartment.reconfigure(extensionForLang("plain"));
-      if (id === store.activeId) view.dispatch({ effects });
+      reconfigureBufferLang(id, "plain");
       notifyPlainIfActive(id);
       return;
     }
-    autoPlainIds.delete(id);
+    const wasAutoPlain = autoPlainIds.delete(id);
+    const prevLang = record.lang;
     // "auto" here: the store drops it when the user has set the syntax by hand.
     store.setLang(id, detected, "auto");
+    // `autoPlainIds` switched the compartment to `"plain"` without mutating
+    // `record.lang`. When `detected` matches the stored language, `setLang` is a
+    // no-op and emits no `"lang"` event, so restore the compartment directly.
+    if (wasAutoPlain && store.get(id)?.lang === prevLang) {
+      reconfigureBufferLang(id, prevLang || detected);
+    }
   }
 
   // The buffer whose state is on screen as the locked placeholder, or null.
@@ -850,16 +875,10 @@ export function mountEditor(host, store) {
   store.events.addEventListener("lang", (event) => {
     const { id, lang } = /** @type {CustomEvent} */ (event).detail;
     autoPlainIds.delete(id);
-    const effects = langCompartment.reconfigure(extensionForLang(lang));
-    if (id === store.activeId) {
-      view.dispatch({ effects });
-      return;
-    }
     // A parked buffer gets the same reconfiguration applied to its cached
     // state. Without this it would keep the old mode until it is evicted,
     // because stateFor only builds a state once.
-    const state = states.get(id);
-    if (state) states.set(id, state.update({ effects }).state);
+    reconfigureBufferLang(id, lang);
   });
 
   // A file changed on disk and the store took the new text. The document is

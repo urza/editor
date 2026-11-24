@@ -3,7 +3,7 @@
 // app files change. gen_sw.py also writes the version into the line below,
 // so this file changes with every build: an iPhone ignored a change of the
 // imported sw-precache.js alone and kept an old build. Do not drop the ?v=.
-importScripts("./sw-precache.js?v=473f14ea36d5-6ebf48c2260d");
+importScripts("./sw-precache.js?v=1c3ab83f2fae-6ebf48c2260d");
 
 const CACHE = "vrtti-" + self.__PRECACHE.version;
 // Spellcheck WASM + Czech dictionary (~12.1 MB on the wire) live in their own

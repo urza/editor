@@ -297,14 +297,15 @@ function looksCSharp(text) {
  * them.
  *
  * @param {string} [content]
+ * @param {number} [fullLength] Total document length when `content` is a prefix slice.
  * @returns {string} A language id.
  */
 // Sniff only the opening window and skip full `JSON.parse()` on large blobs so
 // opening or pasting a 5 MB file never blocks on whole-document string scans.
 const SNIFF_SAMPLE_LIMIT = 16 * 1024;
-const JSON_PARSE_LIMIT = 256 * 1024;
+export const JSON_PARSE_LIMIT = 256 * 1024;
 
-export function sniff(content) {
+export function sniff(content, fullLength = content ? content.length : 0) {
   if (!content) return DEFAULT_LANG;
   const startMatch = /\S/.exec(content);
   if (!startMatch) return DEFAULT_LANG;
@@ -313,7 +314,10 @@ export function sniff(content) {
   const sample = content.slice(start, start + SNIFF_SAMPLE_LIMIT);
 
   if (first === "{" || first === "[") {
-    if (content.length - start <= JSON_PARSE_LIMIT) {
+    // Run `JSON.parse` only when the entire document fits inside JSON_PARSE_LIMIT
+    // and `content` holds all of it; a truncated slice of a > 256 KB JSON paste
+    // would throw SyntaxError and misclassify valid JSON as `"javascript"`.
+    if (fullLength - start <= JSON_PARSE_LIMIT && content.length >= fullLength) {
       try {
         JSON.parse(content);
         return "json";
