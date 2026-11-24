@@ -688,7 +688,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       ];
     }
     if (!mine.length) {
-      return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Devices first" }];
+      return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Spaces first" }];
     }
     // The New notes space first; with Local only, no space is first (§27).
     const first = sync.defaultSpace();

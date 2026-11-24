@@ -1481,6 +1481,49 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   padding-top: 14px;
 }
 
+/* Quiet divider between rail groups (Editor / Sync / System). Hidden by
+   settings.js whenever adjacent visible sections share a group. */
+.settings-rail-gap {
+  height: 1px;
+  margin: 7px 10px;
+  background: #3A4048;
+}
+.settings-rail-gap[hidden] { display: none; }
+
+/* Horizontal section jump strip for narrow panes and phones, where the left
+   rail folds away. Sits inside .settings-head so it stays pinned under the
+   title bar without taking a second sticky container. */
+.settings-jump {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 0 8px;
+  border-bottom: 1px solid #353B43;
+}
+.settings-jump::-webkit-scrollbar { display: none; }
+
+.settings-jump-pill {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid #454E59;
+  border-radius: 12px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font: inherit;
+  font-size: var(--ui-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-jump-pill[hidden] { display: none; }
+.settings-jump-pill[aria-current="true"] {
+  border-color: var(--st-caret);
+  color: var(--st-caret);
+  background: rgba(249, 174, 88, 0.1);
+}
+
 .settings-rail-item {
   display: block;
   width: 100%;
@@ -1538,19 +1581,31 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 }
 
 /* Below this width the rail would squeeze the document under 400px, so the
-   sections stand on their own headings instead. */
+   rail folds away and the horizontal jump strip takes over. Because container
+   queries style descendants rather than #settings-panel itself, the jump bar's
+   height lives in --settings-jump-h on .settings-head and .settings-body so
+   sticky headings and scroll margins stay aligned with it. */
+.settings-body { --settings-jump-h: 0px; }
 @container settings (max-width: 720px) {
   .settings-rail { display: none; }
   .settings-main { max-width: none; }
+  .settings-jump {
+    display: flex;
+    height: var(--settings-jump-h, calc(40px * var(--ui-scale)));
+  }
+  .settings-body { --settings-jump-h: calc(40px * var(--ui-scale)); }
 }
 
 /* The gap between sections is the section's own bottom padding, not a margin
    on the next one. A sticky heading stays inside its section's box, so with a
    margin there would be 36px of scroll with no heading pinned at all; this
-   way the next heading pushes the current one out directly. */
+   way the next heading pushes the current one out directly.
+   scroll-margin-top clears the narrow jump strip on top of the panel's own
+   scroll-padding-top (--ui-top-h). */
 .settings-section {
   position: relative;
   padding-bottom: calc(36px * var(--ui-scale));
+  scroll-margin-top: var(--settings-jump-h);
 }
 .settings-section:first-child { margin-top: 14px; }
 
@@ -1585,7 +1640,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
    scroll margin below computes the heading's height from it. */
 .settings-section > h3 {
   position: sticky;
-  top: var(--ui-top-h);
+  top: calc(var(--ui-top-h) + var(--settings-jump-h));
   z-index: 1;
   margin: 0;
   padding-bottom: 8px;
@@ -1597,10 +1652,20 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   color: var(--st-sidebar-heading);
 }
 
+/* Quiet subgroup heading inside a section (e.g. "Diacritics model (server)"). */
+.settings-subhead {
+  margin: 14px 0 2px;
+  font-size: var(--ui-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--st-gutter-fg);
+}
+.settings-subhead[hidden] { display: none; }
+
 /* The panel's scroll-padding clears only the head. Keyboard focus on a
-   control also has to clear the pinned heading, so each control in a row
-   carries the heading's height (line + padding + rule) as a scroll margin. */
-.settings-row * { scroll-margin-top: calc(var(--ui-lg) * 1.4 + 9px); }
+   control also has to clear the narrow jump strip and the pinned heading, so
+   each control in a row carries both heights as a scroll margin. */
+.settings-row * { scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 9px); }
 
 /* Label left, value right. flex-wrap is load-bearing: an age key is 62
    characters, it cannot share a phone row with its label, and without the
@@ -1616,18 +1681,49 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   border-top: 1px solid var(--st-sidebar-bg);
 }
 
-/* The heading's rule stands in for the first row's. */
-.settings-section > h3 + .settings-row { border-top: 0; }
+/* The heading's rule stands in for the first row's; a subhead separates too. */
+.settings-section > h3 + .settings-row,
+.settings-subhead + .settings-row { border-top: 0; }
 
 /* The display:flex above would beat the browser's own [hidden] rule, and a
    conditional row (the persistence request) hides itself through that
    property. Keep both rules together, like #open-actions. */
 .settings-row[hidden] { display: none; }
 
-/* A note (the About credits) is prose with a link inside, not a label and a
-   control, so it is not a flex row: flex would split its text and its link
-   into separate items. */
+/* A note (the App credits, empty-state messages) is prose with a link inside,
+   not a label and a control, so it is not a flex row: flex would split its
+   text and its link into separate items. */
 .settings-note:not([hidden]) { display: block; }
+
+/* Compact credit rows at the bottom of App: one top divider before the first
+   credit, then tight lines with no rules between them. */
+.settings-note-compact {
+  padding: 2px 0;
+  border-top: 0;
+  font-size: var(--ui-xs);
+}
+.settings-row:not(.settings-note-compact) + .settings-note-compact {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--st-sidebar-bg);
+}
+
+/* Highlighted callout note (phone local-only guidance, outdated server notice). */
+.settings-callout:not([hidden]) {
+  margin: 8px 0;
+  padding: 9px 12px;
+  border-top: 0;
+  border-left: 2px solid var(--st-caret);
+  border-radius: 3px;
+  background: rgba(249, 174, 88, 0.08);
+  color: var(--st-sidebar-label);
+}
+
+/* Destructive action row (Stop syncing): subtle separation from routine actions. */
+.settings-row-danger {
+  margin-top: 4px;
+  border-top-color: rgba(236, 95, 103, 0.28);
+}
 
 /* min-width: 0 lets the flex column shrink below its content width, or the
    62-character age keys next to it push the row past a phone screen. The
@@ -1727,6 +1823,24 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   font-size: var(--ui-sm);
 }
 
+#settings-panel .settings-button-danger {
+  border-color: var(--st-danger-border);
+  color: #F29CA0;
+}
+#settings-panel .settings-button-danger:hover {
+  background: var(--st-danger-bg);
+  color: #FFFFFF;
+}
+
+.settings-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.settings-actions > [hidden] { display: none; }
+
 /* A mode picker on a list entry (the Spaces list, architecture.md §25). It
    takes the panel button's frame, so a select and a button side by side in
    one list look like one family of controls. */
@@ -1760,37 +1874,100 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 /* The label's flex-basis above is a width. In this column it would be a
    height, and the entries would start 240px under the hint. */
 .settings-row-list > .settings-label { flex: 0 0 auto; }
+.settings-list-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
 .settings-list { display: flex; flex-direction: column; margin-top: 4px; }
+.settings-list-empty { padding: 8px 0 2px; margin: 0; }
 .settings-list-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 8px 0 8px 14px;
+  gap: 8px 10px;
+  padding: 8px 0 8px 10px;
   border-top: 1px solid var(--st-sidebar-bg);
 }
-.settings-list-text { flex: 1; min-width: 0; }
+.settings-list-text { flex: 1 1 calc(120px * var(--ui-scale)); min-width: 0; }
+
+/* Clickable color square on each space row in Settings › Spaces: gives the
+   swatch a real focusable hit target without moving the text. */
+.settings-swatch-button {
+  flex: 0 0 auto;
+  width: calc(24px * var(--ui-scale));
+  height: calc(24px * var(--ui-scale));
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.settings-swatch-button:hover {
+  background: var(--st-sidebar-selected);
+  border-color: var(--st-selection-border);
+}
+.settings-swatch-button:disabled { opacity: 0.5; cursor: progress; }
+.settings-swatch-button .space-swatch {
+  margin-right: 0;
+  width: calc(12px * var(--ui-scale));
+  height: calc(12px * var(--ui-scale));
+}
 
 /* Settings › Devices (architecture.md §27): devices down, spaces across, a
    tick where a device is a member. It scrolls sideways on a phone rather
-   than squeezing the space names. */
+   than squeezing the space names; the first column stays sticky so the
+   device name remains visible beside distant space columns. */
 .settings-grid-wrap { overflow-x: auto; margin-top: 6px; }
 .settings-grid { border-collapse: collapse; font-size: var(--ui-md); }
 .settings-grid th,
 .settings-grid td {
-  padding: 4px 8px;
+  padding: 5px 8px;
   border-top: 1px solid var(--st-sidebar-bg);
   text-align: center;
   font-weight: normal;
 }
-.settings-grid tbody th { text-align: left; color: var(--st-sidebar-label); white-space: nowrap; }
+.settings-grid thead th { border-top: 0; }
+.settings-grid tbody th,
+.settings-grid thead th:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--st-ui-bg);
+  z-index: 1;
+}
+.settings-grid tbody th {
+  text-align: left;
+  color: var(--st-sidebar-label);
+  white-space: nowrap;
+  padding-left: 0;
+  padding-right: 12px;
+}
+.settings-me-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(249, 174, 88, 0.14);
+  color: var(--st-caret);
+  font-size: calc(10px * var(--ui-scale));
+  vertical-align: middle;
+}
 .settings-grid-head {
   border: 0;
+  border-radius: 3px;
+  padding: 2px 5px;
   background: none;
   color: var(--st-sidebar-heading);
   font: inherit;
   cursor: pointer;
   white-space: nowrap;
 }
+.settings-grid-head:hover { background: var(--st-sidebar-selected); }
 .settings-grid-cell {
   width: 28px;
   height: 28px;
@@ -1801,7 +1978,70 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   font: inherit;
   cursor: pointer;
 }
+.settings-grid-cell[aria-checked="true"] {
+  border-color: rgba(249, 174, 88, 0.65);
+  background: rgba(249, 174, 88, 0.08);
+}
 .settings-grid-cell:disabled { opacity: 0.5; cursor: progress; }
+
+/* Collapsible key disclosure (Settings › Security): keeps long public age
+   keys one click away instead of filling every normal scroll. */
+.settings-row-details { display: block; }
+.settings-row-details[hidden] { display: none; }
+.settings-details-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.settings-details-summary::-webkit-details-marker { display: none; }
+.settings-details-state {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 3px;
+  background: var(--st-sidebar-bg);
+  color: var(--st-sidebar-label);
+  font-size: var(--ui-xs);
+}
+.settings-details[open] .settings-details-state::after { content: "hide"; }
+.settings-details:not([open]) .settings-details-state::after { content: "show"; }
+.settings-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.settings-key-box {
+  padding: 9px 11px;
+  border-radius: 4px;
+  background: var(--st-sidebar-bg);
+}
+.settings-key-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.settings-key-label {
+  font-size: var(--ui-sm);
+  color: var(--st-sidebar-heading);
+}
+#settings-panel .settings-key-copy {
+  padding: 2px 8px;
+  font-size: var(--ui-xs);
+}
+.settings-key-code {
+  margin-top: 6px;
+  color: var(--st-foreground);
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  -webkit-user-select: all;  /* Safari still wants the prefix for `all` */
+  user-select: all;
+}
 
 /* Stepper (the two text sizes). The number sits between its two buttons and
    holds a fixed column, so "+" does not walk sideways as the value grows. */
@@ -1944,7 +2184,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   user-select: text;
-  /* The log (Settings › Update › Log) is up to 200 lines: the box scrolls,
+  /* The log (Settings › App › Log) is up to 200 lines: the box scrolls,
      so the buttons below stay on a phone's screen. */
   max-height: 50vh;
   overflow-y: auto;
@@ -2544,6 +2784,24 @@ html.phone #settings-close {
 html.phone #settings-panel {
   --ui-top-h: max(calc(48px * var(--ui-scale)), var(--tap));
   z-index: 25;
+}
+
+/* Keep phone jump pills and swatch buttons comfortably hittable by a thumb
+   while keeping --settings-jump-h synchronized for sticky section headings. */
+html.phone #settings-panel .settings-jump {
+  height: calc(var(--tap) + 4px);
+}
+html.phone #settings-panel .settings-body {
+  --settings-jump-h: calc(var(--tap) + 4px);
+}
+html.phone #settings-panel .settings-jump-pill {
+  min-height: calc(36px * var(--thumb-scale));
+  padding: 4px 12px;
+  font-size: var(--ui-sm);
+}
+html.phone #settings-panel .settings-swatch-button {
+  width: calc(36px * var(--thumb-scale));
+  height: calc(36px * var(--thumb-scale));
 }
 
 /* ---- The thumb button and its round buttons ----------------------------- */

@@ -6,7 +6,7 @@
 // The content is a declarative list of sections and items. A new setting is a
 // new entry in SECTIONS, never new render code, and an item never writes state
 // itself: it dispatches a command and the panel repaints from the state that
-// results. Sync and Security sections join the same list when they ship.
+// results.
 
 import { run } from "../commands/registry.js";
 import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
@@ -21,7 +21,7 @@ import { phoneMode, watchBack } from "./shell.js";
 import { SYNC_LABEL } from "./statusbar.js";
 
 /**
- * The keyring the Security section reports on, handed in by mountSettings.
+ * The keyring the Security and Devices sections report on, handed in by mountSettings.
  *
  * A module-level reference rather than a parameter threaded through every row:
  * SECTIONS is a static list built at module load, which is what keeps a new
@@ -32,32 +32,49 @@ import { SYNC_LABEL } from "./statusbar.js";
 let keyring = null;
 
 /**
- * The sync client the Sync section reports on. Same reason as `keyring` above.
+ * The sync client the Sync, Spaces, and Devices sections report on. Same reason
+ * as `keyring` above.
  * @type {ReturnType<import("../sync/client.js").createSyncClient> | null}
  */
 let sync = null;
 
 /**
- * The document store the Trash section lists (architecture.md §22).
+ * The document store the Editor language rows read from (architecture.md §22).
  * @type {ReturnType<import("../model/docs.js").createDocStore> | null}
  */
 let store = null;
 
-/** Result of the last "Test connection" click, shown on that row. */
+/** Result of the last "Test connection" click, shown on the Sync status row. */
 let testResult = "";
+
+/**
+ * One action button on an `action` row. `actions` lets a row carry two related
+ * buttons side by side (e.g. "sync now" and "test" beside the sync status)
+ * without splitting one concern across separate rows.
+ * @typedef {{ key?: string, button: string, danger?: boolean,
+ *             visible?: () => boolean,
+ *             act: (repaint: () => void) => any }} ActionButton
+ */
+
+/**
+ * One key/code block inside a collapsible `details` row (Security › Keys).
+ * @typedef {{ key: string, label: string, hint?: string, value: string }} DetailBlock
+ */
 
 /**
  * One row. `type` picks the renderer; the other fields are per type.
  *
  * @typedef {Object} Item
- * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper" | "list" | "grid"} type
+ * @property {"toggle" | "text" | "info" | "action" | "note" | "stepper" | "select" | "list" | "grid" | "details" | "subhead"} type
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
- * @property {string} [label]  Left-hand text of a toggle, info or action row.
+ * @property {string} [label]  Left-hand text of a row (or heading text of a subhead).
  * @property {string} [hint]   Small line under the label.
- * @property {() => any} [get]        toggle: the state. text: the value.
- * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text:
- *                             dispatch the value the user typed.
+ * @property {() => any} [get]        toggle: the state. text/select: the value.
+ * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text/select:
+ *                             dispatch the new value.
+ * @property {() => { value: string, label: string }[]} [options] select: the choices,
+ *                             read fresh on every paint so the list tracks spaces.
  * @property {number} [min]           stepper: the lowest value.
  * @property {number} [max]           stepper: the highest value.
  * @property {number} [step]          stepper: what one press adds.
@@ -71,40 +88,50 @@ let testResult = "";
  * @property {boolean} [block]        info: the value is a key or a code, so
  *                             it takes its own line in an inset block.
  * @property {() => boolean | Promise<boolean>} [visible] Hide the row when false.
- * @property {string} [button]                           action: button label.
- * @property {(repaint: () => void) => any} [act]        action: dispatch the action.
+ * @property {string} [button]                           action: single button label.
+ * @property {boolean} [danger]                          action: danger styling and top rule.
+ * @property {(repaint: () => void) => any} [act]        action: single button dispatch.
  *                             An action that reports progress calls `repaint`
  *                             at each step.
+ * @property {ActionButton[]} [actions]                  action: multiple inline buttons.
  * @property {string} [text]                             note: one paragraph.
+ * @property {boolean} [callout]                         note: highlighted notice banner.
+ * @property {boolean} [compact]                         note: tight credit line with no divider.
+ * @property {{ key?: string, button: string, act: () => any }} [headerAction]
+ *                             list: optional button beside the list's label (e.g. "+ new space").
+ * @property {string} [empty]                            list: shown when `rows()` is empty.
  * @property {(repaint: () => void) => ListRow[]} [rows] list: the rows, read
  *                             on every paint. A list whose source is fetched
  *                             calls `repaint` when the answer lands.
  * @property {{ text: string, href: string }[]} [links]  note: external links.
  * @property {() => Grid} [grid]  grid: the table, read on every paint.
+ * @property {() => DetailBlock[]} [blocks]              details: blocks inside the disclosure.
  */
 
 /**
  * A table of ticks: Settings › Devices (architecture.md §27). Each cell and
  * each column head dispatches through its `act`, like any other row.
  * @typedef {{ columns: { key: string, label: string, color?: string, title?: string, act?: () => any }[],
- *            rows: { key: string, label: string,
+ *            rows: { key: string, label: string, me?: boolean,
  *                    cells: { checked: boolean, label: string, act: () => any }[] }[] }} Grid
  */
 
 /**
- * One row of a `list` item: a label with a value line under it, and an
- * optional button or select. Read fresh on every paint, so a list follows its
- * source. `select.set` dispatches the picked value, like a toggle's `set`.
+ * One row of a `list` item: a label with a value line under it, an optional
+ * clickable color swatch, and an optional select and/or button. Read fresh on
+ * every paint, so a list follows its source.
  * @typedef {{ key: string, label: string, value: string, hint?: string, color?: string,
- *            button?: string, act?: () => any,
+ *            swatchTitle?: string, swatchAct?: () => any,
+ *            button?: string, buttonTitle?: string, act?: () => any,
  *            select?: { value: string, options: { value: string, label: string }[],
  *                       set: (value: string) => Promise<unknown> | unknown } }} ListRow
  */
 
 /**
- * One section. `status` is the one state word the rail shows under the
- * section's name (the sync state, the lock state), read on every paint.
- * @typedef {{ title: string, items: Item[],
+ * One section. `group` inserts a quiet divider in the left rail whenever two
+ * adjacent visible sections belong to different groups. `status` is the one
+ * state line the rail shows under the section's name, read on every paint.
+ * @typedef {{ title: string, group?: string, items: Item[],
  *            status?: () => string | Promise<string> }} Section
  */
 
@@ -128,7 +155,7 @@ function formatBytes(bytes) {
 
 /**
  * What the update check says at the moment, or null while it is silent
- * (the "Update" section below).
+ * (the "App" section below).
  * @type {string | null}
  */
 let updateStatus = null;
@@ -140,7 +167,7 @@ function syncStateWord() {
   return SYNC_LABEL[state] ?? state;
 }
 
-/** One line for the sync status row: state, why, and when it last worked. */
+/** One line for the sync status row: state, why, last sync time, and any test result. */
 function syncStatusText() {
   if (!sync) return SYNC_LABEL.off;
   const { message, lastSyncAt } = sync.status;
@@ -148,6 +175,9 @@ function syncStatusText() {
   if (message) text += " (" + message + ")";
   if (lastSyncAt) {
     text += " · last sync " + new Date(lastSyncAt).toLocaleTimeString();
+  }
+  if (testResult) {
+    text += " · test: " + testResult;
   }
   return text;
 }
@@ -159,9 +189,10 @@ const SPACE_MODES = [
 ];
 
 /**
- * The Spaces list: this device's spaces, with their notes and what this
- * device does with each (§25, §27). To stop receiving a space, the device
- * leaves it in the grid of Settings › Devices.
+ * The unified Spaces list: each space appears once with its clickable color
+ * swatch, note count, open mode on this device, and (where disk access exists)
+ * its folder backup button. Removing this device from a space stays in
+ * Settings › Devices, beside all other membership ticks.
  * @returns {ListRow[]}
  */
 function spaceRows() {
@@ -171,20 +202,30 @@ function spaceRows() {
     key: "space-" + space,
     label: space,
     color: client.colorOf(space),
+    swatchTitle: "Change the color of " + space,
+    swatchAct: () => run("space.color", space),
     value: count === 1 ? "1 note" : count + " notes",
     select: {
       value: client.modeOf(space) ?? "tab",
       options: SPACE_MODES,
       set: (value) => run("sync.spaceMode", { space, mode: value }),
     },
+    ...(hasDisk
+      ? {
+          button: "back up",
+          buttonTitle:
+            "Writes each note of this space into a folder you pick, as plain text or as .age files.",
+          act: () => run("space.backup", space),
+        }
+      : {}),
   }));
 }
 
-// The texts of the "New notes" guidance (§27), in Settings › Sync and in the
-// one-time dialog of buffer.new (main.js). The exact words come from the plan.
+// The texts of the "New notes" guidance (§27), in Settings › Spaces and in the
+// one-time dialog of buffer.new (main.js).
 const GUIDANCE_NO_SPACE =
   "Notes on this device exist only in this browser. Clearing the site data or losing the device deletes them. " +
-  "To keep a copy on your sync server, make a space in Settings › Devices.";
+  "To keep a copy on your sync server, make a space in Settings › Spaces.";
 const GUIDANCE_LOCAL =
   "New notes stay only in this browser until you sync them from the note menu. To sync every new note, " +
   "pick a space here.";
@@ -221,7 +262,8 @@ function deviceGrid() {
     })),
     rows: grid.devices.map((device) => ({
       key: device.id,
-      label: device.me ? device.name + " (this device)" : device.name,
+      label: device.name,
+      me: device.me,
       cells: grid.spaces.map((space) => {
         const member = grid.isMember(space.name, device.key);
         return {
@@ -244,6 +286,7 @@ function deviceGrid() {
 const SECTIONS = [
   {
     title: "Appearance",
+    group: "editor",
     items: [
       {
         type: "stepper",
@@ -299,6 +342,7 @@ const SECTIONS = [
   },
   {
     title: "Editor",
+    group: "editor",
     items: [
       {
         type: "toggle",
@@ -311,11 +355,37 @@ const SECTIONS = [
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
       },
+      // The languages of the open note. Phone mode only (app.css): a PC has
+      // the two buttons in the status bar, and the phone has no status bar.
+      {
+        type: "toggle",
+        key: "spell-cs",
+        label: "Czech in this note",
+        visible: () => Boolean(store?.activeId),
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("cs"),
+        set: () => run("spell.lang", "cs"),
+      },
+      {
+        type: "toggle",
+        key: "spell-en",
+        label: "English in this note",
+        visible: () => Boolean(store?.activeId),
+        hint: "A setting of the open note. It syncs with the note.",
+        get: () => noteLangOn("en"),
+        set: () => run("spell.lang", "en"),
+      },
       // Only where "Add diacritics (vllm)" exists: the sync server has a model.
       // Asked again on each paint, so opening Settings is the way to see if
       // vLLM came up; the server checks vLLM live, at most every 30 seconds.
       // The menu entry stays when the model does not answer: vLLM can start
       // after the app, and a hidden entry would need a reload to come back.
+      {
+        type: "subhead",
+        key: "model-heading",
+        label: "Diacritics model (server)",
+        visible: () => Boolean(sync?.hasModel),
+      },
       {
         type: "info",
         key: "model-state",
@@ -344,30 +414,11 @@ const SECTIONS = [
         get: () => modelFixesCzechParagraphs(),
         set: () => setModelFixesCzechParagraphs(!modelFixesCzechParagraphs()),
       },
-      // The languages of the open note. Phone mode only (app.css): a PC has
-      // the two buttons in the status bar, and the phone has no status bar.
-      {
-        type: "toggle",
-        key: "spell-cs",
-        label: "Czech in this note",
-        visible: () => Boolean(store?.activeId),
-        hint: "A setting of the open note. It syncs with the note.",
-        get: () => noteLangOn("cs"),
-        set: () => run("spell.lang", "cs"),
-      },
-      {
-        type: "toggle",
-        key: "spell-en",
-        label: "English in this note",
-        visible: () => Boolean(store?.activeId),
-        hint: "A setting of the open note. It syncs with the note.",
-        get: () => noteLangOn("en"),
-        set: () => run("spell.lang", "en"),
-      },
     ],
   },
   {
     title: "Sync",
+    group: "sync",
     status: () => syncStateWord(),
     items: [
       {
@@ -386,86 +437,105 @@ const SECTIONS = [
           "from “Invite a device” in Settings › Devices on a device that syncs.",
         button: "connect",
         // Shown before device setup too: a new device looks for sync here, not
-        // in Settings › Devices. The connect flow makes the keys when the
+        // in Settings › Security. The connect flow makes the keys when the
         // device has none (main.js connectDevice).
         visible: () => !sync?.isConfigured,
         act: () => run("device.connect"),
       },
       {
-        type: "info",
+        type: "action",
         key: "sync-status",
         label: "Status",
+        hint: "Sync runs by itself after each edit and once a minute.",
+        visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
         value: () => syncStatusText(),
-      },
-      {
-        type: "note",
-        key: "sync-directory-missing",
-        text:
-          "Update the sync server. This server has no device directory, so a device shows in " +
-          "Settings › Devices only when it shares a space with this device.",
-        visible: () => Boolean(sync?.isConfigured && sync.directoryMissing),
+        actions: [
+          {
+            key: "sync-run",
+            button: "sync now",
+            visible: () => Boolean(sync?.isConfigured),
+            act: () => {
+              testResult = "";
+              return run("sync.now");
+            },
+          },
+          {
+            key: "sync-test",
+            button: "test",
+            visible: () => Boolean(sync?.isConfigured),
+            act: async (repaint) => {
+              testResult = "…";
+              repaint();
+              const result = await (sync?.testConnection() ?? { ok: false });
+              testResult = result.ok ? "connected" : result.message ?? "failed";
+            },
+          },
+        ],
       },
       {
         type: "action",
-        key: "sync-test",
-        label: "Test connection",
-        button: "test",
-        visible: () => Boolean(sync?.isConfigured),
-        value: () => testResult,
-        act: async () => {
-          testResult = "…";
-          const result = await (sync?.testConnection() ?? { ok: false });
-          testResult = result.ok ? "connected" : result.message ?? "failed";
-        },
+        key: "sync-disconnect",
+        label: "Stop syncing this device",
+        hint: "This device forgets its server. Your notes stay here.",
+        button: "stop",
+        danger: true,
+        visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
+        act: () => run("sync.disconnect"),
       },
+    ],
+  },
+  {
+    title: "Spaces",
+    group: "sync",
+    status: () => {
+      const count = sync?.mySpaces().length ?? 0;
+      return count === 1 ? "1 space" : count + " spaces";
+    },
+    items: [
       {
         type: "list",
         key: "sync-spaces",
-        label: "Spaces",
-        hint:
-          "The spaces of this device. Take every note as a tab, or titles only under From server in the sidebar. " +
-          "To stop receiving a space, leave it in Settings › Devices.",
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        label: "Your spaces",
+        hint: hasDisk
+          ? "Click a color square to change a space's color. Pick how notes open on this device, or back up a space to a folder."
+          : "Tap a color square to change a space's color. Pick how notes open on this device.",
+        headerAction: {
+          key: "space-create",
+          button: "+ new space",
+          act: () => run("space.create"),
+        },
+        empty: "No spaces on this device yet. Create one to sync notes with your other devices.",
+        visible: () => Boolean(sync?.isConfigured),
         rows: spaceRows,
       },
       {
-        type: "list",
+        type: "select",
         key: "sync-new-notes",
         label: "New notes",
         hint:
           "Where a new note goes: one of your spaces, or Local only. With Local only, you sync a note " +
           "from its menu. Only you change this; a new space does not.",
         visible: () => Boolean(sync?.isConfigured),
-        rows: () => {
-          const client = /** @type {NonNullable<typeof sync>} */ (sync);
-          return [
-            {
-              key: "new-notes",
-              label: "New notes",
-              value: "",
-              select: {
-                value: client.defaultSpace() ?? "",
-                options: [
-                  { value: "", label: "Local only" },
-                  ...client.mySpaces().map((space) => ({ value: space, label: space })),
-                ],
-                set: (value) => run("sync.newNotes", value || null),
-              },
-            },
-          ];
-        },
+        get: () => sync?.defaultSpace() ?? "",
+        options: () => [
+          { value: "", label: "Local only" },
+          ...(sync?.mySpaces() ?? []).map((space) => ({ value: space, label: space })),
+        ],
+        set: (value) => run("sync.newNotes", value || null),
       },
       // The guidance of a device with no disk (§27): two rows, one for each
       // text, because a note row paints its text once.
       {
         type: "note",
         key: "sync-guidance-no-space",
+        callout: true,
         text: GUIDANCE_NO_SPACE,
         visible: () => newNotesGuidance(sync) === GUIDANCE_NO_SPACE,
       },
       {
         type: "note",
         key: "sync-guidance-local",
+        callout: true,
         text: GUIDANCE_LOCAL,
         visible: () => newNotesGuidance(sync) === GUIDANCE_LOCAL,
       },
@@ -480,48 +550,68 @@ const SECTIONS = [
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("sync.all"),
       },
-      {
-        type: "list",
-        key: "sync-backup",
-        label: "Back up to a folder",
-        hint:
-          "Writes each note of a space into a folder you pick, as plain text or as .age files for this device " +
-          "and the recovery key. A second run writes the same files again.",
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length && hasDisk),
-        rows: () =>
-          (sync?.mySpaces() ?? []).map((space) => ({
-            key: "backup-" + space,
-            label: space,
-            value: "",
-            button: "back up",
-            act: () => run("space.backup", space),
-          })),
-      },
-      {
-        type: "action",
-        key: "sync-run",
-        label: "Sync now",
-        hint: "Sync runs by itself after each edit and once a minute. This runs it at once.",
-        button: "sync",
-        visible: () => Boolean(sync?.isConfigured),
-        act: () => run("sync.now"),
-      },
-      {
-        type: "action",
-        key: "sync-disconnect",
-        label: "Stop syncing this device",
-        hint: "This device forgets its server. Your notes stay here.",
-        button: "stop",
-        visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
-        act: () => run("sync.disconnect"),
-      },
     ],
   },
   {
     title: "Devices",
+    group: "sync",
+    status: () => {
+      const count = sync?.grid().devices.length ?? 0;
+      if (count > 0) return count === 1 ? "1 device" : count + " devices";
+      return keyring?.deviceName ?? "";
+    },
+    items: [
+      {
+        type: "action",
+        key: "device-name",
+        label: "This device",
+        hint: "The name your other devices show for this one. Invite another device to add it to this server.",
+        visible: () => Boolean(sync?.isConfigured),
+        value: () => keyring?.deviceName ?? "",
+        actions: [
+          {
+            // Available even with no space: the new device joins the server,
+            // and the grid adds it once this device has a space.
+            key: "device-invite",
+            button: "invite a device",
+            act: () => run("device.invite"),
+          },
+        ],
+      },
+      {
+        type: "note",
+        key: "sync-directory-missing",
+        callout: true,
+        text:
+          "Update the sync server. This server has no device directory, so a device shows here " +
+          "only when it shares a space with this device.",
+        visible: () => Boolean(sync?.isConfigured && sync.directoryMissing),
+      },
+      {
+        type: "grid",
+        key: "device-grid",
+        label: "Space access",
+        hint:
+          "Only ticked devices get and decrypt a space's notes. Untick this device to leave a space. " +
+          "Click a space name to change its color.",
+        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
+        grid: deviceGrid,
+      },
+      {
+        type: "note",
+        key: "device-no-spaces",
+        text: "Create a space in Spaces above to choose which devices receive its notes. You can still invite devices now.",
+        visible: () => Boolean(sync?.isConfigured && !sync.mySpaces().length),
+      },
+    ],
+  },
+  {
+    title: "Security",
+    group: "sync",
     status: () => {
       if (!keyring?.isSetUp) return "not set up";
-      return keyring.isUnlocked ? keyring.deviceName ?? "" : "locked";
+      if (!keyring.isUnlocked) return "locked";
+      return keyring.askPassphrase ? "passphrase on" : "no passphrase";
     },
     items: [
       {
@@ -536,44 +626,14 @@ const SECTIONS = [
         act: () => run("device.setup"),
       },
       {
+        // Shown only while not syncing: Devices hides when offline, so a user
+        // who set up keys for local file encryption still sees this device's name here.
         type: "info",
-        key: "device-name",
+        key: "security-device-name",
         label: "This device",
-        hint: "The name your other devices show for this one.",
-        visible: () => Boolean(keyring?.isSetUp),
+        hint: "The name stored with this device's key.",
+        visible: () => Boolean(keyring?.isSetUp && !sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
-      },
-      {
-        type: "grid",
-        key: "device-grid",
-        label: "Devices and spaces",
-        hint:
-          "A space is a group of devices. Only its members get its notes and can read them. " +
-          "Tick to add a device, untick to remove it. Click a space name to change its color.",
-        visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
-        grid: deviceGrid,
-      },
-      {
-        type: "action",
-        key: "device-invite",
-        label: "Invite a device",
-        hint:
-          "You tick the spaces it gets and how it opens them, or none. This device shows an invite, and the new " +
-          "device pastes it in Settings › Sync.",
-        button: "invite",
-        // Also with no space: the new device joins the server, and the grid
-        // adds it once this device has a space.
-        visible: () => Boolean(sync?.isConfigured),
-        act: () => run("device.invite"),
-      },
-      {
-        type: "action",
-        key: "space-create",
-        label: "New space",
-        hint: "This device is its first member. Add your other devices in the grid.",
-        button: "new",
-        visible: () => Boolean(sync?.isConfigured),
-        act: () => run("space.create"),
       },
       {
         type: "action",
@@ -606,30 +666,40 @@ const SECTIONS = [
         act: () => run("crypto.lock"),
       },
       {
-        type: "info",
-        key: "recovery-key",
-        label: "Recovery key",
-        hint:
-          "The public part of the recovery key your first device made. Every synced note is encrypted " +
-          "to it too, so it opens every note with the age tool.",
-        block: true,
-        visible: () => Boolean(keyring?.recoveryRecipients.length),
-        value: () => (keyring?.recoveryRecipients ?? []).join(" "),
-      },
-      {
-        type: "info",
-        key: "device-key",
-        label: "Device key",
-        hint: "This device's public key, not a secret.",
-        block: true,
-        visible: () => Boolean(keyring?.isSetUp),
-        value: () => keyring?.deviceRecipient ?? "",
+        type: "details",
+        key: "security-keys",
+        label: "Device and recovery keys",
+        hint: "Public age keys for this device and offline recovery. Not a secret.",
+        visible: () => Boolean(keyring?.isSetUp || keyring?.recoveryRecipients.length),
+        blocks: () => {
+          /** @type {DetailBlock[]} */
+          const list = [];
+          if (keyring?.isSetUp && keyring.deviceRecipient) {
+            list.push({
+              key: "device-key",
+              label: "Device key",
+              hint: "This device's public key, not a secret.",
+              value: keyring.deviceRecipient,
+            });
+          }
+          if (keyring?.recoveryRecipients.length) {
+            list.push({
+              key: "recovery-key",
+              label: "Recovery key (public)",
+              hint:
+                "Every synced note is encrypted to this key too, so its private half opens every note with the age tool.",
+              value: keyring.recoveryRecipients.join(" "),
+            });
+          }
+          return list;
+        },
       },
     ],
   },
   {
     // Deleted notes moved to the sidebar Trash drawer (§28).
     title: "Storage",
+    group: "system",
     status: async () => ((await isPersisted()) ? "persistent" : "not persistent"),
     items: [
       {
@@ -662,24 +732,22 @@ const SECTIONS = [
     ],
   },
   {
-    // The build and the update check sit together, and here rather than only
-    // in the status bar: phone mode has no status bar (app.css), so this is
-    // the one place a phone can ask for a new build.
-    title: "Update",
+    // The build, update check, log, and credits sit together here rather than
+    // only in the status bar: phone mode has no status bar (app.css), so this
+    // is the one place a phone can ask for a new build.
+    title: "App",
+    group: "system",
+    status: () => BUILD.commit,
     items: [
-      { type: "info", key: "build", label: "Build", value: () => BUILD.commit },
-      {
-        type: "info",
-        key: "built-at",
-        label: "Built",
-        value: () => new Date(BUILD.builtAt).toLocaleString(),
-      },
       {
         type: "action",
         key: "update",
-        label: "Update to the latest build",
-        hint: "Looks for a newer build. If there is one, the app loads it and starts again.",
-        value: () => updateStatus ?? "",
+        label: "Version",
+        hint:
+          "Built " +
+          new Date(BUILD.builtAt).toLocaleString() +
+          ". Looks for a newer build; if there is one, the app loads it and starts again.",
+        value: () => updateStatus ?? BUILD.commit,
         button: "check",
         // The check reports in steps ("checking…", then the result, then
         // null a few seconds later), so each step repaints the row.
@@ -698,31 +766,27 @@ const SECTIONS = [
         button: "show",
         act: () => run("app.log"),
       },
-    ],
-  },
-  {
-    title: "About",
-    items: [
-      { type: "note", text: "vrtti — scratchpad editor" },
+      { type: "note", compact: true, key: "credit-vrtti", text: "vrtti — scratchpad editor" },
       {
         type: "note",
+        compact: true,
         text: "CodeMirror 6 — MIT.",
         links: [{ text: "codemirror.net", href: "https://codemirror.net/" }],
       },
       {
         type: "note",
+        compact: true,
         text: "Harper spellcheck engine — Apache-2.0.",
         links: [{ text: "writewithharper.com", href: "https://writewithharper.com/" }],
       },
       {
         // CC-BY 4.0 wants the credit where the work is used, so it lives in the
-        // app and not only in VENDOR.md. Do not move it back into the docs.
+        // app and always stays visible (never inside a collapsed block). Do not
+        // move it back into the docs.
         type: "note",
-        text:
-          "Twemoji graphics © Twitter / Jason Sofonia & contributors, CC-BY 4.0.",
-        links: [
-          { text: "github.com/jdecked/twemoji", href: "https://github.com/jdecked/twemoji" },
-        ],
+        compact: true,
+        text: "Twemoji graphics © Twitter / Jason Sofonia & contributors, CC-BY 4.0.",
+        links: [{ text: "github.com/jdecked/twemoji", href: "https://github.com/jdecked/twemoji" }],
       },
     ],
   },
@@ -748,6 +812,34 @@ function labelBlock(label, hint) {
 }
 
 /**
+ * Build one action button that disables itself while its command runs and
+ * repaints the whole panel afterward.
+ * @param {ActionButton} spec
+ * @param {() => void} refresh
+ */
+function makeActionButton(spec, refresh) {
+  const button = document.createElement("button");
+  button.className = spec.danger ? "settings-button settings-button-danger" : "settings-button";
+  button.type = "button";
+  button.textContent = spec.button;
+  if (spec.key) button.dataset.key = spec.key;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      // The click is the user gesture some of these APIs require, so the
+      // command runs on this stack and not on a timer.
+      await spec.act(refresh);
+    } finally {
+      button.disabled = false;
+      // The action changed what other rows report (a granted permission, a
+      // new figure), so repaint the panel and not just this row.
+      refresh();
+    }
+  });
+  return button;
+}
+
+/**
  * Build one row and the function that repaints it. Everything that can change
  * (a toggle state, an async storage figure, a row's visibility) is read inside
  * `paint`, so one refresh() call brings the whole panel up to date.
@@ -757,11 +849,29 @@ function labelBlock(label, hint) {
  * @returns {{ el: HTMLElement, paint: () => void }}
  */
 function makeRow(item, refresh) {
+  if (item.type === "subhead") {
+    const sub = document.createElement("div");
+    sub.className = "settings-subhead";
+    sub.textContent = item.label ?? "";
+    if (item.key) sub.dataset.key = item.key;
+    if (item.visible) sub.hidden = true;
+    const paint = () => {
+      if (!item.visible) return;
+      Promise.resolve(item.visible()).then((show) => {
+        sub.hidden = !show;
+      });
+    };
+    return { el: sub, paint };
+  }
+
   const row = document.createElement("div");
   // A note is a row too (it gets the rule between rows), only laid out as prose.
   row.className = item.type === "note" ? "settings-row settings-note" : "settings-row";
   if (item.key) row.dataset.key = item.key;
   if (item.block) row.classList.add("settings-row-block");
+  if (item.danger) row.classList.add("settings-row-danger");
+  if (item.callout) row.classList.add("settings-callout");
+  if (item.compact) row.classList.add("settings-note-compact");
   // A conditional row starts hidden and is only ever shown by the answer of
   // its own check. Hiding it again on each repaint would make it blink, and
   // the check is async, so the blink would be visible.
@@ -785,7 +895,7 @@ function makeRow(item, refresh) {
       anchor.rel = "noopener";
       row.appendChild(anchor);
     }
-  } else {
+  } else if (item.type !== "details" && !(item.type === "list" && item.headerAction)) {
     labels = labelBlock(item.label ?? "", item.hint);
     row.appendChild(labels);
   }
@@ -861,6 +971,40 @@ function makeRow(item, refresh) {
     row.appendChild(group);
   }
 
+  if (item.type === "select") {
+    const select = document.createElement("select");
+    select.className = "settings-select";
+    select.setAttribute("aria-label", item.label ?? "");
+    paintOwn = () => {
+      // Never while this select has focus: a repaint arrives from every sync
+      // status event and replacing options would close an open dropdown.
+      if (document.activeElement === select) return;
+      const options = item.options ? item.options() : [];
+      select.replaceChildren(
+        ...options.map((option) => {
+          const el = document.createElement("option");
+          el.value = option.value;
+          el.textContent = option.label;
+          return el;
+        }),
+      );
+      select.value = String((item.get ? item.get() : "") ?? "");
+    };
+    select.addEventListener("change", async () => {
+      select.disabled = true;
+      try {
+        if (item.set) await item.set(select.value);
+      } finally {
+        select.disabled = false;
+        // Blur before refresh so the focus guard in paintOwn lets the stored
+        // value repaint (including when the command refused the change).
+        select.blur();
+        refresh();
+      }
+    });
+    row.appendChild(select);
+  }
+
   if (item.type === "text") {
     const input = document.createElement("input");
     input.className = "settings-input";
@@ -912,17 +1056,33 @@ function makeRow(item, refresh) {
   if (item.type === "list") {
     // The rows sit under the label, not beside it: a list is a column.
     row.classList.add("settings-row-list");
+    if (item.headerAction) {
+      const headerRow = document.createElement("div");
+      headerRow.className = "settings-list-header";
+      labels = labelBlock(item.label ?? "", item.hint);
+      const headerBtn = makeActionButton(item.headerAction, refresh);
+      headerRow.append(labels, headerBtn);
+      row.appendChild(headerRow);
+    }
     const list = document.createElement("div");
     list.className = "settings-list";
     row.appendChild(list);
     paintOwn = () => {
-      // Never while a select in the list has the focus: a repaint arrives
-      // from every sync status event and every store change, and replacing
-      // the select would close its dropdown under the user. The select's own
-      // change handler blurs it before it asks for the repaint.
+      // Never while a select in the list has the focus, or while a button in
+      // the list waits for its command: a repaint arrives from every sync
+      // status event and every store change, and replacing the row would close
+      // an open dropdown or drop an in-flight click.
       const focused = document.activeElement;
       if (focused instanceof HTMLSelectElement && list.contains(focused)) return;
+      if (list.querySelector("button:disabled")) return;
       const rows = item.rows ? item.rows(refresh) : [];
+      if (rows.length === 0 && item.empty) {
+        const empty = document.createElement("p");
+        empty.className = "settings-hint settings-list-empty";
+        empty.textContent = item.empty;
+        list.replaceChildren(empty);
+        return;
+      }
       list.replaceChildren(
         ...rows.map((entry) => {
           const line = document.createElement("div");
@@ -930,56 +1090,87 @@ function makeRow(item, refresh) {
           line.dataset.key = entry.key;
           const text = document.createElement("div");
           text.className = "settings-list-text";
+          if (entry.color && entry.swatchAct) {
+            const swatchBtn = document.createElement("button");
+            swatchBtn.type = "button";
+            swatchBtn.className = "settings-swatch-button";
+            if (entry.swatchTitle) {
+              swatchBtn.title = entry.swatchTitle;
+              swatchBtn.setAttribute("aria-label", entry.swatchTitle);
+            }
+            swatchBtn.appendChild(swatch(entry.color));
+            swatchBtn.addEventListener("click", async () => {
+              swatchBtn.disabled = true;
+              try {
+                await entry.swatchAct?.();
+              } finally {
+                swatchBtn.disabled = false;
+                refresh();
+              }
+            });
+            line.appendChild(swatchBtn);
+          }
           const label = document.createElement("div");
           label.textContent = entry.label;
-          if (entry.color) label.prepend(swatch(entry.color));
+          if (entry.color && !entry.swatchAct) label.prepend(swatch(entry.color));
           text.appendChild(label);
-          const value = document.createElement("div");
-          value.className = "settings-hint";
-          value.textContent = entry.value;
-          text.appendChild(value);
-          line.appendChild(text);
-          if (entry.button && entry.act) {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "settings-button";
-            button.textContent = entry.button;
-            button.addEventListener("click", async () => {
-              button.disabled = true;
-              try {
-                await entry.act?.();
-              } finally {
-                // The answer changed what the whole panel reports.
-                refresh();
-              }
-            });
-            line.appendChild(button);
+          if (entry.value) {
+            const value = document.createElement("div");
+            value.className = "settings-hint";
+            value.textContent = entry.value;
+            text.appendChild(value);
           }
-          const choice = entry.select;
-          if (choice) {
-            const select = document.createElement("select");
-            select.className = "settings-select";
-            select.setAttribute("aria-label", entry.label);
-            for (const option of choice.options) {
-              const el = document.createElement("option");
-              el.value = option.value;
-              el.textContent = option.label;
-              select.appendChild(el);
-            }
-            select.value = choice.value;
-            select.addEventListener("change", async () => {
-              select.disabled = true;
-              try {
-                await choice.set(select.value);
-              } finally {
-                // The repaint replaces this select with one that shows the
-                // stored mode, also when the command refused the change. The
-                // blur first, or the focus guard in paintOwn skips it.
-                select.blur();
-                refresh();
+          line.appendChild(text);
+
+          const hasControls = Boolean(entry.select || (entry.button && entry.act));
+          if (hasControls) {
+            const controls = document.createElement("div");
+            controls.className = "settings-actions";
+            const choice = entry.select;
+            if (choice) {
+              const select = document.createElement("select");
+              select.className = "settings-select";
+              select.setAttribute("aria-label", entry.label);
+              for (const option of choice.options) {
+                const el = document.createElement("option");
+                el.value = option.value;
+                el.textContent = option.label;
+                select.appendChild(el);
               }
-            });
-            line.appendChild(select);
+              select.value = choice.value;
+              select.addEventListener("change", async () => {
+                select.disabled = true;
+                try {
+                  await choice.set(select.value);
+                } finally {
+                  // The repaint replaces this select with one that shows the
+                  // stored mode, also when the command refused the change. The
+                  // blur first, or the focus guard in paintOwn skips it.
+                  select.blur();
+                  refresh();
+                }
+              });
+              controls.appendChild(select);
+            }
+            if (entry.button && entry.act) {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "settings-button";
+              button.textContent = entry.button;
+              if (entry.buttonTitle) button.title = entry.buttonTitle;
+              button.addEventListener("click", async () => {
+                button.disabled = true;
+                try {
+                  await entry.act?.();
+                } finally {
+                  button.disabled = false;
+                  // The answer changed what the whole panel reports.
+                  refresh();
+                }
+              });
+              controls.appendChild(button);
+            }
+            line.appendChild(controls);
           }
           return line;
         })
@@ -1020,7 +1211,13 @@ function makeRow(item, refresh) {
         tr.dataset.key = line.key;
         const th = document.createElement("th");
         th.scope = "row";
-        th.textContent = line.label;
+        th.append(line.label);
+        if (line.me) {
+          const tag = document.createElement("span");
+          tag.className = "settings-me-tag";
+          tag.textContent = "this device";
+          th.append(" ", tag);
+        }
         tr.appendChild(th);
         for (const cell of line.cells) {
           const td = tr.insertCell();
@@ -1051,7 +1248,74 @@ function makeRow(item, refresh) {
     };
   }
 
-  if (item.type === "info" || (item.type === "action" && item.value)) {
+  if (item.type === "details") {
+    row.classList.add("settings-row-details");
+    const details = document.createElement("details");
+    details.className = "settings-details";
+    const summary = document.createElement("summary");
+    summary.className = "settings-details-summary";
+    summary.appendChild(labelBlock(item.label ?? "", item.hint));
+    const chevron = document.createElement("span");
+    chevron.className = "settings-details-state";
+    chevron.setAttribute("aria-hidden", "true");
+    summary.appendChild(chevron);
+    const body = document.createElement("div");
+    body.className = "settings-details-body";
+    details.append(summary, body);
+    row.appendChild(details);
+
+    // Only rebuild the key blocks when their values change so background sync
+    // repaints never clear a selection or reset a "copied" button label.
+    let lastSignature = "";
+    paintOwn = () => {
+      const blocks = item.blocks ? item.blocks() : [];
+      const sig = blocks.map((b) => b.key + "\0" + b.label + "\0" + b.value).join("\n");
+      if (sig === lastSignature) return;
+      lastSignature = sig;
+      body.replaceChildren(
+        ...blocks.map((block) => {
+          const box = document.createElement("div");
+          box.className = "settings-key-box";
+          box.dataset.key = block.key;
+          const head = document.createElement("div");
+          head.className = "settings-key-head";
+          const name = document.createElement("span");
+          name.className = "settings-key-label";
+          name.textContent = block.label;
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "settings-button settings-key-copy";
+          copy.textContent = "copy";
+          copy.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(block.value);
+              copy.textContent = "copied";
+            } catch {
+              copy.textContent = "select key";
+            }
+            setTimeout(() => {
+              if (copy.isConnected) copy.textContent = "copy";
+            }, 1800);
+          });
+          head.append(name, copy);
+          box.appendChild(head);
+          if (block.hint) {
+            const hint = document.createElement("p");
+            hint.className = "settings-hint";
+            hint.textContent = block.hint;
+            box.appendChild(hint);
+          }
+          const code = document.createElement("div");
+          code.className = "settings-key-code";
+          code.textContent = block.value;
+          box.appendChild(code);
+          return box;
+        }),
+      );
+    };
+  }
+
+  if (item.type === "info") {
     const value = document.createElement("span");
     value.className = "settings-value";
     paintOwn = () => {
@@ -1064,24 +1328,44 @@ function makeRow(item, refresh) {
   }
 
   if (item.type === "action") {
-    const button = document.createElement("button");
-    button.className = "settings-button";
-    button.type = "button";
-    button.textContent = item.button ?? "run";
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        // The click is the user gesture some of these APIs require, so the
-        // command runs on this stack and not on a timer.
-        if (item.act) await item.act(refresh);
-      } finally {
-        button.disabled = false;
-        // The action changed what other rows report (a granted permission, a
-        // new figure), so repaint the panel and not just this row.
-        refresh();
+    const controls = document.createElement("div");
+    controls.className = "settings-actions";
+    /** @type {HTMLSpanElement | null} */
+    let valueEl = null;
+    if (item.value) {
+      valueEl = document.createElement("span");
+      valueEl.className = "settings-value";
+      controls.appendChild(valueEl);
+    }
+    /** @type {{ el: HTMLButtonElement, spec: ActionButton }[]} */
+    const buttons = [];
+    if (item.actions && item.actions.length) {
+      for (const spec of item.actions) {
+        const btn = makeActionButton(spec, refresh);
+        buttons.push({ el: btn, spec });
+        controls.appendChild(btn);
       }
-    });
-    row.appendChild(button);
+    } else if (item.act || item.button) {
+      const spec = {
+        button: item.button ?? "run",
+        danger: item.danger,
+        act: item.act ?? (() => {}),
+      };
+      const btn = makeActionButton(spec, refresh);
+      buttons.push({ el: btn, spec });
+      controls.appendChild(btn);
+    }
+    paintOwn = () => {
+      if (valueEl) {
+        Promise.resolve(item.value ? item.value() : "").then((text) => {
+          if (valueEl) valueEl.textContent = text;
+        });
+      }
+      for (const { el, spec } of buttons) {
+        if (spec.visible) el.hidden = !spec.visible();
+      }
+    };
+    row.appendChild(controls);
   }
 
   const paint = () => {
@@ -1109,13 +1393,6 @@ function swatch(color) {
 }
 
 /**
- * Mount the settings overlay. Returns the controller the settings.toggle
- * command dispatches into.
- *
- * @param {{keyring?: import("../crypto/keyring.js").KeyRing,
- *          sync?: ReturnType<import("../sync/client.js").createSyncClient>}} [deps]
- */
-/**
  * Whether a spellcheck language is on for the open note, as the status bar
  * shows it: off when the spellcheck is off on this device.
  * @param {"cs" | "en"} lang
@@ -1125,6 +1402,14 @@ function noteLangOn(lang) {
   return isEnabled() && activeLangs(record?.spellOff)[lang];
 }
 
+/**
+ * Mount the settings overlay. Returns the controller the settings.toggle
+ * command dispatches into.
+ *
+ * @param {{keyring?: import("../crypto/keyring.js").KeyRing,
+ *          sync?: ReturnType<import("../sync/client.js").createSyncClient>,
+ *          store?: ReturnType<import("../model/docs.js").createDocStore>}} [deps]
+ */
 export function mountSettings(deps = {}) {
   keyring = deps.keyring ?? null;
   sync = deps.sync ?? null;
@@ -1151,6 +1436,13 @@ export function mountSettings(deps = {}) {
   closeButton.addEventListener("click", () => close());
   headRow.appendChild(closeButton);
 
+  // Horizontal jump strip for narrow panes and phone mode, where the left rail
+  // folds away (app.css). Hidden on wide screens.
+  const jumpBar = document.createElement("nav");
+  jumpBar.className = "settings-page settings-jump";
+  jumpBar.setAttribute("aria-label", "Jump to section");
+  head.appendChild(jumpBar);
+
   // The body is the app's own shape in small: a rail of sections on the
   // left, the document on the right. CSS folds the rail away when the panel
   // is narrow (a phone, a narrow editor pane).
@@ -1166,17 +1458,19 @@ export function mountSettings(deps = {}) {
   /** @type {(() => void)[]} */
   const painters = [];
   /**
-   * One per section: its element in the document, its button in the rail
-   * and the state word under that button.
+   * One per section: its element in the document, its button in the rail,
+   * its pill in the narrow jump strip, an optional rail divider before it,
+   * and the state word under the rail button.
    * @type {{ section: Section, element: HTMLElement, item: HTMLButtonElement,
+   *          jumpItem: HTMLButtonElement, gap: HTMLElement | null,
    *          status: HTMLElement }[]}
    */
   const entries = [];
 
   // Which section the reader is in: the last one that starts under the
   // sticky head. Once the panel is scrolled to its end, the last visible
-  // section takes the mark, or a short About could never have it. A panel
-  // that does not scroll at all marks the first.
+  // section takes the mark, or a short bottom section could never have it. A
+  // panel that does not scroll at all marks the first.
   function markCurrent() {
     const shown = entries.filter((entry) => !entry.element.hidden);
     if (shown.length === 0) return;
@@ -1189,11 +1483,29 @@ export function mountSettings(deps = {}) {
     const atEnd = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 1;
     if (scrolls && atEnd) current = shown[shown.length - 1];
     for (const entry of entries) {
-      if (entry === current) entry.item.setAttribute("aria-current", "true");
-      else entry.item.removeAttribute("aria-current");
+      const active = entry === current;
+      if (active) {
+        entry.item.setAttribute("aria-current", "true");
+        entry.jumpItem.setAttribute("aria-current", "true");
+      } else {
+        entry.item.removeAttribute("aria-current");
+        entry.jumpItem.removeAttribute("aria-current");
+      }
       // The stripe in the document (app.css), also on a phone, where the
       // rail is hidden and this is the only mark.
-      entry.element.classList.toggle("is-current", entry === current);
+      entry.element.classList.toggle("is-current", active);
+    }
+    // Keep the active pill in sight horizontally without calling scrollIntoView,
+    // which can nudge the vertical scroll of #settings-panel on mobile Safari.
+    if (jumpBar.clientWidth > 0 && jumpBar.scrollWidth > jumpBar.clientWidth) {
+      const pill = current.jumpItem;
+      const left = pill.offsetLeft;
+      const right = left + pill.offsetWidth;
+      if (left < jumpBar.scrollLeft) {
+        jumpBar.scrollLeft = Math.max(0, left - 8);
+      } else if (right > jumpBar.scrollLeft + jumpBar.clientWidth) {
+        jumpBar.scrollLeft = right - jumpBar.clientWidth + 8;
+      }
     }
   }
 
@@ -1223,21 +1535,47 @@ export function mountSettings(deps = {}) {
     }
     // A row's visible() answers in a microtask; the sections are judged
     // after that. A section whose rows are all hidden hides with them,
-    // heading and rail entry included.
+    // heading, rail entry, and jump pill included.
     setTimeout(() => {
+      /** @type {string | undefined} */
+      let lastVisibleGroup;
+      let anyVisible = false;
       for (const entry of entries) {
         const rows = [...entry.element.children].filter((el) => el.tagName !== "H3");
         const hide = rows.length > 0 && rows.every((el) => el.hidden);
         entry.element.hidden = hide;
         entry.item.hidden = hide;
+        entry.jumpItem.hidden = hide;
+        if (entry.gap) {
+          // Draw a rail divider only between two visible sections in different
+          // groups, so hidden sections never leave a double or leading line.
+          entry.gap.hidden = hide || !anyVisible || entry.section.group === lastVisibleGroup;
+        }
+        if (!hide) {
+          anyVisible = true;
+          lastVisibleGroup = entry.section.group;
+        }
       }
       markCurrent();
     }, 0);
   }
 
+  /** @type {string | undefined} */
+  let prevGroup;
   for (const section of SECTIONS) {
+    /** @type {HTMLElement | null} */
+    let gap = null;
+    if (prevGroup !== undefined && section.group !== prevGroup) {
+      gap = document.createElement("div");
+      gap.className = "settings-rail-gap";
+      gap.setAttribute("aria-hidden", "true");
+      rail.appendChild(gap);
+    }
+    prevGroup = section.group;
+
     const element = document.createElement("section");
     element.className = "settings-section";
+    element.dataset.section = section.title.toLowerCase();
     const heading = document.createElement("h3");
     heading.textContent = section.title;
     element.appendChild(heading);
@@ -1261,7 +1599,17 @@ export function mountSettings(deps = {}) {
       element.scrollIntoView({ block: "start" });
     });
     rail.appendChild(item);
-    entries.push({ section, element, item, status });
+
+    const jumpItem = document.createElement("button");
+    jumpItem.type = "button";
+    jumpItem.className = "settings-jump-pill";
+    jumpItem.textContent = section.title;
+    jumpItem.addEventListener("click", () => {
+      element.scrollIntoView({ block: "start" });
+    });
+    jumpBar.appendChild(jumpItem);
+
+    entries.push({ section, element, item, jumpItem, gap, status });
   }
   panel.replaceChildren(head, body);
 
@@ -1294,8 +1642,8 @@ export function mountSettings(deps = {}) {
     if (!panel.hidden) refresh();
   });
 
-  // A tombstone can trash a note while the panel is open; the Trash rows
-  // follow the store (architecture.md §22).
+  // A note change can update space counts or the active note's language rows
+  // while the panel is open.
   store?.events.addEventListener("change", () => {
     if (!panel.hidden) refresh();
   });

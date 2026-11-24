@@ -686,7 +686,7 @@ export function createSyncClient({ store, keyring }) {
   async function pullIntroductions() {
     const res = await request("/api/introductions");
     // An older server. The app works as before, with no directory, and
-    // Settings › Sync asks for an update of the server.
+    // Settings › Devices asks for an update of the server.
     if (res.status === 404) {
       directoryMissing = true;
       return;
@@ -1741,7 +1741,7 @@ export function createSyncClient({ store, keyring }) {
     registerFirst,
     changePassphraseSwitch,
     disconnect,
-    // The server has no device directory: Settings › Sync asks for an update.
+    // The server has no device directory: Settings › Devices asks for an update.
     get directoryMissing() {
       return started ? directoryMissing : status.directoryMissing === true;
     },
