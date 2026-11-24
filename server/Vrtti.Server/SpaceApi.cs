@@ -11,7 +11,7 @@ public static class SpaceApi
         // Only the caller's spaces. A device must not learn the names of the others.
         api.MapGet("/spaces", (HttpContext context, Db db) =>
         {
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return Results.Ok(SpaceLog.Of(conn, context.Caller().Id));
         });
 
@@ -25,7 +25,7 @@ public static class SpaceApi
                 return Results.Json(new ErrorResponse("only a device registered with the server token"), statusCode: 403);
             }
 
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return Results.Ok(SpaceLog.Unclaimed(conn));
         });
 
@@ -36,7 +36,7 @@ public static class SpaceApi
                 return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
             }
 
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return SpaceLog.IsMember(conn, name, context.Caller().Id)
                 ? Results.Ok(SpaceLog.Since(conn, name, since ?? 0))
                 : Results.Json(new ErrorResponse($"not a member of {name}"), statusCode: 403);
@@ -61,7 +61,7 @@ public static class SpaceApi
             return Results.BadRequest(new ErrorResponse("entry is required"));
         }
 
-        using var conn = db.Open();
+        var conn = context.GetConnection(db);
         var result = SpaceLog.Append(conn, name, entry, context.Caller(), claim);
         return result.Status == 201
             ? Results.Created($"/api/spaces/{name}/log", new LogAppendResponse(result.Seq))

@@ -110,13 +110,21 @@ export async function readFileBytes(handle) {
   return { bytes: new Uint8Array(await file.arrayBuffer()), lastModified: file.lastModified };
 }
 
-/** @param {FileHandle} handle @param {string} content */
-export async function writeFile(handle, content) {
+/**
+ * @param {FileHandle} handle @param {string} content
+ * @param {{expectedMtime?: number}} [opts]
+ * @returns {Promise<{mtime?: number} | undefined>}
+ */
+export async function writeFile(handle, content, opts) {
+  if (isNativeHandle(handle) && typeof handle.writeAtomic === "function") {
+    return handle.writeAtomic(content, opts?.expectedMtime);
+  }
   const writable = await handle.createWritable();
   await writable.write(content);
   // The file on disk only changes on close(); an unclosed writable is a lost
   // write, so this must never be fire-and-forget.
   await writable.close();
+  return undefined;
 }
 
 /**

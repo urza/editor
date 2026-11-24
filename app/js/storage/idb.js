@@ -415,6 +415,12 @@ export async function getAllBuffers() {
   return request(db.transaction(STORE, "readonly").objectStore(STORE).getAll());
 }
 
+/** @param {string} id @returns {Promise<BufferRecord | undefined>} */
+export async function getBuffer(id) {
+  const db = await openDb();
+  return request(db.transaction(STORE, "readonly").objectStore(STORE).get(id));
+}
+
 export async function putBuffer(record) {
   const db = await openDb();
   const tx = db.transaction(STORE, "readwrite");
@@ -435,6 +441,73 @@ export async function deleteBuffer(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Commit multiple buffer puts and deletes in one readwrite transaction so
+ * startup housekeeping does not pay N separate IndexedDB fsyncs.
+ * @param {{puts?: BufferRecord[], deletes?: string[]}} ops
+ */
+export async function putBuffersBatch({ puts = [], deletes = [] }) {
+  if (puts.length === 0 && deletes.length === 0) return;
+  const db = await openDb();
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  for (const record of puts) store.put(record);
+  for (const id of deletes) store.delete(id);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/**
+ * Commit an entire sync pull page's buffer, stub, and workspace mutations in
+ * one atomic readwrite transaction instead of 200-400 separate transactions (H4).
+ * @param {{
+ *   putBuffers?: BufferRecord[],
+ *   deleteBuffers?: string[],
+ *   putRemotes?: RemoteStub[],
+ *   deleteRemotes?: string[],
+ *   putWorkspaces?: WorkspaceRecord[]
+ * }} ops
+ */
+export async function applySyncBatch({
+  putBuffers = [],
+  deleteBuffers = [],
+  putRemotes = [],
+  deleteRemotes = [],
+  putWorkspaces = [],
+}) {
+  /** @type {string[]} */
+  const stores = [];
+  if (putBuffers.length > 0 || deleteBuffers.length > 0) stores.push(STORE);
+  if (putRemotes.length > 0 || deleteRemotes.length > 0) stores.push(REMOTE);
+  if (putWorkspaces.length > 0) stores.push(WORKSPACES);
+  if (stores.length === 0) return;
+
+  const db = await openDb();
+  const tx = db.transaction(stores, "readwrite");
+  if (putBuffers.length > 0 || deleteBuffers.length > 0) {
+    const bufStore = tx.objectStore(STORE);
+    for (const r of putBuffers) bufStore.put(r);
+    for (const id of deleteBuffers) bufStore.delete(id);
+  }
+  if (putRemotes.length > 0 || deleteRemotes.length > 0) {
+    const remStore = tx.objectStore(REMOTE);
+    for (const s of putRemotes) remStore.put(s);
+    for (const id of deleteRemotes) remStore.delete(id);
+  }
+  if (putWorkspaces.length > 0) {
+    const wsStore = tx.objectStore(WORKSPACES);
+    for (const ws of putWorkspaces) wsStore.put(ws);
+  }
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve(undefined);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 

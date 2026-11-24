@@ -14,6 +14,30 @@ export function countWords(text) {
   return n;
 }
 
+/**
+ * Count words across `[from, to]` of a CodeMirror `Text` rope line-by-line so
+ * multi-megabyte documents and `Ctrl+A` selections never flatten `doc.toString()`.
+ * Words never cross `\n`, so summing per-line counts matches `countWords` exactly.
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number} [from]
+ * @param {number} [to]
+ */
+export function countWordsInDoc(doc, from = 0, to = doc.length) {
+  if (to <= from || doc.length === 0) return 0;
+  const startLine = doc.lineAt(from);
+  const endLine = doc.lineAt(to);
+  if (startLine.number === endLine.number) {
+    return countWords(startLine.text.slice(from - startLine.from, to - startLine.from));
+  }
+  let total = countWords(startLine.text.slice(from - startLine.from));
+  if (endLine.number > startLine.number + 1) {
+    const iter = doc.iterLines(startLine.number + 1, endLine.number);
+    while (!iter.next().done) total += countWords(iter.value);
+  }
+  total += countWords(endLine.text.slice(0, to - endLine.from));
+  return total;
+}
+
 /** @param {number} n @param {string} one @param {string} many */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 

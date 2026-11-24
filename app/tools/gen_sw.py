@@ -18,10 +18,27 @@ import json
 import os
 import re
 import subprocess
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from jsscan import mask_comments
+
 APP = Path(__file__).resolve().parent.parent
+
+# Spellcheck assets live in their own content-addressed cache (`vrtti-spell-<hash>`)
+# so app-only deploys transfer ~1 MB instead of re-downloading 12.1 MB of WASM
+# and Czech dictionary data on every release (C4).
+SPELL_PREFIXES = ("vendor/harper/", "vendor/hunspell/", "vendor/dictionary-cs/")
+
+IMPORT_RE = re.compile(
+    r"""(?:^|[\s;}])(?:import|export)\b\s*(?:[\w*{},\s$]*?\s*from\s*)?["']((?:@|\.{0,2}/|\w)[^"'\s:]*)["']""",
+    re.M,
+)
+IMPORTMAP_RE = re.compile(r'<script\s+type="importmap"\s*>(.*?)</script>', re.S | re.I)
+PRELOAD_BLOCK_RE = re.compile(
+    r"(<!-- MODULEPRELOAD:START -->).*?(<!-- MODULEPRELOAD:END -->)", re.S
+)
 
 # Not precached: dev tooling and docs are still served, but the offline app
 # does not need them. sw.js and sw-precache.js are handled by the SW lifecycle
@@ -84,36 +101,96 @@ def precache_files():
     return files
 
 
+def write_modulepreloads():
+    """Populate `<link rel="modulepreload">` tags in index.html for the static
+    ES module graph reachable from `js/main.js` (excluding lazy dynamic `import()`
+    spellcheck bundles and Worker entrypoints). Runs before hashing precache files
+    so `sw-precache.js` digests the final `index.html` bytes (H1).
+    """
+    index_path = APP / "index.html"
+    html = index_path.read_text(encoding="utf-8")
+    map_match = IMPORTMAP_RE.search(html)
+    if not map_match:
+        raise SystemExit("index.html: missing <script type=\"importmap\">")
+    imports = json.loads(map_match.group(1))["imports"]
+
+    entry = (APP / "js" / "main.js").resolve()
+    seen = {entry}
+    ordered = []
+    queue = deque([entry])
+
+    while queue:
+        cur = queue.popleft()
+        text = mask_comments(cur.read_text(encoding="utf-8"))
+        for spec in IMPORT_RE.findall(text):
+            if spec.startswith("."):
+                target = (cur.parent / spec).resolve()
+            else:
+                mapped = imports.get(spec)
+                if mapped is None:
+                    continue
+                target = (APP / mapped).resolve()
+            if not target.is_file() or target in seen:
+                continue
+            seen.add(target)
+            ordered.append(target)
+            queue.append(target)
+
+    links = [
+        f'<link rel="modulepreload" href="./{p.relative_to(APP).as_posix()}">'
+        for p in ordered
+    ]
+    replacement = "\\1\n" + "\n".join(links) + "\n\\2"
+    updated, count = PRELOAD_BLOCK_RE.subn(replacement, html)
+    if count != 1:
+        raise SystemExit("index.html: missing MODULEPRELOAD:START/END markers")
+    index_path.write_text(updated, encoding="utf-8")
+    return len(links)
+
+
+def hash_files(paths):
+    digest = hashlib.sha256()
+    for rel in paths:
+        digest.update(rel.as_posix().encode())
+        digest.update((APP / rel).read_bytes())
+    return digest.hexdigest()[:12]
+
+
 def main():
     # Stamp first: version.js must be in the precache list AND in the digest.
     # The timestamp makes every run produce a new cache version; that is
     # deliberate, or an unchanged cache name would serve a stale version.js.
     stamp = build_stamp()
     write_version(stamp)
+    preloaded = write_modulepreloads()
 
     files = precache_files()
-    digest = hashlib.sha256()
-    for rel in files:
-        digest.update(str(rel).encode())
-        digest.update((APP / rel).read_bytes())
-    version = digest.hexdigest()[:12]
+    app_files = [rel for rel in files if not rel.as_posix().startswith(SPELL_PREFIXES)]
+    spell_files = [rel for rel in files if rel.as_posix().startswith(SPELL_PREFIXES)]
+    version = hash_files(app_files)
+    spell_version = hash_files(spell_files)
 
     # "./" first: it is the URL a navigation to the scope root actually uses.
-    urls = ["./"] + ["./" + rel.as_posix() for rel in files]
+    app_urls = ["./"] + ["./" + rel.as_posix() for rel in app_files]
+    spell_urls = ["./" + rel.as_posix() for rel in spell_files]
     body = "self.__PRECACHE = " + json.dumps(
-        {"version": version, "files": urls}, indent=2
+        {
+            "version": version,
+            "spellVersion": spell_version,
+            "app": app_urls,
+            "spell": spell_urls,
+        },
+        indent=2,
     ) + ";\n"
     (APP / "sw-precache.js").write_text(body)
 
-    # The version goes into sw.js itself, so its bytes change with every
-    # build. The spec says a change of an imported script (sw-precache.js)
-    # starts an update too, but an iPhone stayed on an old build for good
-    # while only sw-precache.js changed. A changed sw.js updates everywhere.
+    # Both hashes go into sw.js itself so its bytes change whenever either tier
+    # changes. An iPhone stayed on an old build while only sw-precache.js changed.
     sw = APP / "sw.js"
     text = sw.read_text()
     stamped, count = re.subn(
-        r'importScripts\("\./sw-precache\.js(\?v=[0-9a-f]+)?"\);',
-        f'importScripts("./sw-precache.js?v={version}");',
+        r'importScripts\("\./sw-precache\.js(\?v=[0-9a-f-]+)?"\);',
+        f'importScripts("./sw-precache.js?v={version}-{spell_version}");',
         text,
     )
     if count != 1:
@@ -121,7 +198,11 @@ def main():
     sw.write_text(stamped)
 
     print(f"version.js: {stamp['commit']} {stamp['builtAt']}")
-    print(f"sw-precache.js: {len(urls)} URLs, version {version}")
+    print(f"index.html: {preloaded} modulepreload links")
+    print(
+        f"sw-precache.js: {len(app_urls)} app URLs ({version}), "
+        f"{len(spell_urls)} spell URLs ({spell_version})"
+    )
 
 
 if __name__ == "__main__":

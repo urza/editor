@@ -174,6 +174,44 @@ public class SyncApiTests
     }
 
     [Fact]
+    public async Task Changes_supports_content_zero_and_caps_multi_megabyte_pages()
+    {
+        var (app, client) = await Start();
+        using var _ = app;
+
+        var bigBody = "-----BEGIN AGE ENCRYPTED FILE-----\n" + new string('A', 2_500_000) + "\n-----END AGE ENCRYPTED FILE-----\n";
+        var meta = new { enc = new { preset = "space", spaceSeq = 1 }, @sealed = Age };
+        await Push(client, "big-1", "personal", 0, content: bigBody, meta: meta);
+        await Push(client, "big-2", "personal", 0, content: bigBody, meta: meta);
+        await Push(client, "big-3", "personal", 0, content: bigBody, meta: meta);
+
+        // Two 2.5 MB rows exceed the 4 MB page cap, so page 1 stops after big-1 with More = true.
+        var page1 = await client.GetFromJsonAsync<ChangesResponse>("/api/changes?since=0&limit=200");
+        Assert.True(page1!.More);
+        var first = Assert.Single(page1.Changes);
+        Assert.Equal("big-1", first.DocId);
+        Assert.Equal(bigBody, first.Content);
+
+        var page2 = await client.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={page1.Next}&limit=200");
+        Assert.True(page2!.More);
+        Assert.Equal("big-2", Assert.Single(page2.Changes).DocId);
+
+        var page3 = await client.GetFromJsonAsync<ChangesResponse>($"/api/changes?since={page2.Next}&limit=200");
+        Assert.False(page3!.More);
+        Assert.Equal("big-3", Assert.Single(page3.Changes).DocId);
+
+        // ?content=0 omits bodies so Titles-only spaces fit in one page while keeping sealed meta.
+        var stubs = await client.GetFromJsonAsync<ChangesResponse>("/api/changes?since=0&limit=200&content=0");
+        Assert.False(stubs!.More);
+        Assert.Equal(["big-1", "big-2", "big-3"], stubs.Changes.Select(c => c.DocId));
+        Assert.All(stubs.Changes, c =>
+        {
+            Assert.Null(c.Content);
+            Assert.Equal(Age, c.Meta!.Value.GetProperty("sealed").GetString());
+        });
+    }
+
+    [Fact]
     public async Task Tombstone_kinds_are_accepted_and_returned()
     {
         var (app, client) = await Start();

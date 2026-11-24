@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Every fs call goes through fs-err, which puts the path into the io::Error
@@ -147,9 +147,14 @@ pub struct Root {
     /// The folder moved, the drive is gone, or the file was deleted outside the
     /// app. The record survives, so the page's workspace still names it, and
     /// every command on it answers `notFound` until the user picks it again.
-    /// Recomputed at every load, so it is never read back from the file.
+    /// Recomputed off the startup path, so it is never read back from the file.
     #[serde(skip)]
     stale: bool,
+    /// Whether `canonical` and `stale` were checked against the live filesystem
+    /// in this session. False right after `load_unverified`, so an offline SMB
+    /// mount in `roots.json` never blocks window creation at startup.
+    #[serde(skip)]
+    verified: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -167,10 +172,10 @@ struct Roots {
 }
 
 impl Roots {
-    /// A missing or unreadable file is an empty store, never a failure: the
-    /// shell must start even when the config dir is broken. The user then
-    /// picks the folder again, which is one click, instead of a dead app.
-    fn load_from(file: &Path) -> Roots {
+    /// Read `roots.json` without touching the target paths on disk. Used at shell
+    /// startup (`Disk::load`) so all root IDs exist before the first window asks
+    /// for them while offline network mounts cannot stall boot.
+    fn load_unverified(file: &Path) -> Roots {
         let mut roots = Roots::default();
         let text = match fs::read_to_string(file) {
             Ok(text) => text,
@@ -196,9 +201,21 @@ impl Roots {
             return roots;
         }
         for mut root in parsed.roots {
-            // The stored canonical path is only a hint: a folder can move, and
-            // a mount point can resolve elsewhere after a reboot. Recompute,
-            // and mark the root stale when the path is gone.
+            root.stale = false;
+            root.verified = false;
+            roots.by_id.insert(root.id.clone(), root);
+        }
+        roots
+    }
+
+    #[cfg(test)]
+    fn verify_all(&mut self) {
+        // The stored canonical path is only a hint: a folder can move, and a mount
+        // point can resolve elsewhere after a reboot. Recompute, and mark stale if gone.
+        for root in self.by_id.values_mut() {
+            if root.verified {
+                continue;
+            }
             match canonical_for(root.kind, &root.path) {
                 Ok(canonical) => {
                     root.canonical = canonical;
@@ -206,8 +223,17 @@ impl Roots {
                 }
                 Err(_) => root.stale = true,
             }
-            roots.by_id.insert(root.id.clone(), root);
+            root.verified = true;
         }
+    }
+
+    /// A missing or unreadable file is an empty store, never a failure: the
+    /// shell must start even when the config dir is broken. The user then
+    /// picks the folder again, which is one click, instead of a dead app.
+    #[cfg(test)]
+    fn load_from(file: &Path) -> Roots {
+        let mut roots = Self::load_unverified(file);
+        roots.verify_all();
         roots
     }
 
@@ -266,6 +292,7 @@ impl Roots {
             canonical,
             added_at: now_ms(),
             stale: false,
+            verified: true,
         };
         self.by_id.insert(root.id.clone(), root.clone());
         root
@@ -460,9 +487,14 @@ fn resolve(root: &Root, rel: &str, must_exist: bool) -> Result<PathBuf, DiskErro
 /// Write `text` over `target` so a reader sees either the old file or the new
 /// one, never a half-written one. Returns the new mtime in ms.
 ///
+/// When `expected_mtime` is given, verifies the current mtime on disk before
+/// writing the temp file: a missing file returns `notFound` (matching `disk_stat`),
+/// and a changed mtime returns `conflict` so the page can fork a conflict copy
+/// in one IPC call on the happy path instead of three.
+///
 /// The temp file goes into the destination directory, so the rename stays on
 /// one filesystem and cannot degrade into a copy.
-fn atomic_write(target: &Path, text: &str) -> Result<f64, DiskError> {
+fn atomic_write(target: &Path, text: &str, expected_mtime: Option<f64>) -> Result<f64, DiskError> {
     // Replace what the symlink points at, so the user's symlink survives the
     // save. `resolve` already proved the resolution stays inside the root.
     let target = match fs::symlink_metadata(target) {
@@ -472,6 +504,17 @@ fn atomic_write(target: &Path, text: &str) -> Result<f64, DiskError> {
         _ => target.to_path_buf(),
     };
 
+    if let Some(expected) = expected_mtime {
+        let meta = fs::metadata(&target).map_err(|err| DiskError::io(err, &target))?;
+        let actual = meta.modified().map(ms_of).unwrap_or(0.0);
+        if actual != expected {
+            return Err(DiskError::new(
+                "conflict",
+                format!("{} changed on disk before write", target.display()),
+            ));
+        }
+    }
+
     let (dir, name) = split_parent(&target).map_err(|err| DiskError::io(err, &target))?;
     let temp = dir.join(format!(
         ".{}.tmp-{}-{}",
@@ -480,7 +523,7 @@ fn atomic_write(target: &Path, text: &str) -> Result<f64, DiskError> {
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
 
-    let result = write_then_rename(&temp, &target, text);
+    let result = write_then_rename(&temp, &target, text, expected_mtime);
     if result.is_err() {
         // A failed write must not leave a dot-file behind in the user's folder.
         let _ = fs::remove_file(&temp);
@@ -488,7 +531,12 @@ fn atomic_write(target: &Path, text: &str) -> Result<f64, DiskError> {
     result
 }
 
-fn write_then_rename(temp: &Path, target: &Path, text: &str) -> Result<f64, DiskError> {
+fn write_then_rename(
+    temp: &Path,
+    target: &Path,
+    text: &str,
+    expected_mtime: Option<f64>,
+) -> Result<f64, DiskError> {
     let mut handle = fs::File::create(temp).map_err(|err| DiskError::io(err, temp))?;
     handle
         .write_all(text.as_bytes())
@@ -502,7 +550,25 @@ fn write_then_rename(temp: &Path, target: &Path, text: &str) -> Result<f64, Disk
         // overwrite would quietly widen a 0600 file. Windows carries its ACL
         // through the rename, so it needs nothing here.
         if let Ok(meta) = std::fs::metadata(target) {
+            if let Some(expected) = expected_mtime {
+                if meta.modified().map(ms_of).unwrap_or(0.0) != expected {
+                    return Err(DiskError::new(
+                        "conflict",
+                        format!("{} changed on disk before rename", target.display()),
+                    ));
+                }
+            }
             let _ = fs::set_permissions(temp, meta.permissions());
+        }
+    }
+    #[cfg(not(unix))]
+    if let Some(expected) = expected_mtime {
+        let meta = fs::metadata(target).map_err(|err| DiskError::io(err, target))?;
+        if meta.modified().map(ms_of).unwrap_or(0.0) != expected {
+            return Err(DiskError::new(
+                "conflict",
+                format!("{} changed on disk before rename", target.display()),
+            ));
         }
     }
 
@@ -545,7 +611,7 @@ fn rename_in_place(dir: &Path, name: &str, new_name: &str) -> Result<(), DiskErr
 /// The disk backend's state: the roots, where they are written, and the test
 /// hook. Lives in `app.manage()`.
 pub struct Disk {
-    roots: Mutex<Roots>,
+    roots: Arc<Mutex<Roots>>,
     file: PathBuf,
     /// `VRTTI_TEST_PICK` makes every picker return this path with no dialog.
     /// Test-only, read once at startup (architecture.md §17), so a later
@@ -560,9 +626,40 @@ impl Disk {
             eprintln!("[vrtti] could not create the config dir: {err}");
         }
         let file = dir.join("roots.json");
-        let roots = Roots::load_from(&file);
+        let roots = Arc::new(Mutex::new(Roots::load_unverified(&file)));
+        // Canonicalize saved roots on a blocking pool thread so an offline SMB/NFS
+        // mount cannot stall window creation in setup(). Each root is verified
+        // outside the mutex so one hung mount never blocks local roots.
+        let bg = Arc::clone(&roots);
+        tauri::async_runtime::spawn_blocking(move || {
+            let pending: Vec<(String, RootKind, PathBuf)> = {
+                let guard = bg.lock().unwrap_or_else(|err| err.into_inner());
+                guard
+                    .by_id
+                    .values()
+                    .filter(|r| !r.verified)
+                    .map(|r| (r.id.clone(), r.kind, r.path.clone()))
+                    .collect()
+            };
+            for (id, kind, path) in pending {
+                let resolved = canonical_for(kind, &path);
+                let mut guard = bg.lock().unwrap_or_else(|err| err.into_inner());
+                if let Some(stored) = guard.by_id.get_mut(&id) {
+                    if !stored.verified {
+                        match resolved {
+                            Ok(canonical) => {
+                                stored.canonical = canonical;
+                                stored.stale = false;
+                            }
+                            Err(_) => stored.stale = true,
+                        }
+                        stored.verified = true;
+                    }
+                }
+            }
+        });
         Disk {
-            roots: Mutex::new(roots),
+            roots,
             file,
             test_pick: std::env::var_os("VRTTI_TEST_PICK").map(PathBuf::from),
         }
@@ -576,7 +673,29 @@ impl Disk {
     }
 
     fn root(&self, id: &str) -> Result<Root, DiskError> {
-        self.lock().get(id)
+        let snapshot = self.lock().get(id)?;
+        if snapshot.verified {
+            return Ok(snapshot);
+        }
+        // Verify outside the mutex if a command arrived before the startup warm-up
+        // reached this root, so a slow network share never blocks other roots.
+        let resolved = canonical_for(snapshot.kind, &snapshot.path);
+        let mut guard = self.lock();
+        let stored = guard
+            .by_id
+            .get_mut(id)
+            .ok_or_else(|| DiskError::unknown_root(id))?;
+        if !stored.verified {
+            match resolved {
+                Ok(canonical) => {
+                    stored.canonical = canonical;
+                    stored.stale = false;
+                }
+                Err(_) => stored.stale = true,
+            }
+            stored.verified = true;
+        }
+        Ok(stored.clone())
     }
 
     /// Also how a dropped or passed path becomes a root (lib.rs, §24): the
@@ -584,6 +703,18 @@ impl Disk {
     pub(crate) fn register(&self, kind: RootKind, path: PathBuf) -> Result<Root, DiskError> {
         let canonical = canonical_for(kind, &path).map_err(|err| DiskError::io(err, &path))?;
         let mut roots = self.lock();
+        let existing_id = roots
+            .by_id
+            .values()
+            .find(|r| r.kind == kind && r.path == path && !r.verified)
+            .map(|r| r.id.clone());
+        if let Some(id) = existing_id {
+            if let Some(r) = roots.by_id.get_mut(&id) {
+                r.canonical = canonical.clone();
+                r.stale = false;
+                r.verified = true;
+            }
+        }
         let root = roots.register(kind, path, canonical);
         // A failed save costs the root at the next restart, not now. Failing
         // the pick over it would be the worse trade.
@@ -727,6 +858,59 @@ pub struct Renamed {
     name: String,
 }
 
+/// Run blocking filesystem work on Tokio's blocking pool so slow disks or SMB
+/// mounts never stall unrelated async IPC commands on worker threads.
+async fn blocking<T, F>(work: F) -> Result<T, DiskError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, DiskError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| DiskError::new("io", err.to_string()))?
+}
+
+fn list_entries(dir: &Path) -> Result<Vec<Entry>, DiskError> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|err| DiskError::io(err, dir))? {
+        let entry = entry.map_err(|err| DiskError::io(err, dir))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // entry.file_type() reads d_type on Unix and directory-enumeration
+        // metadata on Windows without an extra stat syscall per entry.
+        // Symlinks still stat their target so symlinked folders list as
+        // directories and broken symlinks are skipped.
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let kind = if ft.is_dir() {
+            RootKind::Directory
+        } else if ft.is_file() {
+            RootKind::File
+        } else if ft.is_symlink() {
+            let Ok(meta) = fs::metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                RootKind::Directory
+            } else if meta.is_file() {
+                RootKind::File
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+        entries.push(Entry { name, kind });
+    }
+    // read_dir order is whatever the filesystem says and can differ between
+    // two runs over the same folder. The page sorts for display; this only
+    // keeps the wire answer stable, which is what a test can assert on.
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
 /// Pick a folder and register it as a root. `Ok(None)` is a cancelled picker.
 ///
 /// Every command here is `async`, which is load-bearing for the same reason
@@ -739,11 +923,12 @@ pub async fn disk_pick_folder<R: Runtime>(
     disk: State<'_, Disk>,
 ) -> Result<Option<Root>, DiskError> {
     guard(&window)?;
-    if let Some(path) = disk.test_pick.clone() {
-        return disk.register(RootKind::Directory, path).map(Some);
-    }
-    match pick(&app, &window, Picker::Folder).await {
-        Some(path) => disk.register(RootKind::Directory, path).map(Some),
+    let chosen = match disk.test_pick.clone() {
+        Some(path) => Some(path),
+        None => pick(&app, &window, Picker::Folder).await,
+    };
+    match chosen {
+        Some(path) => blocking(move || app.state::<Disk>().register(RootKind::Directory, path).map(Some)).await,
         None => Ok(None),
     }
 }
@@ -756,11 +941,12 @@ pub async fn disk_pick_file<R: Runtime>(
     disk: State<'_, Disk>,
 ) -> Result<Option<Root>, DiskError> {
     guard(&window)?;
-    if let Some(path) = disk.test_pick.clone() {
-        return disk.register(RootKind::File, path).map(Some);
-    }
-    match pick(&app, &window, Picker::File).await {
-        Some(path) => disk.register(RootKind::File, path).map(Some),
+    let chosen = match disk.test_pick.clone() {
+        Some(path) => Some(path),
+        None => pick(&app, &window, Picker::File).await,
+    };
+    match chosen {
+        Some(path) => blocking(move || app.state::<Disk>().register(RootKind::File, path).map(Some)).await,
         None => Ok(None),
     }
 }
@@ -776,17 +962,20 @@ pub async fn disk_pick_save<R: Runtime>(
 ) -> Result<Option<Root>, DiskError> {
     guard(&window)?;
     if let Some(path) = disk.test_pick.clone() {
-        // A test hook pointing at a directory stands for "the user saved into
-        // this folder under the suggested name"; one pointing at a file stands
-        // for "the user picked this file".
-        let target = match fs::metadata(&path) {
-            Ok(meta) if meta.is_dir() => path.join(&suggested_name),
-            _ => path,
-        };
-        return disk.register(RootKind::File, target).map(Some);
+        return blocking(move || {
+            // A test hook pointing at a directory stands for "the user saved into
+            // this folder under the suggested name"; one pointing at a file stands
+            // for "the user picked this file".
+            let target = match fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => path.join(&suggested_name),
+                _ => path,
+            };
+            app.state::<Disk>().register(RootKind::File, target).map(Some)
+        })
+        .await;
     }
     match pick(&app, &window, Picker::Save(suggested_name)).await {
-        Some(path) => disk.register(RootKind::File, path).map(Some),
+        Some(path) => blocking(move || app.state::<Disk>().register(RootKind::File, path).map(Some)).await,
         None => Ok(None),
     }
 }
@@ -797,59 +986,38 @@ pub async fn disk_pick_save<R: Runtime>(
 #[tauri::command]
 pub async fn disk_list<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
 ) -> Result<Vec<Entry>, DiskError> {
     guard(&window)?;
-    let root = disk.root(&root)?;
-    let dir = resolve(&root, &path, true)?;
-
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|err| DiskError::io(err, &dir))? {
-        let entry = entry.map_err(|err| DiskError::io(err, &dir))?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        // DirEntry::metadata() does *not* follow symlinks, so a symlinked
-        // folder would list as neither file nor directory and vanish from the
-        // tree. Stat the path instead. A broken symlink fails here and is
-        // skipped, which is the right answer for a row the page cannot open.
-        let Ok(meta) = fs::metadata(entry.path()) else {
-            continue;
-        };
-        let kind = if meta.is_dir() {
-            RootKind::Directory
-        } else if meta.is_file() {
-            RootKind::File
-        } else {
-            continue;
-        };
-        entries.push(Entry { name, kind });
-    }
-    // read_dir order is whatever the filesystem says and can differ between
-    // two runs over the same folder. The page sorts for display; this only
-    // keeps the wire answer stable, which is what a test can assert on.
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(entries)
+    blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let dir = resolve(&root, &path, true)?;
+        list_entries(&dir)
+    })
+    .await
 }
 
 /// Size and mtime, which is what the page's mtime poll reads on focus.
 #[tauri::command]
 pub async fn disk_stat<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
 ) -> Result<Stat, DiskError> {
     guard(&window)?;
-    let root = disk.root(&root)?;
-    let target = resolve(&root, &path, true)?;
-    let meta = fs::metadata(&target).map_err(|err| DiskError::io(err, &target))?;
-    Ok(Stat {
-        size: meta.len(),
-        mtime: meta.modified().map(ms_of).unwrap_or(0.0),
+    blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let target = resolve(&root, &path, true)?;
+        let meta = fs::metadata(&target).map_err(|err| DiskError::io(err, &target))?;
+        Ok(Stat {
+            size: meta.len(),
+            mtime: meta.modified().map(ms_of).unwrap_or(0.0),
+        })
     })
+    .await
 }
 
 /// Read a file as text. Invalid UTF-8 becomes replacement characters, exactly
@@ -858,17 +1026,20 @@ pub async fn disk_stat<R: Runtime>(
 #[tauri::command]
 pub async fn disk_read<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
 ) -> Result<Text, DiskError> {
     guard(&window)?;
-    let root = disk.root(&root)?;
-    let target = resolve(&root, &path, true)?;
-    let bytes = fs::read(&target).map_err(|err| DiskError::io(err, &target))?;
-    Ok(Text {
-        text: String::from_utf8_lossy(&bytes).into_owned(),
+    blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let target = resolve(&root, &path, true)?;
+        let bytes = fs::read(&target).map_err(|err| DiskError::io(err, &target))?;
+        Ok(Text {
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+        })
     })
+    .await
 }
 
 /// Read a file as bytes, for the `.age` ciphertext the page decrypts itself.
@@ -877,14 +1048,17 @@ pub async fn disk_read<R: Runtime>(
 #[tauri::command]
 pub async fn disk_read_bytes<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
 ) -> Result<tauri::ipc::Response, DiskError> {
     guard(&window)?;
-    let root = disk.root(&root)?;
-    let target = resolve(&root, &path, true)?;
-    let bytes = fs::read(&target).map_err(|err| DiskError::io(err, &target))?;
+    let bytes = blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let target = resolve(&root, &path, true)?;
+        fs::read(&target).map_err(|err| DiskError::io(err, &target))
+    })
+    .await?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -893,66 +1067,74 @@ pub async fn disk_read_bytes<R: Runtime>(
 #[tauri::command]
 pub async fn disk_write<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
     text: String,
+    expected_mtime: Option<f64>,
 ) -> Result<Written, DiskError> {
     guard(&window)?;
-    let root = disk.root(&root)?;
-    let target = resolve(&root, &path, false)?;
-    let mtime = atomic_write(&target, &text)?;
-    Ok(Written { mtime })
+    blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let target = resolve(&root, &path, false)?;
+        let mtime = atomic_write(&target, &text, expected_mtime)?;
+        Ok(Written { mtime })
+    })
+    .await
 }
 
 /// Rename an entry inside its own directory.
 #[tauri::command]
 pub async fn disk_rename<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     root: String,
     path: String,
     new_name: String,
 ) -> Result<Renamed, DiskError> {
     guard(&window)?;
-    let root_id = root;
-    let root = disk.root(&root_id)?;
-    let target = resolve(&root, &path, true)?;
-    let (dir, name) = split_parent(&target).map_err(|err| DiskError::io(err, &target))?;
-    let name = name.to_string_lossy().into_owned();
-    rename_in_place(dir, &name, &new_name)?;
+    blocking(move || {
+        let disk = app.state::<Disk>();
+        let root_id = root;
+        let root = disk.root(&root_id)?;
+        let target = resolve(&root, &path, true)?;
+        let (dir, name) = split_parent(&target).map_err(|err| DiskError::io(err, &target))?;
+        let name = name.to_string_lossy().into_owned();
+        rename_in_place(dir, &name, &new_name)?;
 
-    if root.kind == RootKind::File {
-        // The renamed file *is* the root, so the record must follow it or
-        // every later command on this root would answer notFound.
-        let moved = dir.join(&new_name);
-        let canonical =
-            canonical_for(RootKind::File, &moved).map_err(|err| DiskError::io(err, &moved))?;
-        let mut roots = disk.lock();
-        if let Some(stored) = roots.by_id.get_mut(&root_id) {
-            stored.path = moved;
-            stored.canonical = canonical;
-            stored.name = new_name.clone();
+        if root.kind == RootKind::File {
+            // The renamed file *is* the root, so the record must follow it or
+            // every later command on this root would answer notFound.
+            let moved = dir.join(&new_name);
+            let canonical =
+                canonical_for(RootKind::File, &moved).map_err(|err| DiskError::io(err, &moved))?;
+            let mut roots = disk.lock();
+            if let Some(stored) = roots.by_id.get_mut(&root_id) {
+                stored.path = moved;
+                stored.canonical = canonical;
+                stored.name = new_name.clone();
+            }
+            if let Err(err) = roots.save_to(&disk.file) {
+                eprintln!("[vrtti] could not save the roots file: {err}");
+            }
+            // A file root's relative path is always "".
+            return Ok(Renamed {
+                path: String::new(),
+                name: new_name,
+            });
         }
-        if let Err(err) = roots.save_to(&disk.file) {
-            eprintln!("[vrtti] could not save the roots file: {err}");
-        }
-        // A file root's relative path is always "".
-        return Ok(Renamed {
-            path: String::new(),
-            name: new_name,
-        });
-    }
 
-    // The relative path with its last segment swapped. Built from the string
-    // the page sent, so the separator stays '/' on every platform.
-    let mut parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    parts.pop();
-    parts.push(&new_name);
-    Ok(Renamed {
-        path: parts.join("/"),
-        name: new_name.clone(),
+        // The relative path with its last segment swapped. Built from the string
+        // the page sent, so the separator stays '/' on every platform.
+        let mut parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+        parts.pop();
+        parts.push(&new_name);
+        Ok(Renamed {
+            path: parts.join("/"),
+            name: new_name.clone(),
+        })
     })
+    .await
 }
 
 /// Drop the roots the page no longer references. The page calls this once at
@@ -960,18 +1142,22 @@ pub async fn disk_rename<R: Runtime>(
 #[tauri::command]
 pub async fn disk_prune<R: Runtime>(
     window: WebviewWindow<R>,
-    disk: State<'_, Disk>,
+    app: AppHandle<R>,
     keep: Vec<String>,
 ) -> Result<usize, DiskError> {
     guard(&window)?;
-    let mut roots = disk.lock();
-    let dropped = roots.prune(&keep, now_ms());
-    if dropped > 0 {
-        if let Err(err) = roots.save_to(&disk.file) {
-            eprintln!("[vrtti] could not save the roots file: {err}");
+    blocking(move || {
+        let disk = app.state::<Disk>();
+        let mut roots = disk.lock();
+        let dropped = roots.prune(&keep, now_ms());
+        if dropped > 0 {
+            if let Err(err) = roots.save_to(&disk.file) {
+                eprintln!("[vrtti] could not save the roots file: {err}");
+            }
         }
-    }
-    Ok(dropped)
+        Ok(dropped)
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -995,6 +1181,7 @@ mod tests {
             canonical: fs::canonicalize(path).expect("the temp dir canonicalizes"),
             added_at: now_ms(),
             stale: false,
+            verified: true,
         }
     }
 
@@ -1044,11 +1231,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let target = dir.path().join("note.md");
 
-        let mtime = atomic_write(&target, "first").expect("create");
+        let mtime = atomic_write(&target, "first", None).expect("create");
         assert!(mtime > 0.0);
         assert_eq!(fs::read_to_string(&target).expect("read"), "first");
 
-        atomic_write(&target, "second").expect("overwrite");
+        atomic_write(&target, "second", Some(mtime)).expect("overwrite with matching mtime");
+        assert_eq!(fs::read_to_string(&target).expect("read"), "second");
+
+        let err = atomic_write(&target, "third", Some(mtime - 1000.0))
+            .expect_err("stale expected_mtime must fail with conflict");
+        assert_eq!(err.code, "conflict");
         assert_eq!(fs::read_to_string(&target).expect("read"), "second");
 
         let leftovers: Vec<String> = fs::read_dir(dir.path())
@@ -1073,7 +1265,7 @@ mod tests {
         fs::write(&target, "first").expect("write");
         fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).expect("chmod");
 
-        atomic_write(&target, "second").expect("overwrite");
+        atomic_write(&target, "second", None).expect("overwrite");
 
         let mode = fs::metadata(&target).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the write widened the file");
@@ -1090,7 +1282,7 @@ mod tests {
         fs::write(&real, "first").expect("write");
         symlink(&real, &link).expect("symlink");
 
-        atomic_write(&link, "second").expect("write through the symlink");
+        atomic_write(&link, "second", None).expect("write through the symlink");
 
         assert_eq!(fs::read_to_string(&real).expect("read"), "second");
         assert!(
@@ -1234,6 +1426,7 @@ mod tests {
             canonical: canonical_for(RootKind::File, &file).expect("canonical"),
             added_at: now_ms(),
             stale: false,
+            verified: true,
         };
 
         assert_eq!(resolve(&root, "", true).expect("the file itself"), file);
@@ -1241,5 +1434,38 @@ mod tests {
             let err = resolve(&root, rel, true).expect_err("a file root has no children");
             assert_eq!(err.code, "outsideRoot", "{rel}");
         }
+    }
+
+    #[test]
+    fn list_entries_uses_file_type_and_handles_five_thousand_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+        for i in 0..5000 {
+            fs::write(dir.path().join(format!("note-{i:05}.md")), "hello").expect("write");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(dir.path().join("subdir"), dir.path().join("linked-dir")).expect("symlink dir");
+            symlink(dir.path().join("missing-target"), dir.path().join("broken-link"))
+                .expect("broken symlink");
+        }
+
+        let t0 = std::time::Instant::now();
+        let listed = list_entries(dir.path()).expect("list_entries");
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("[perf] Rust list_entries on 5,000 files: {elapsed_ms:.2} ms");
+
+        #[cfg(unix)]
+        assert_eq!(listed.len(), 5002);
+        #[cfg(not(unix))]
+        assert_eq!(listed.len(), 5001);
+        assert!(listed
+            .iter()
+            .any(|e| e.name == "subdir" && e.kind == RootKind::Directory));
+        #[cfg(unix)]
+        assert!(listed
+            .iter()
+            .any(|e| e.name == "linked-dir" && e.kind == RootKind::Directory));
     }
 }

@@ -111,6 +111,28 @@ class Fill extends WidgetType {
   }
 }
 
+const NON_ASCII = /[^\x20-\x7e]/;
+const PICTO = /\p{Extended_Pictographic}/u;
+const ROW_CACHE_LIMIT = 20000;
+/** @type {Map<string, Decoration>} */
+const fillDecorations = new Map();
+
+/**
+ * Reuse `Decoration.widget` instances per filler string so scrolling or typing
+ * inside a thousand-row table allocates no new widgets on unchanged gaps.
+ * @param {boolean} rule @param {number} missing
+ */
+function fillDecoration(rule, missing) {
+  const key = (rule ? "-" : " ") + missing;
+  let dec = fillDecorations.get(key);
+  if (!dec) {
+    const widget = new Fill((rule ? "-" : " ").repeat(missing));
+    dec = Decoration.widget({ widget, side: -1 });
+    if (fillDecorations.size < 512) fillDecorations.set(key, dec);
+  }
+  return dec;
+}
+
 /**
  * Screen width of a cell in character cells. Code points, not UTF-16 units,
  * and a pictograph counts twice: Twemoji draws it as a square about two
@@ -118,8 +140,10 @@ class Fill extends WidgetType {
  * @param {string} text
  */
 function cellWidth(text) {
+  // Fast-path printable ASCII cells without per-character Unicode regex checks.
+  if (!NON_ASCII.test(text)) return text.length;
   let width = 0;
-  for (const ch of text) width += /\p{Extended_Pictographic}/u.test(ch) ? 2 : 1;
+  for (const ch of text) width += PICTO.test(ch) ? 2 : 1;
   return width;
 }
 
@@ -188,68 +212,205 @@ function segmentsOf(row, doc) {
   return segments;
 }
 
+// Above 1,000 document lines, measure only the header/delimiter rows plus a
+// buffer around the visible viewport so typing in large tables stays O(viewport).
+const VIEWPORT_TABLE_LINE_LIMIT = 1000;
+const VIEWPORT_TABLE_BUFFER_LINES = 40;
+
 /**
- * Filler decorations for one table. The whole table is measured even when
- * only part of it is on screen: a column is as wide as its widest cell,
- * wherever that cell is.
- * @param {import("@lezer/common").SyntaxNode} table
- * @param {import("@codemirror/state").Text} doc
- * @returns {{ from: number, value: Decoration }[]} In document order.
+ * True when `node` is a direct row (`TableHeader`, `TableRow`, or the separator
+ * `TableDelimiter`) of the `Table` starting at `tableFrom`. In `@lezer/markdown`
+ * every cell-separating `|` pipe inside a row is also named `TableDelimiter`
+ * (with `TableHeader` / `TableRow` as parent), so checking `parent.from === tableFrom`
+ * distinguishes the separator row from a pipe token.
+ * @param {import("@lezer/common").SyntaxNodeRef} node
+ * @param {number} tableFrom
  */
-function fillsOf(table, doc) {
-  /** @type {Segment[][]} */
-  const rows = [];
-  for (let row = table.firstChild; row; row = row.nextSibling) {
-    rows.push(segmentsOf(row, doc));
+function isTableRow(node, tableFrom) {
+  if (node.name !== "TableHeader" && node.name !== "TableRow" && node.name !== "TableDelimiter") {
+    return false;
   }
+  const parent = node.node.parent;
+  return Boolean(parent && parent.name === "Table" && parent.from === tableFrom);
+}
+
+/**
+ * Measure lines `[startLine, endLine]` of `table` into `widths`.
+ * @param {import("@lezer/common").SyntaxNode} table
+ * @param {import("@lezer/common").Tree} tree
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number} startLine
+ * @param {number} endLine
+ * @param {Map<string, number[]>} lineWidths
+ * @param {number[]} widths
+ */
+function measureLineSpan(table, tree, doc, startLine, endLine, lineWidths, widths) {
+  if (startLine > endLine) return;
+  // CodeMirror's `doc.iterLines(from, to)` uses an exclusive `to` line number.
+  const iter = doc.iterLines(startLine, endLine + 1);
+  let lineNo = startLine;
+  let firstMiss = Infinity;
+  let lastMiss = -1;
+  while (!iter.next().done) {
+    const cached = lineWidths.get(iter.value);
+    if (cached) {
+      for (let c = 0; c < cached.length; c++) {
+        if (cached[c] > (widths[c] || 0)) widths[c] = cached[c];
+      }
+    } else {
+      if (lineNo < firstMiss) firstMiss = lineNo;
+      lastMiss = lineNo;
+    }
+    lineNo++;
+  }
+  if (lastMiss < firstMiss) return;
+
+  const spanFrom = Math.max(table.from, doc.line(firstMiss).from);
+  const spanTo = Math.min(table.to, doc.line(lastMiss).to);
+  if (spanTo < spanFrom) return;
+  tree.iterate({
+    from: spanFrom,
+    to: spanTo,
+    enter: (n) => {
+      if (n.to <= table.from || n.from >= table.to) return false;
+      // Descend through Document, Blockquote, ListItem, and Table ancestors so
+      // tables nested inside quotes or lists reach their row nodes.
+      if (!isTableRow(n, table.from)) return;
+      const rowLine = doc.lineAt(n.from);
+      if (rowLine.number >= startLine && rowLine.number <= endLine) {
+        let segWidths = lineWidths.get(rowLine.text);
+        if (!segWidths) {
+          segWidths = segmentsOf(n.node, doc).map((s) => s.width);
+          if (lineWidths.size >= ROW_CACHE_LIMIT) lineWidths.clear();
+          lineWidths.set(rowLine.text, segWidths);
+        }
+        for (let c = 0; c < segWidths.length; c++) {
+          if (segWidths[c] > (widths[c] || 0)) widths[c] = segWidths[c];
+        }
+      }
+      return false;
+    },
+  });
+}
+
+/**
+ * Measure the column widths of a table. Documents up to 1,000 lines measure the
+ * whole table once per `Tree` node; larger documents scope measurement to the
+ * header/delimiter plus `visibleRanges` (+/- 40 lines).
+ * @param {import("@lezer/common").SyntaxNode} table
+ * @param {import("@lezer/common").Tree} tree
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number} rangeFrom
+ * @param {number} rangeTo
+ * @param {WeakMap<object, number[]>} treeWidths
+ * @param {Map<string, number[]>} lineWidths
+ * @returns {number[]}
+ */
+function tableWidths(table, tree, doc, rangeFrom, rangeTo, treeWidths, lineWidths) {
+  const firstLine = doc.lineAt(table.from).number;
+  const lastLine = doc.lineAt(table.to).number;
+
+  if (doc.lines <= VIEWPORT_TABLE_LINE_LIMIT) {
+    if (table.tree) {
+      const cached = treeWidths.get(table.tree);
+      if (cached) return cached;
+    }
+    /** @type {number[]} */
+    const widths = [];
+    measureLineSpan(table, tree, doc, firstLine, lastLine, lineWidths, widths);
+    if (table.tree) treeWidths.set(table.tree, widths);
+    return widths;
+  }
+
   /** @type {number[]} */
   const widths = [];
-  for (const row of rows) {
-    for (const seg of row) widths[seg.column] = Math.max(widths[seg.column] || 0, seg.width);
-  }
-  const fills = [];
-  for (const row of rows) {
-    for (const seg of row) {
-      const missing = widths[seg.column] - seg.width;
-      if (missing <= 0) continue;
-      const widget = new Fill((seg.rule ? "-" : " ").repeat(missing));
-      fills.push({ from: seg.at, value: Decoration.widget({ widget, side: -1 }) });
-    }
-  }
-  return fills;
+  const headEnd = Math.min(lastLine, firstLine + 1);
+  measureLineSpan(table, tree, doc, firstLine, headEnd, lineWidths, widths);
+  const visStart = Math.max(
+    headEnd + 1,
+    doc.lineAt(Math.max(table.from, rangeFrom)).number - VIEWPORT_TABLE_BUFFER_LINES
+  );
+  const visEnd = Math.min(
+    lastLine,
+    doc.lineAt(Math.min(table.to, rangeTo)).number + VIEWPORT_TABLE_BUFFER_LINES
+  );
+  measureLineSpan(table, tree, doc, visStart, visEnd, lineWidths, widths);
+  return widths;
+}
+
+/**
+ * Emit filler decorations only for table rows intersecting `[rangeFrom, rangeTo]`
+ * via `tree.iterate` so off-screen chunks are skipped in O(log N).
+ * @param {import("@lezer/common").SyntaxNode} table
+ * @param {import("@lezer/common").Tree} tree
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number[]} widths
+ * @param {number} rangeFrom
+ * @param {number} rangeTo
+ * @param {number} minPos
+ * @param {{ from: number, to: number, value: Decoration }[]} out
+ * @returns {number} Updated `minPos`.
+ */
+function appendVisibleFills(table, tree, doc, widths, rangeFrom, rangeTo, minPos, out) {
+  const clipFrom = Math.max(table.from, rangeFrom);
+  const clipTo = Math.min(table.to, rangeTo);
+  if (clipTo < clipFrom) return minPos;
+  tree.iterate({
+    from: clipFrom,
+    to: clipTo,
+    enter: (n) => {
+      if (n.to <= table.from || n.from >= table.to) return false;
+      // Return undefined on Document / Blockquote / ListItem / Table so Lezer
+      // descends into ancestors; returning false at Document aborts traversal.
+      if (!isTableRow(n, table.from)) return;
+      if (n.to < clipFrom || n.to <= minPos) return false;
+      for (const seg of segmentsOf(n.node, doc)) {
+        if (seg.at < minPos) continue;
+        const missing = (widths[seg.column] || 0) - seg.width;
+        if (missing <= 0) continue;
+        out.push({ from: seg.at, to: seg.at, value: fillDecoration(seg.rule, missing) });
+        minPos = seg.at;
+      }
+      return false;
+    },
+  });
+  return minPos;
 }
 
 /**
  * The mark classes and the table fillers for everything on screen.
- * @param {EditorView} view
+ * @param {{ state: import("@codemirror/state").EditorState, visibleRanges: readonly { from: number, to: number }[] }} view
+ * @param {WeakMap<object, number[]>} [treeWidths]
+ * @param {Map<string, number[]>} [lineWidths]
  * @returns {DecorationSet}
  */
-function decorate(view) {
+export function decorate(view, treeWidths = new WeakMap(), lineWidths = new Map()) {
   const doc = view.state.doc;
+  const tree = syntaxTree(view.state);
   /** @type {{ from: number, to: number, value: Decoration }[]} */
   const found = [];
-  let lastTable = -1;
+  let minPos = -1;
   for (const { from, to } of view.visibleRanges) {
-    syntaxTree(view.state).iterate({
+    tree.iterate({
       from,
       to,
       enter: (node) => {
         if (node.name === "Table") {
-          if (node.from <= lastTable) return false; // seen from an earlier range
-          lastTable = node.from;
-          for (const fill of fillsOf(node.node, doc)) {
-            found.push({ from: fill.from, to: fill.from, value: fill.value });
-          }
+          const syn = node.node;
+          const widths = tableWidths(syn, tree, doc, from, to, treeWidths, lineWidths);
+          minPos = appendVisibleFills(syn, tree, doc, widths, from, to, minPos, found);
           return false; // a table holds no list or heading
         }
         if (node.name !== "ListMark" && node.name !== "HeaderMark") return;
+        if (node.from < minPos) return;
         const mark = markFor(node);
-        if (mark) found.push({ from: node.from, to: node.to, value: mark });
+        if (mark) {
+          found.push({ from: node.from, to: node.to, value: mark });
+          minPos = node.to;
+        }
       },
     });
   }
-  // Already in document order, as the builder needs: ranges ascend, the walk
-  // ascends, a table's fillers ascend and nothing else sits inside a table.
   const builder = new RangeSetBuilder();
   for (const item of found) builder.add(item.from, item.to, item.value);
   return builder.finish();
@@ -259,7 +420,11 @@ const markdownView = ViewPlugin.fromClass(
   class {
     /** @param {EditorView} view */
     constructor(view) {
-      this.decorations = decorate(view);
+      /** @type {WeakMap<object, number[]>} */
+      this.treeWidths = new WeakMap();
+      /** @type {Map<string, number[]>} */
+      this.lineWidths = new Map();
+      this.decorations = decorate(view, this.treeWidths, this.lineWidths);
     }
 
     /** @param {import("@codemirror/view").ViewUpdate} update */
@@ -271,7 +436,7 @@ const markdownView = ViewPlugin.fromClass(
         update.viewportChanged ||
         syntaxTree(update.startState) !== syntaxTree(update.state)
       ) {
-        this.decorations = decorate(update.view);
+        this.decorations = decorate(update.view, this.treeWidths, this.lineWidths);
       }
     }
   },

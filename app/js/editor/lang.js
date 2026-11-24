@@ -12,7 +12,7 @@
 // extension. Splitting the rules from the modes would put the same language
 // ids in two files, where they could drift apart.
 
-import { Compartment } from "@codemirror/state";
+import { Compartment, Facet } from "@codemirror/state";
 import { StreamLanguage } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { markdownMode } from "./markdown.js";
@@ -74,11 +74,29 @@ function resolveFenceLanguage(info) {
 }
 
 /**
+ * Marks an EditorState configured in `"plain"` mode (no syntax parser).
+ * Separate from `@codemirror/language`'s `language` facet so `spellcheck.js`
+ * can tell explicit `"plain"` mode (`.log`, `.csv`, `.tsv`, or size fallback)
+ * apart from a bare test state that mounted no language compartment at all.
+ */
+export const plainLang = Facet.define({ combine: (values) => values.includes(true) });
+
+// Non-Markdown Lezer grammars parse from the start of the document without
+// paragraph isolation, so files above 512 KB switch to `"plain"` unless pinned.
+export const PLAIN_SIZE_LIMIT = 512 * 1024;
+// Markdown isolates work across blank-line paragraphs (`desktop_5MB_prose`
+// dispatches in ~3 ms), but `@lezer/markdown`'s `finishLeaf()` re-parses one
+// contiguous non-blank leaf synchronously. Switch to `"plain"` when a single
+// non-blank block exceeds 64 KB (logs, CSV dumps, minified blobs).
+export const PLAIN_BLOCK_LIMIT = 64 * 1024;
+
+/**
  * Language id -> whole-document mode. Built lazily, one call per state, because
  * a LanguageSupport holds a parser configuration and is not free.
  * @type {Record<string, () => import("@codemirror/state").Extension>}
  */
 const MODES = {
+  plain: () => plainLang.of(true),
   markdown: () => markdownMode(resolveFenceLanguage),
   javascript: () => javascript(),
   jsx: () => javascript({ jsx: true }),
@@ -124,6 +142,9 @@ const BY_EXTENSION = {
   md: "markdown",
   markdown: "markdown",
   txt: "markdown",
+  log: "plain",
+  csv: "plain",
+  tsv: "plain",
   js: "javascript",
   mjs: "javascript",
   cjs: "javascript",
@@ -276,29 +297,112 @@ function looksCSharp(text) {
  * them.
  *
  * @param {string} [content]
+ * @param {number} [fullLength] Total document length when `content` is a prefix slice.
  * @returns {string} A language id.
  */
-export function sniff(content) {
-  const text = (content || "").trim();
-  if (!text) return DEFAULT_LANG;
+// Sniff only the opening window and skip full `JSON.parse()` on large blobs so
+// opening or pasting a 5 MB file never blocks on whole-document string scans.
+const SNIFF_SAMPLE_LIMIT = 16 * 1024;
+export const JSON_PARSE_LIMIT = 256 * 1024;
 
-  const first = text[0];
+export function sniff(content, fullLength = content ? content.length : 0) {
+  if (!content) return DEFAULT_LANG;
+  const startMatch = /\S/.exec(content);
+  if (!startMatch) return DEFAULT_LANG;
+  const start = startMatch.index;
+  const first = content[start];
+  const sample = content.slice(start, start + SNIFF_SAMPLE_LIMIT);
+
   if (first === "{" || first === "[") {
-    try {
-      JSON.parse(text);
+    // Run `JSON.parse` only when the entire document fits inside JSON_PARSE_LIMIT
+    // and `content` holds all of it; a truncated slice of a > 256 KB JSON paste
+    // would throw SyntaxError and misclassify valid JSON as `"javascript"`.
+    if (fullLength - start <= JSON_PARSE_LIMIT && content.length >= fullLength) {
+      try {
+        JSON.parse(content);
+        return "json";
+      } catch {
+        if (looksJsonFamily(sample)) return "javascript";
+      }
+    } else if (looksJsonFamily(sample)) {
       return "json";
-    } catch {
-      if (looksJsonFamily(text)) return "javascript";
-      // A brace around prose. Fall through to Markdown.
     }
   }
 
-  const head = text.slice(0, SNIFF_PREFIX).toLowerCase();
+  const head = sample.slice(0, SNIFF_PREFIX).toLowerCase();
   if (head.startsWith("<!doctype") || head.startsWith("<html")) return "html";
 
-  if (looksCSharp(text)) return "csharp";
+  if (looksCSharp(sample)) return "csharp";
 
   return DEFAULT_LANG;
+}
+
+/**
+ * Check whether `text` has a contiguous run of non-blank lines longer than
+ * `limit` characters, which would stall `@lezer/markdown`'s `finishLeaf()`.
+ * @param {string} text
+ * @param {number} [limit]
+ */
+export function hasGiantNonBlankBlock(text, limit = PLAIN_BLOCK_LIMIT) {
+  if (text.length <= limit) return false;
+  let blockChars = 0;
+  let pos = 0;
+  while (pos < text.length) {
+    const nl = text.indexOf("\n", pos);
+    const end = nl < 0 ? text.length : nl;
+    let isBlank = true;
+    for (let i = pos; i < end; i++) {
+      const c = text.charCodeAt(i);
+      if (c !== 32 && c !== 9 && c !== 13) {
+        isBlank = false;
+        break;
+      }
+    }
+    if (isBlank) {
+      blockChars = 0;
+    } else {
+      blockChars += end - pos + 1;
+      if (blockChars > limit) return true;
+    }
+    if (nl < 0) break;
+    pos = nl + 1;
+  }
+  return false;
+}
+
+/**
+ * Same contiguous non-blank block check over a CodeMirror `Text` rope so paste
+ * re-detection never flattens a multi-MB document.
+ * @param {import("@codemirror/state").Text} doc
+ * @param {number} [limit]
+ */
+export function docHasGiantNonBlankBlock(doc, limit = PLAIN_BLOCK_LIMIT) {
+  if (doc.length <= limit) return false;
+  let blockChars = 0;
+  const iter = doc.iterLines();
+  while (!iter.next().done) {
+    const line = iter.value;
+    if (!/\S/.test(line)) {
+      blockChars = 0;
+    } else {
+      blockChars += line.length + 1;
+      if (blockChars > limit) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Should an unpinned buffer fall back to `"plain"` mode to prevent parser
+ * freezes? Non-Markdown grammars fall back above 512 KB; Markdown keeps
+ * highlighting on multi-MB prose unless a single non-blank block exceeds 64 KB.
+ * @param {string} detectedLang
+ * @param {string} text
+ */
+export function shouldAutoPlain(detectedLang, text) {
+  if (detectedLang === "plain") return false;
+  if (detectedLang !== "markdown") return text.length > PLAIN_SIZE_LIMIT;
+  return hasGiantNonBlankBlock(text, PLAIN_BLOCK_LIMIT);
 }
 
 /**

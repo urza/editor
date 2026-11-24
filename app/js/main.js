@@ -1761,10 +1761,17 @@ async function start() {
       if (!record) return true;
       if (record.kind === "file") return false;
       // A synced note is encrypted from its first moment, also when empty
-      // (§27), so its text is the decoded one; undefined (locked, or behind
-      // the PIN) is never blank.
+      // (§27), so its text is the decoded one; when not decoded into memory yet
+      // (desktop skips background preview warming), `firstLine === ""` without a
+      // user title or PIN lock marks an empty space note, matching `isEmpty()`.
       const text = store.loadedText(id);
-      return text !== undefined && !text.trim();
+      if (text !== undefined) return !text.trim();
+      return Boolean(
+        record.enc?.preset === "space" &&
+          !record.title &&
+          !store.isPinLocked(id) &&
+          record.firstLine === ""
+      );
     },
   });
   mountResizer();

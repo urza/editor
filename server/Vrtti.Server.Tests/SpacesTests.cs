@@ -137,7 +137,10 @@ public class SpacesTests
             Assert.Equal("keyring", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'keys'"));
             Assert.Equal("personal", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'note'"));
             Assert.Equal("personal", Scalar(check, "SELECT space FROM revisions WHERE doc_id = 'bare'"));
+            Assert.Equal(1L, Scalar(check, "SELECT size FROM revisions WHERE doc_id = 'note'"));
             Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'revisions_space'"));
+            Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'revisions_head'"));
+            Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'members_device'"));
             Assert.Equal(4L, Scalar(check, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('devices', 'members', 'space_log', 'joins')"));
 
             // The readable labels are gone, the rows and the other fields stay.

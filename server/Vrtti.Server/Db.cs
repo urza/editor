@@ -16,18 +16,21 @@ public sealed class Db
             Directory.CreateDirectory(dir);
         }
 
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = full }.ToString();
+        _connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = full,
+            // WAL still allows only one writer at a time. DefaultTimeout makes SQLite wait up
+            // to 5 s on SQLITE_BUSY without issuing an extra PRAGMA query on every Open().
+            DefaultTimeout = 5,
+        }.ToString();
         CreateSchema();
     }
 
-    /// <summary>Opens a connection for one request. The caller disposes it.</summary>
+    /// <summary>Opens a connection. Prefer <see cref="Auth.GetConnection"/> inside HTTP requests.</summary>
     public SqliteConnection Open()
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
-        // WAL still allows only one writer at a time. Without a busy timeout a second
-        // concurrent push fails immediately with SQLITE_BUSY; with it, the push waits.
-        Execute(conn, "PRAGMA busy_timeout = 5000;");
         return conn;
     }
 
@@ -99,12 +102,31 @@ public sealed class Db
             transaction.Commit();
         }
 
+        // Stored character count for History(), paired with the covering index below so listing
+        // revisions of a document with multi-MB blobs never walks SQLite overflow pages.
+        if (!HasColumn(conn, "revisions", "size"))
+        {
+            using var transaction = conn.BeginTransaction();
+            Execute(conn, "ALTER TABLE revisions ADD COLUMN size INTEGER;");
+            Execute(conn, "UPDATE revisions SET size = COALESCE(LENGTH(content), 0);");
+            transaction.Commit();
+        }
+        else if (NeedsSizeBackfill(conn))
+        {
+            // Heals rows inserted without `size` by external SQLite imports or benchmark seeders.
+            Execute(conn, "UPDATE revisions SET size = COALESCE(LENGTH(content), 0) WHERE size IS NULL;");
+        }
+
         // Outside the steps on purpose: IF NOT EXISTS makes it free on every start, and a
         // database migrated by a build that lacked an index or a table still gets it.
+        // revisions_head covers CurrentHead() and History() without reading `content` or `meta`
+        // (columns after `content` in the table row sit past its overflow chain).
         Execute(conn, """
             CREATE INDEX IF NOT EXISTS revisions_space ON revisions(space, seq);
             CREATE INDEX IF NOT EXISTS revisions_prev_space ON revisions(prev_space, seq)
               WHERE prev_space IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS revisions_head
+              ON revisions(doc_id, rev DESC, seq, kind, space, device_id, client_time, server_time, size);
 
             -- One row for each registered device. The server stores only the SHA-256 of
             -- the device token. predecessor is UNIQUE: one device has at most one
@@ -124,6 +146,7 @@ public sealed class Db
               device_id TEXT NOT NULL,
               PRIMARY KEY (space, device_id)
             );
+            CREATE INDEX IF NOT EXISTS members_device ON members(device_id, space);
 
             -- The signed log of each space, stored as the exact text the client sent: the
             -- next entry's prev is the SHA-256 of these bytes.
@@ -170,6 +193,14 @@ public sealed class Db
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"SELECT 1 FROM pragma_table_info('{table}') WHERE name = $name";
         cmd.Parameters.AddWithValue("$name", column);
+        return cmd.ExecuteScalar() is not null;
+    }
+
+    static bool NeedsSizeBackfill(SqliteConnection conn)
+    {
+        // Primary-key lookup on the newest row only, so normal boots do zero table scan.
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM revisions WHERE seq = (SELECT MAX(seq) FROM revisions) AND size IS NULL";
         return cmd.ExecuteScalar() is not null;
     }
 

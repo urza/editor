@@ -9,6 +9,12 @@ public static class Revisions
 {
     const string Columns = "doc_id, rev, seq, kind, content, meta, device_id, client_time, server_time, space";
 
+    /// <summary>Target byte ceiling for one <c>/api/changes</c> page; at least one row always goes out.</summary>
+    public const int DefaultPageBytes = 4 * 1024 * 1024;
+
+    /// <summary>Header fields of a document's newest revision, read from <c>revisions_head</c> without <c>content</c>.</summary>
+    public sealed record DocHead(long Rev, long Seq, string Kind, string Space);
+
     /// <summary>The newest revision of each document of <paramref name="spaces"/> with a row after <paramref name="since"/>.</summary>
     /// <remarks>
     /// <para>
@@ -33,22 +39,26 @@ public static class Revisions
     /// and the next page would then test the move against a cursor that is past it.
     /// </para>
     /// </remarks>
-    public static List<Change> Changes(
+    public static (List<Change> Changes, bool More) Changes(
         SqliteConnection conn,
         long since,
         int limit,
-        IReadOnlyCollection<string> spaces)
+        IReadOnlyCollection<string> spaces,
+        bool includeContent = true,
+        int maxBytes = DefaultPageBytes)
     {
         // One parameter per name: the names are validated, but they still never go into
-        // the SQL text.
+        // the SQL text. Ask for one extra row to detect `more` without a second query.
         var (list, args) = InList(spaces);
         args.Add(("$since", since));
-        args.Add(("$limit", limit));
+        args.Add(("$limit", limit + 1));
+        var contentExpr = includeContent ? "content" : "NULL AS content";
 
         using var cmd = Db.Command(
             conn,
             $"""
-             SELECT doc_id, rev, k AS seq, kind, content, meta, device_id, client_time, server_time, space
+             SELECT doc_id, rev, k AS seq, kind, {contentExpr}, meta, device_id, client_time, server_time, space,
+                    COALESCE(size, 0)
              FROM (SELECT r.*,
                           CASE WHEN r.space IN ({list}) THEN r.seq
                                ELSE (SELECT MAX(r3.seq) FROM revisions r3
@@ -66,12 +76,43 @@ public static class Revisions
 
         using var reader = cmd.ExecuteReader();
         var changes = new List<Change>();
+        var more = false;
+        long pageBytes = 0;
         while (reader.Read())
         {
-            changes.Add(ReadChange(reader));
+            if (changes.Count >= limit)
+            {
+                more = true;
+                break;
+            }
+
+            var metaText = reader.IsDBNull(5) ? null : reader.GetString(5);
+            var contentSize = includeContent && !reader.IsDBNull(4) ? reader.GetInt64(10) : 0;
+            var rowBytes = contentSize + (metaText?.Length ?? 0);
+            // Stop before reading `content` when adding a second or later row would pass the
+            // page byte cap; always send at least one row so the client's `since` cursor moves.
+            if (changes.Count > 0 && pageBytes + rowBytes > maxBytes)
+            {
+                more = true;
+                break;
+            }
+
+            var content = includeContent && !reader.IsDBNull(4) ? reader.GetString(4) : null;
+            pageBytes += (content?.Length ?? 0) + (metaText?.Length ?? 0);
+            changes.Add(new Change(
+                DocId: reader.GetString(0),
+                Rev: reader.GetInt64(1),
+                Seq: reader.GetInt64(2),
+                Kind: reader.GetString(3),
+                Content: content,
+                Meta: metaText is null ? null : ParseMeta(metaText),
+                DeviceId: reader.GetString(6),
+                ClientTime: reader.GetInt64(7),
+                ServerTime: reader.GetInt64(8),
+                Space: reader.GetString(9)));
         }
 
-        return changes;
+        return (changes, more);
     }
 
     /// <summary>The current revision number, or 0 when the document has no rows.</summary>
@@ -82,6 +123,19 @@ public static class Revisions
             "SELECT COALESCE(MAX(rev), 0) FROM revisions WHERE doc_id = $id",
             ("$id", docId));
         return (long)(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    /// <summary>The newest revision header of one document without reading <c>content</c> or <c>meta</c>.</summary>
+    public static DocHead? CurrentHead(SqliteConnection conn, string docId)
+    {
+        using var cmd = Db.Command(
+            conn,
+            "SELECT rev, seq, kind, space FROM revisions WHERE doc_id = $id ORDER BY rev DESC LIMIT 1",
+            ("$id", docId));
+        using var reader = cmd.ExecuteReader();
+        return reader.Read()
+            ? new DocHead(reader.GetInt64(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3))
+            : null;
     }
 
     /// <summary>The newest revision of one document, or null when it has no rows.</summary>
@@ -118,12 +172,11 @@ public static class Revisions
         args.Add(("$id", docId));
         using var cmd = Db.Command(
             conn,
-            // LENGTH() on text counts characters, not bytes. The size is a display hint
-            // for the history dialog, so counting characters in SQL beats loading every
-            // revision's content only to measure it.
+            // Reads the stored `size` from the covering index `revisions_head` so history
+            // never walks SQLite overflow pages on multi-MB revisions.
             $"""
              SELECT rev, seq, kind, device_id, client_time, server_time,
-                    COALESCE(LENGTH(content), 0)
+                    COALESCE(size, LENGTH(content), 0)
              FROM revisions WHERE doc_id = $id AND space IN ({list}) ORDER BY rev DESC
              """,
             [.. args]);
@@ -163,8 +216,8 @@ public static class Revisions
         using var cmd = Db.Command(
             conn,
             """
-            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time, space, prev_space)
-            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime, $space, $prevSpace)
+            INSERT INTO revisions (doc_id, rev, kind, content, meta, device_id, client_time, server_time, space, prev_space, size)
+            VALUES ($id, $rev, $kind, $content, $meta, $device, $clientTime, $serverTime, $space, $prevSpace, $size)
             RETURNING seq
             """,
             ("$id", docId),
@@ -176,7 +229,8 @@ public static class Revisions
             ("$clientTime", clientTime),
             ("$serverTime", serverTime),
             ("$space", space),
-            ("$prevSpace", prevSpace));
+            ("$prevSpace", prevSpace),
+            ("$size", content?.Length ?? 0));
         return (long)cmd.ExecuteScalar()!;
     }
 

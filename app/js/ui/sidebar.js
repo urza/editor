@@ -17,7 +17,7 @@ import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
 import { editorEvents } from "../editor/editor.js";
 import { openMenu } from "./menu.js";
-import { onPhoneModeChange, phoneMode, watchBack } from "./shell.js";
+import { onPhoneModeChange, phoneListOpen, phoneMode, watchBack } from "./shell.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../model/folders.js").Entry} Entry */
@@ -167,10 +167,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   }
 
   // If the phone note list closes via the thumb button or Escape while a
-  // subview is active, return the list to Open and disarm its Back watcher.
+  // subview is active, return the list to Open and disarm its Back watcher;
+  // when the phone note list opens, warm previews for the visible rows.
   new MutationObserver(() => {
     if (phoneView && !app.classList.contains("sidebar-open")) {
       setPhoneView(null);
+    } else if (phoneListOpen()) {
+      scheduleVisiblePreviews();
     }
   }).observe(app, { attributes: true, attributeFilter: ["class"] });
 
@@ -740,7 +743,74 @@ export function mountSidebar(store, folders, sync, workspaces) {
     );
   }
 
-  // ---- Row builders --------------------------------------------------------
+  // ---- Phone-only visible preview warming & row builders (C3) ---------------
+
+  /**
+   * Observe encrypted rows in the phone note list and decode previews only for
+   * rows intersecting `#sidebar-scroll` while the phone list is actually open.
+   * Desktop never shows `.buffer-preview` or `.buffer-time`, and `onPhoneModeChange`
+   * calls `render()` whenever the layout switches.
+   */
+  const previewObserver =
+    typeof IntersectionObserver === "function"
+      ? new IntersectionObserver(
+          (entries) => {
+            if (!phoneListOpen()) return;
+            /** @type {string[]} */
+            const visibleIds = [];
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const id = /** @type {HTMLElement} */ (entry.target).dataset.id;
+              if (id) visibleIds.push(id);
+            }
+            if (visibleIds.length > 0) void store.warmPreviewsFor(visibleIds);
+          },
+          { root: sidebarScroll, rootMargin: "120px 0px" }
+        )
+      : null;
+
+  function scheduleVisiblePreviews() {
+    if (!phoneListOpen()) return;
+    requestAnimationFrame(() => {
+      if (!phoneListOpen()) return;
+      const box = sidebarScroll.getBoundingClientRect();
+      if (box.height <= 0) return;
+      const list = phoneView ? phoneViewList : openList;
+      /** @type {string[]} */
+      const ids = [];
+      for (const el of list.children) {
+        if (!(el instanceof HTMLElement)) continue;
+        const id = el.dataset.id;
+        if (!id || el.querySelector(".buffer-preview")) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.bottom >= box.top - 120 && rect.top <= box.bottom + 120) ids.push(id);
+      }
+      if (ids.length > 0) void store.warmPreviewsFor(ids);
+    });
+  }
+
+  /** @param {HTMLElement} li @param {BufferRecord} record @param {string} titleText */
+  function syncPhoneRowPreview(li, record, titleText) {
+    const head = store.loadedPreviewHead(record.id);
+    const preview = head === undefined ? "" : previewOf(head, titleText);
+    const existing = li.querySelector(".buffer-preview");
+    if (preview) {
+      if (existing) {
+        if (existing.textContent !== preview) existing.textContent = preview;
+      } else {
+        const span = document.createElement("span");
+        span.className = "buffer-preview";
+        span.textContent = preview;
+        li.appendChild(span);
+      }
+      previewObserver?.unobserve(li);
+    } else {
+      existing?.remove();
+      if (record.enc && head === undefined && !store.isPinLocked(record.id)) {
+        previewObserver?.observe(li);
+      }
+    }
+  }
 
   /** @param {BufferRecord} record @param {{closable: boolean, showRecentAge?: boolean}} opts */
   function makeRow(record, { closable, showRecentAge = false }) {
@@ -822,15 +892,16 @@ export function mountSidebar(store, folders, sync, workspaces) {
       }
     }
 
-    // The time of the last change, for the rows of the phone note list.
-    // Every row carries it and the preview below, in every layout, and
-    // app.css shows them in phone mode only: the layout can change under a
-    // drawn list (a phone turned on its side), and this way that needs no
-    // redraw and no code that knows the mode.
-    const time = document.createElement("span");
-    time.className = "buffer-time";
-    time.textContent = shortTime(record.updatedAt);
-    li.appendChild(time);
+    // Only build `.buffer-time` and `.buffer-preview` in phone mode: desktop CSS
+    // hides both (`display: none`), and `onPhoneModeChange` calls `render()`
+    // whenever a window enters or leaves `html.phone`.
+    const isPhone = phoneMode();
+    if (isPhone) {
+      const time = document.createElement("span");
+      time.className = "buffer-time";
+      time.textContent = shortTime(record.updatedAt);
+      li.appendChild(time);
+    }
 
     const more = document.createElement("button");
     more.className = "buffer-more";
@@ -897,21 +968,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
       li.appendChild(trashBtn);
     }
 
-    // The start of the text, the second line of a phone row. loadedText, not
-    // textOf: this runs for every row on every keystroke, and textOf would
-    // read every file and decrypt every note to draw a list. The store
-    // decodes encrypted notes in the background (warmPreviews in
-    // model/docs.js) and sends "change" when they are ready. A locked note
-    // and an unread file have no preview, and neither has a note that is
-    // only its title; those rows stay one line. Last in the row: app.css
-    // wraps it onto a line of its own.
-    const text = store.loadedText(record.id);
-    const preview = text === undefined ? "" : previewOf(text, titleText);
-    if (preview) {
-      const span = document.createElement("span");
-      span.className = "buffer-preview";
-      span.textContent = preview;
-      li.appendChild(span);
+    if (isPhone) {
+      syncPhoneRowPreview(li, record, titleText);
     }
 
     li.addEventListener("click", () => {
@@ -1071,7 +1129,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
   // could not scroll any more. The row menu stays the phone's way around.
 
   // The press that may become a drag, then the drag. Null between gestures.
-  /** @type {{ li: HTMLElement, id: string, startY: number, moved: boolean, beforeId: string | null | undefined } | null} */
+  /** @type {{ li: HTMLElement, id: string, startY: number, moved: boolean, beforeId: string | null | undefined, rows?: HTMLElement[], mids?: number[], from?: number } | null} */
   let drag = null;
   // True from the drop until the click that follows it has been swallowed.
   let dropped = false;
@@ -1100,6 +1158,16 @@ export function mountSidebar(store, folders, sync, workspaces) {
       drag.moved = true;
       drag.li.classList.add("dragging");
       openList.classList.add("reordering");
+      // Snapshot row midpoints once at drag start so pointermove never forces
+      // synchronous layout across hundreds of open rows (M2).
+      const rows = /** @type {HTMLElement[]} */ ([...openList.children]);
+      drag.rows = rows;
+      drag.from = rows.indexOf(drag.li);
+      drag.scrollTop = sidebarScroll.scrollTop;
+      drag.mids = rows.map((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      });
     }
     showDropTarget(event.clientY);
   });
@@ -1127,18 +1195,19 @@ export function mountSidebar(store, folders, sync, workspaces) {
    * @param {number} y
    */
   function showDropTarget(y) {
-    if (!drag) return;
-    const rows = /** @type {HTMLElement[]} */ ([...openList.children]);
+    if (!drag || !drag.rows || !drag.mids || drag.from === undefined) return;
+    const { rows, mids, from } = drag;
+    // Offset by any `#sidebar-scroll` delta since drag start so wheel-scrolling
+    // during a drag maps `y` to the current row positions without reflowing DOM.
+    const adjustedY = y + (sidebarScroll.scrollTop - (drag.scrollTop ?? 0));
     for (const row of rows) row.classList.remove("drop-before", "drop-after");
     let index = rows.length;
-    for (let i = 0; i < rows.length; i++) {
-      const rect = rows[i].getBoundingClientRect();
-      if (y < rect.top + rect.height / 2) {
+    for (let i = 0; i < mids.length; i++) {
+      if (adjustedY < mids[i]) {
         index = i;
         break;
       }
     }
-    const from = rows.indexOf(drag.li);
     if (index === from || index === from + 1) {
       drag.beforeId = undefined;
       return;
@@ -1599,6 +1668,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
       return;
     }
     redrawOwed = false;
+    previewObserver?.disconnect();
     const focused = focusedRow();
     const isPhone = phoneMode();
     const wsSpace = ownSpace();
@@ -1771,6 +1841,36 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
     refocusRow(focused);
     if (reveal) revealActive();
+    if (isPhone && phoneListOpen()) scheduleVisiblePreviews();
+  }
+
+  /**
+   * Patch only the edited buffer's row in `openList` on `"buffer-edit"` so
+   * keystrokes never rebuild hundreds of open and drawer rows (C1).
+   * @param {string | undefined} id
+   */
+  function patchEditedRow(id) {
+    if (!id || renamingId || drag) return;
+    if (swipe?.active || leaving > 0) {
+      redrawOwed = true;
+      return;
+    }
+    const record = store.get(id);
+    if (!record) return;
+    const li = openList.querySelector(`li.buffer-row[data-id="${CSS.escape(id)}"]`);
+    if (!(li instanceof HTMLElement)) return;
+    const titleText = titleOf(record);
+    const titleEl = li.querySelector(".buffer-title");
+    if (titleEl && titleEl.textContent !== titleText) titleEl.textContent = titleText;
+    if (phoneMode()) {
+      const timeEl = li.querySelector(".buffer-time");
+      const nextTime = shortTime(record.updatedAt);
+      if (timeEl && timeEl.textContent !== nextTime) timeEl.textContent = nextTime;
+      syncPhoneRowPreview(li, record, titleText);
+      // Phone mode sorts Open oldest -> newest by `updatedAt`, so an edit moves
+      // the row to the bottom without rebuilding the rest of the list.
+      if (openList.lastElementChild !== li) openList.appendChild(li);
+    }
   }
 
   // Keyboard travel between rows. Tab already walks everything in the
@@ -1817,6 +1917,24 @@ export function mountSidebar(store, folders, sync, workspaces) {
   });
 
   store.events.addEventListener("change", () => render());
+  store.events.addEventListener("buffer-edit", (event) => {
+    patchEditedRow(/** @type {CustomEvent} */ (event).detail?.id);
+  });
+  store.events.addEventListener("previews", (event) => {
+    if (!phoneMode()) return;
+    const ids = /** @type {CustomEvent} */ (event).detail?.ids ?? [];
+    for (const id of ids) {
+      const record = store.get(id);
+      if (!record) continue;
+      const titleText = titleOf(record);
+      for (const li of sidebar.querySelectorAll(`li.buffer-row[data-id="${CSS.escape(id)}"]`)) {
+        if (li instanceof HTMLElement) syncPhoneRowPreview(li, record, titleText);
+      }
+    }
+  });
+  store.events.addEventListener("unlock", () => {
+    if (phoneListOpen()) scheduleVisiblePreviews();
+  });
   store.events.addEventListener("active", () => render({ reveal: true }));
   // The order of Open depends on the mode (openOrder), and a phone turned on
   // its side can leave it with no store event to redraw the list.

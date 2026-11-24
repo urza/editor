@@ -1555,6 +1555,119 @@ describe(
       assert.equal(purgeCheck.afterRestoreDirty, true);
       await devA.page.setOffline(false);
       await syncAndWait(cdpA);
+
+      // 4q. `applyRemoteBatch` mid-page failure rollback and `commitPreparedWorkspace`
+      // preserving concurrent `addTab` / `removeTab` / `moveTab` / `addFolder` edits.
+      const batchAndConcurrentCheck = await cdpA.eval(`(async () => {
+        const { applySyncBatch, getWorkspace } = await import("/js/storage/idb.js");
+        const ws = window.vrtti.workspaces;
+        const store = window.vrtti.store;
+
+        // Part 1: mid-page fetchDoc rejection leaves zero uncommitted rows/tabs.
+        const row1 = {
+          seq: 99001,
+          docId: "batch-fail-row-1",
+          rev: 1,
+          kind: "text",
+          space: "personal",
+          content: "Row 1 staged text",
+          meta: { title: "Row 1" },
+          clientTime: Date.now(),
+        };
+        const row2Missing = {
+          seq: 99002,
+          docId: "batch-fail-row-2",
+          rev: 1,
+          kind: "text",
+          space: "personal",
+          content: null,
+          meta: { title: "Row 2" },
+          clientTime: Date.now(),
+        };
+        let failedAsExpected = false;
+        try {
+          await store.applyRemoteBatch([row1, row2Missing], {
+            fetchDoc: async () => {
+              throw new Error("simulated network drop");
+            },
+          });
+        } catch {
+          failedAsExpected = true;
+        }
+        const leakedInMem = Boolean(store.get("batch-fail-row-1"));
+        const leakedInTabs = ws.current().tabs.includes("batch-fail-row-1");
+        const idbAfterFail = await getWorkspace("main");
+        const leakedInIdb = Boolean(idbAfterFail?.tabs?.includes("batch-fail-row-1"));
+
+        // Retry with working fetchDoc: both rows commit cleanly.
+        await store.applyRemoteBatch([row1, row2Missing], {
+          fetchDoc: async (id) => ({ ...row2Missing, docId: id, content: "Row 2 fetched text" }),
+        });
+        const retryCommittedBoth =
+          Boolean(store.get("batch-fail-row-1")) &&
+          Boolean(store.get("batch-fail-row-2")) &&
+          ws.current().tabs.includes("batch-fail-row-1") &&
+          ws.current().tabs.includes("batch-fail-row-2");
+
+        // Part 2: concurrent tab/folder mutations during applySyncBatch survive commitPreparedWorkspace.
+        const tClose = await window.vrtti.createBuffer();
+        const tStay = await window.vrtti.createBuffer();
+        const prep = await ws.prepareAddTabs(["sync-prep-1", "sync-prep-2"]);
+
+        // User creates/adds a tab, closes tClose, reorders before tStay, and adds a folder
+        // while applySyncBatch writes the older prepared snapshot to IndexedDB.
+        await ws.addTab("user-added-during-tx");
+        await ws.removeTab(tClose.id);
+        await ws.moveTab("user-added-during-tx", tStay.id);
+        await ws.addFolder("folder-added-during-tx");
+        await applySyncBatch({ putWorkspaces: [prep.record] });
+
+        await ws.commitPreparedWorkspace(prep);
+        const liveTabs = [...ws.current().tabs];
+        const liveFolderIds = [...ws.current().folderIds];
+        const savedWs = await getWorkspace("main");
+
+        // Clean up synthetic IDs before next test.
+        await ws.removeTabs([
+          "batch-fail-row-1",
+          "batch-fail-row-2",
+          "user-added-during-tx",
+          "sync-prep-1",
+          "sync-prep-2",
+          tStay.id,
+        ]);
+        await ws.removeFolder("folder-added-during-tx");
+        store.buffers.delete("batch-fail-row-1");
+        store.buffers.delete("batch-fail-row-2");
+
+        return {
+          failedAsExpected,
+          leakedInMem,
+          leakedInTabs,
+          leakedInIdb,
+          retryCommittedBoth,
+          liveHasUserTab: liveTabs.includes("user-added-during-tx"),
+          liveClosedGone: !liveTabs.includes(tClose.id),
+          liveOrderKept: liveTabs.indexOf("user-added-during-tx") < liveTabs.indexOf(tStay.id),
+          liveHasSyncedTabs:
+            liveTabs.includes("sync-prep-1") && liveTabs.includes("sync-prep-2"),
+          liveHasFolder: liveFolderIds.includes("folder-added-during-tx"),
+          idbTabsMatchLive: JSON.stringify(savedWs?.tabs) === JSON.stringify(liveTabs),
+          idbFoldersMatchLive: JSON.stringify(savedWs?.folderIds) === JSON.stringify(liveFolderIds),
+        };
+      })()`);
+      assert.equal(batchAndConcurrentCheck.failedAsExpected, true);
+      assert.equal(batchAndConcurrentCheck.leakedInMem, false);
+      assert.equal(batchAndConcurrentCheck.leakedInTabs, false);
+      assert.equal(batchAndConcurrentCheck.leakedInIdb, false);
+      assert.equal(batchAndConcurrentCheck.retryCommittedBoth, true);
+      assert.equal(batchAndConcurrentCheck.liveHasUserTab, true);
+      assert.equal(batchAndConcurrentCheck.liveClosedGone, true);
+      assert.equal(batchAndConcurrentCheck.liveOrderKept, true);
+      assert.equal(batchAndConcurrentCheck.liveHasSyncedTabs, true);
+      assert.equal(batchAndConcurrentCheck.liveHasFolder, true);
+      assert.equal(batchAndConcurrentCheck.idbTabsMatchLive, true);
+      assert.equal(batchAndConcurrentCheck.idbFoldersMatchLive, true);
     });
 
     test("5. Phone Mode B: 44px bottom bar, full-screen subview, server stubs, Android Back, swipe-left close only, Trash menu", async () => {

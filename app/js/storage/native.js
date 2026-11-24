@@ -209,6 +209,23 @@ class NativeFileHandle extends NativeHandle {
   }
 
   /**
+   * Single-IPC atomic write for the native shell: passes `expectedMtime` so
+   * Rust checks external modifications before rename and returns the new
+   * `mtime` in one round trip instead of `disk_stat` -> `disk_write` -> `disk_stat`.
+   * @param {string} text
+   * @param {number} [expectedMtime]
+   * @returns {Promise<{mtime: number}>}
+   */
+  async writeAtomic(text, expectedMtime) {
+    if (typeof text !== "string") throw new TypeError("native write takes text");
+    const args =
+      expectedMtime === undefined
+        ? { root: this.root, path: this.path, text }
+        : { root: this.root, path: this.path, text, expectedMtime };
+    return call("disk_write", args);
+  }
+
+  /**
    * The writable collects and commits on close(), because disk_write is one
    * atomic replacement of the whole file (temp plus rename). Nothing lands on
    * disk before close(), exactly like the browser's default writable.
@@ -226,7 +243,7 @@ class NativeFileHandle extends NativeHandle {
         chunks.push(chunk);
       },
       async close() {
-        await call("disk_write", { root, path, text: chunks.join("") });
+        return call("disk_write", { root, path, text: chunks.join("") });
       },
     };
   }

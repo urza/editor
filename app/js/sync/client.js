@@ -85,9 +85,6 @@ const POLL = 60000;
 // Long enough that a sentence of typing is one revision, short enough that the
 // other device sees it while the user is still looking at the screen.
 const DEBOUNCE = 2000;
-// A guard, not a limit: `more` comes from the server, and a server that always
-// answers true would otherwise spin here for ever.
-const MAX_PAGES = 100;
 
 /**
  * The server's rule for a space name (architecture.md §25). The client checks
@@ -195,6 +192,9 @@ export function createSyncClient({ store, keyring }) {
   // once per round: a file that stays missing would fill the console.
   /** @type {Set<string>} */
   const unreadable = new Set();
+  /** Cached deviceId -> display name; cleared whenever logs, introductions, or keyring change. @type {Map<string, string>} */
+  const deviceNames = new Map();
+  keyring.addEventListener("change", () => deviceNames.clear());
 
   function isConfigured() {
     return Boolean(config && config.v === 2 && config.url && config.token);
@@ -258,6 +258,7 @@ export function createSyncClient({ store, keyring }) {
 
   /** Replay every log; the store and the UI read the result. */
   function rebuild() {
+    deviceNames.clear();
     const next = dict();
     for (const [space, entry] of Object.entries(logs)) {
       const state = replay(entry.log, entry.creator, space);
@@ -610,11 +611,21 @@ export function createSyncClient({ store, keyring }) {
    * signed, else from the keyring record (names only, §27). @param {string} id
    */
   function deviceName(id) {
+    const cached = deviceNames.get(id);
+    if (cached !== undefined) return cached;
+    let resolved = "";
     for (const key of knownSet()) {
       const parsed = parseEntryKey(key);
-      if (parsed?.id === id) return parsed.name;
+      if (parsed?.id === id) {
+        resolved = parsed.name;
+        break;
+      }
     }
-    return keyring.content?.devices.find((d) => d.id === id)?.name ?? "";
+    if (!resolved) {
+      resolved = keyring.content?.devices.find((d) => d.id === id)?.name ?? "";
+    }
+    deviceNames.set(id, resolved);
+    return resolved;
   }
 
   // ---- The device directory (architecture.md §27) -------------------------
@@ -639,6 +650,7 @@ export function createSyncClient({ store, keyring }) {
   /** @param {import("../crypto/spaces.js").Introduction[]} entries New ones only; the caller checked them. */
   async function remember(entries) {
     if (!entries.length) return;
+    deviceNames.clear();
     introductions = [...introductions, ...entries];
     await putSetting(INTRODUCTIONS_KEY, introductions);
     post("setting", { key: INTRODUCTIONS_KEY });
@@ -1072,7 +1084,7 @@ export function createSyncClient({ store, keyring }) {
    * @param {string} space
    */
   async function pullSpace(space) {
-    for (let page = 0; page < MAX_PAGES; page++) {
+    while (true) {
       if (space !== KEYRING_SPACE && !isMine(space)) return;
       // Another server than the cursors know: start at 0, and forget the old
       // positions only once this server has answered. A typo in the URL and
@@ -1080,8 +1092,21 @@ export function createSyncClient({ store, keyring }) {
       const url = config?.url ?? "";
       const stale = cursorsUrl !== url;
       const since = stale ? 0 : cursors[space] ?? 0;
+      // Titles-only spaces without an open Space Window ask for `?content=0`
+      // so the server omits encrypted bodies; `applyRemoteBatch` fetches full
+      // docs individually for any stub the user previously opened as a tab (S3).
+      const omitBody =
+        space !== KEYRING_SPACE &&
+        modeOf(space) === "list" &&
+        !(await store.hasLiveSpaceWindow(space));
       const res = await request(
-        "/api/changes?since=" + since + "&limit=" + PAGE + "&spaces=" + encodeURIComponent(space)
+        "/api/changes?since=" +
+          since +
+          "&limit=" +
+          PAGE +
+          "&spaces=" +
+          encodeURIComponent(space) +
+          (omitBody ? "&content=0" : "")
       );
       // The server refuses the space: this device is out of it.
       if (res.status === 403) return lose(space);
@@ -1095,14 +1120,18 @@ export function createSyncClient({ store, keyring }) {
         await putSetting(CURSORS_URL_KEY, url);
       }
       const body = await res.json();
-      for (const change of body.changes ?? []) await store.applyRemote(change);
+      await store.applyRemoteBatch(body.changes ?? [], { fetchDoc });
       // Compare and set: a reset to 0 while this page was in flight (a space
       // turned from Titles only to Open as tabs) must win over this page's
       // `next`, or the listed notes would never arrive as tabs.
       if ((cursors[space] ?? 0) !== since) return;
-      if (typeof body.next === "number" && body.next !== since) {
+      if (typeof body.next === "number" && body.next > since) {
         cursors[space] = body.next;
         await putSetting(CURSORS_KEY, { ...cursors });
+      } else if (body.more) {
+        // Guard against a broken server returning `more: true` without
+        // advancing `next`, without capping large vaults at 100 pages (H4).
+        throw new SyncError("sync cursor did not advance");
       }
       if (!body.more) return;
     }
@@ -1390,7 +1419,7 @@ export function createSyncClient({ store, keyring }) {
     /** @type {Map<string, any>} */
     const notes = new Map();
     let since = 0;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    while (true) {
       const res = await request(
         "/api/changes?since=" + since + "&limit=" + PAGE + "&spaces=" + encodeURIComponent(space)
       );
@@ -1401,6 +1430,9 @@ export function createSyncClient({ store, keyring }) {
         else notes.delete(change.docId);
       }
       if (!body.more) break;
+      if (typeof body.next !== "number" || body.next <= since) {
+        throw new SyncError("sync cursor did not advance");
+      }
       since = body.next;
     }
     return [...notes.values()];
@@ -1647,20 +1679,22 @@ export function createSyncClient({ store, keyring }) {
     window.addEventListener("online", () => syncNow());
     setInterval(() => syncNow(), POLL);
 
-    // Every keystroke emits "change", so this debounce is what turns a burst of
-    // typing into one push.
+    // Every keystroke emits "buffer-edit" (and metadata edits emit "change"),
+    // so this debounce is what turns a burst of typing into one push.
     //
     // The dirty test is at the END of the wait, not at the start: a keystroke
-    // emits "change" immediately but only marks the record dirty 300 ms later,
-    // after the codec stage of the persist debounce (model/docs.js). Testing it
-    // on arrival would find nothing dirty and never arm the timer at all.
-    store.events.addEventListener("change", () => {
+    // emits "buffer-edit" immediately but only marks the record dirty 300 ms
+    // later, after the codec stage of the persist debounce (model/docs.js).
+    // Testing it on arrival would find nothing dirty and never arm the timer.
+    const armPushDebounce = () => {
       if (!isConfigured()) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         if (store.dirtyRecords().length > 0 || keyringNeedsAttach()) syncNow();
       }, DEBOUNCE);
-    });
+    };
+    store.events.addEventListener("change", armPushDebounce);
+    store.events.addEventListener("buffer-edit", armPushDebounce);
 
     // A window can wait long for the lock, and the old leader moved the
     // cursors meanwhile: read them fresh, or the first run replays all of it.

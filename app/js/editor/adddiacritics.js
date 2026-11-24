@@ -8,9 +8,8 @@
 // then asks the user's model, through the sync server, for the paragraphs
 // that had a blue word, and keeps only the changes that pass checkAnswer.
 
-import { checkAnswer } from "./diacritics.js";
-import { englishNow, enginesForCommand, wordsIn } from "./spellcheck.js";
-import * as hunspell from "./hunspell.js";
+import { WORD, checkAnswer } from "./diacritics.js";
+import { analyzeDiacriticsWords, checkCzechWords, wordsIn } from "./spellcheck.js";
 import { segments } from "./textlang.js";
 
 // vLLM batches requests that arrive together on the GPU, so many paragraphs at
@@ -65,24 +64,6 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   const [from, to] = wholeNote || sel.empty ? [0, text.length] : [sel.from, sel.to];
 
   if (model) notice("asking the model…", true);
-  const { harper, czech } = await enginesForCommand();
-  if (!czech) {
-    notice("the Czech dictionary did not load");
-    return;
-  }
-
-  // Positions of word changes in the original text. Each change keeps the
-  // length (a diacritic letter is one unit like its base letter), so no
-  // position ever shifts and the local and model changes can be merged.
-  /** @type {Map<number, string>} */
-  const local = new Map();
-  let ambiguous = 0;
-  /** @type {Set<number>} start offsets of words that would carry a blue mark */
-  const plain = new Set();
-  /** @type {Set<string>} words Harper takes as English and Czech does not */
-  const englishOnly = new Set();
-  /** @type {Set<number>} start offsets of those words */
-  const englishAt = new Set();
   const trustCzech = modelFixesCzechParagraphs();
   // The start of every prose word in the range. The model may change only
   // these: a paragraph also holds links and inline code, and a model that
@@ -90,23 +71,20 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   const prose = wordsIn(text, from, to);
   const starts = new Set(prose.map((w) => w.from));
 
-  let n = 0;
-  for (const { word, from: at } of prose) {
-    // A long note: let the page paint the notice now and then, since the
-    // twin search for a word that the marks never saw has no budget here.
-    if (++n % 200 === 0) await new Promise((resolve) => setTimeout(resolve));
-    if (hunspell.isWord(word)) continue;
-    if (harper && (await englishNow(harper, word))) {
-      englishOnly.add(word);
-      englishAt.add(at);
-      continue;
-    }
-    const twins = hunspell.twinsNow(word);
-    if (twins.length === 0) continue;
-    plain.add(at);
-    if (twins.length === 1) local.set(at, twins[0]);
-    else ambiguous++;
+  const analyzed = await analyzeDiacriticsWords(prose);
+  if (!analyzed.czechLoaded) {
+    notice("the Czech dictionary did not load");
+    return;
   }
+  /** @type {Map<number, string>} */
+  const local = new Map(analyzed.localEntries);
+  const ambiguous = analyzed.ambiguous;
+  /** @type {Set<number>} */
+  const plain = new Set(analyzed.plainOffsets);
+  /** @type {Set<string>} */
+  const englishOnly = new Set(analyzed.englishOnlyWords);
+  /** @type {Set<number>} */
+  const englishAt = new Set(analyzed.englishAtOffsets);
 
   if (!model) {
     if (apply(view, start, text, local)) notice(summary(local.size, ambiguous));
@@ -120,7 +98,10 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   // still fix them there.
   const after = withChanges(text, local);
   /** @param {{from: number, to: number}} p @param {Set<number>} set */
-  const holds = (p, set) => [...set].some((at) => at >= p.from && at < p.to);
+  const holds = (p, set) => {
+    for (const at of set) if (at >= p.from && at < p.to) return true;
+    return false;
+  };
   const czechTrusted = (/** @type {{lang: string}} */ p) => trustCzech && p.lang === "cs";
   const paras = segments(text).filter(
     (p) => !p.code && (holds(p, plain) || (czechTrusted(p) && holds(p, englishAt)))
@@ -138,7 +119,12 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   await pool(paras, PARALLEL, async (p) => {
     const sent = after.slice(p.from, p.to);
     try {
-      const checked = checkAnswer(sent, await model.ask(sent, `${paras.indexOf(p) + 1}/${paras.length}`), (w) => hunspell.isWord(w));
+      const answer = await model.ask(sent, `${paras.indexOf(p) + 1}/${paras.length}`);
+      // Normalize to NFC before extracting tokens because `checkAnswer` normalizes
+      // `answer` to NFC before testing `validCzech.has(w)`.
+      const answerWords = [...new Set([...answer.normalize("NFC").matchAll(WORD)].map((m) => m[0]))];
+      const validCzech = await checkCzechWords(answerWords);
+      const checked = checkAnswer(sent, answer, (w) => validCzech.has(w));
       if (!checked) dropped++;
       else {
         for (const w of prose) {
@@ -202,9 +188,18 @@ function apply(view, start, text, changes) {
 
 /** @param {string} text @param {Map<number, string>} changes */
 function withChanges(text, changes) {
-  const chars = text.split("");
-  for (const [at, w] of changes) for (let i = 0; i < w.length; i++) chars[at + i] = w[i];
-  return chars.join("");
+  if (changes.size === 0) return text;
+  const sorted = [...changes].sort((a, b) => a[0] - b[0]);
+  /** @type {string[]} */
+  const parts = [];
+  let pos = 0;
+  for (const [at, w] of sorted) {
+    if (at < pos) continue;
+    parts.push(text.slice(pos, at), w);
+    pos = at + w.length;
+  }
+  parts.push(text.slice(pos));
+  return parts.join("");
 }
 
 /** @param {number} changed @param {number} ambiguous */

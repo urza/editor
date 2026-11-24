@@ -116,6 +116,11 @@ export function isAgeFile(content) {
   return head === BINARY_HEAD;
 }
 
+// 1,400 base64 lines of 64 chars decode to ~67 KB, well above any age recipient
+// header we write while avoiding a multi-MB decode on large armored notes.
+const HEADER_ARMOR_LINES = 1400;
+const ARMOR_FOOT = "-----END AGE ENCRYPTED FILE-----";
+
 /**
  * How many recipients an armored age file was encrypted to, read off its
  * header: one `->` stanza per recipient, and the header ends at the `---`
@@ -125,13 +130,46 @@ export function isAgeFile(content) {
  * @param {string} armored
  */
 export function countRecipients(armored) {
-  const bytes = armor.decode(armored);
-  // The header is ASCII and short; this is far more than any header we write.
-  const head = new TextDecoder().decode(bytes.subarray(0, 65536));
+  // Slice only the opening armor lines instead of passing the whole multi-MB
+  // file to `armor.decode()` (which validates the footer and decodes every byte).
+  const start = armored.indexOf(ARMOR_HEAD);
+  if (start < 0) {
+    const bytes = armor.decode(armored);
+    const head = new TextDecoder().decode(bytes.subarray(0, 65536));
+    return countHeaderLines(head);
+  }
+  let pos = armored.indexOf("\n", start + ARMOR_HEAD.length);
+  if (pos < 0) return 0;
+  pos++;
+  const b64Parts = [];
+  for (let i = 0; i < HEADER_ARMOR_LINES && pos < armored.length; i++) {
+    const nl = armored.indexOf("\n", pos);
+    const rawLine = nl < 0 ? armored.slice(pos) : armored.slice(pos, nl);
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line || line === ARMOR_FOOT) break;
+    b64Parts.push(line);
+    if (nl < 0) break;
+    pos = nl + 1;
+  }
+  let joined = b64Parts.join("");
+  // Keep a 4-character multiple so `atob` decodes a truncated prefix cleanly.
+  joined = joined.slice(0, joined.length - (joined.length % 4));
+  if (!joined) return 0;
+  const bin = atob(joined);
+  return countHeaderLines(bin);
+}
+
+/** @param {string} head */
+function countHeaderLines(head) {
   let count = 0;
-  for (const line of head.split("\n")) {
+  let pos = 0;
+  while (pos < head.length) {
+    const nl = head.indexOf("\n", pos);
+    const line = nl < 0 ? head.slice(pos) : head.slice(pos, nl);
     if (line.startsWith("---")) break;
     if (line.startsWith("-> ")) count++;
+    if (nl < 0) break;
+    pos = nl + 1;
   }
   return count;
 }

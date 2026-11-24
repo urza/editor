@@ -164,6 +164,117 @@ export function createWorkspaces({ id }) {
     await save(record);
   }
 
+  /**
+   * @param {readonly string[]} a
+   * @param {readonly string[]} b
+   */
+  function sameStrings(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * @typedef {Object} PreparedWorkspaceTabs
+   * @property {WorkspaceRecord} record
+   * @property {string[]} addedIds
+   * @property {boolean} hadLive
+   */
+
+  /**
+   * Prepare an updated `WorkspaceRecord` with `bufferIds` appended, without
+   * mutating in-memory `records` or `record.tabs` yet. `applyRemoteBatch`
+   * persists `prepared.record` in `applySyncBatch` first and calls
+   * `commitPreparedWorkspace` only after the IndexedDB transaction commits, so
+   * an aborted sync page never leaves uncommitted tabs in memory.
+   * @param {string[]} bufferIds
+   * @param {string} [wsId]
+   * @returns {Promise<PreparedWorkspaceTabs | null>}
+   */
+  async function prepareAddTabs(bufferIds, wsId = id) {
+    if (bufferIds.length === 0 || (dissolved && wsId === id)) return null;
+    const hadLive = records.has(wsId);
+    let base = records.get(wsId) ?? newRecord(wsId);
+    if (wsId !== id) {
+      base = (await getWorkspace(wsId)) ?? base;
+    }
+    const existing = new Set(base.tabs);
+    const nextTabs = [...base.tabs];
+    /** @type {string[]} */
+    const addedIds = [];
+    for (const bufferId of bufferIds) {
+      if (existing.has(bufferId)) continue;
+      existing.add(bufferId);
+      nextTabs.push(bufferId);
+      addedIds.push(bufferId);
+    }
+    if (addedIds.length === 0) return null;
+    return {
+      record: {
+        ...base,
+        tabs: nextTabs,
+        folderIds: [...base.folderIds],
+        updatedAt: Date.now(),
+      },
+      addedIds,
+      hadLive,
+    };
+  }
+
+  /**
+   * Merge `addedIds` into the live workspace record after `applySyncBatch`
+   * commits. Never replace `live.tabs` or `live.folderIds` wholesale: a user
+   * `addTab`, `removeTab`, `moveTab`, `setActive`, or folder edit during the
+   * IndexedDB transaction already updated `live`, so when `live` diverges from
+   * `prepared.record` we re-save the merged `live` record to IndexedDB.
+   * @param {PreparedWorkspaceTabs} prepared
+   */
+  async function commitPreparedWorkspace(prepared) {
+    const { record: snap, addedIds, hadLive } = prepared;
+    if (dissolved && snap.id === id) return;
+    const live = records.get(snap.id);
+    if (!live) {
+      if (hadLive && snap.id !== MAIN_WORKSPACE) {
+        await deleteWorkspace(snap.id);
+        return;
+      }
+      const stored = {
+        ...snap,
+        tabs: [...snap.tabs],
+        folderIds: [...snap.folderIds],
+      };
+      records.set(stored.id, stored);
+      post("workspace", { record: stored });
+      emit("change", { id: stored.id });
+      return;
+    }
+
+    const present = new Set(live.tabs);
+    for (const bufferId of addedIds) {
+      if (present.has(bufferId)) continue;
+      present.add(bufferId);
+      live.tabs.push(bufferId);
+    }
+
+    const diverged =
+      !sameStrings(live.tabs, snap.tabs) ||
+      !sameStrings(live.folderIds, snap.folderIds) ||
+      live.activeId !== snap.activeId ||
+      live.space !== snap.space ||
+      Boolean(live.initSpace) !== Boolean(snap.initSpace);
+
+    if (diverged) {
+      await save(live);
+      return;
+    }
+
+    live.updatedAt = snap.updatedAt;
+    post("workspace", { record: live });
+    emit("change", { id: live.id });
+  }
+
   /** @param {string} bufferId */
   async function removeTab(bufferId) {
     const record = current();
@@ -483,6 +594,8 @@ export function createWorkspaces({ id }) {
     spaceOwner,
     liveSet,
     addTab,
+    prepareAddTabs,
+    commitPreparedWorkspace,
     removeTab,
     removeTabs,
     moveTab,

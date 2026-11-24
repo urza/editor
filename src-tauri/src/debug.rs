@@ -74,20 +74,25 @@ const FORCE_UPDATE_JS: &str = r#"(async () => {
 /// which path carried each chord on this platform, plus page errors.
 pub const RECORDER_JS: &str = r#"(() => {
   const log = (window.vrttiDesktop.log = []);
+  // Cap the ring so a long session with page errors cannot grow the array forever.
+  const push = (entry) => {
+    if (log.length >= 500) log.shift();
+    log.push(entry);
+  };
   const stamp = () => new Date().toISOString().slice(11, 23);
   window.addEventListener('vrtti:command', (e) => {
-    log.push(stamp() + ' menu event ' + (e.detail && e.detail.id));
+    push(stamp() + ' menu event ' + (e.detail && e.detail.id));
   });
   window.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || !['KeyN', 'KeyS', 'KeyW'].includes(e.code)) return;
     // Read after every listener ran: defaultPrevented then says whether the
     // page's bridge (app/js/ui/desktop.js) took the key.
-    setTimeout(() => log.push(stamp() + ' keydown ' + e.code
+    setTimeout(() => push(stamp() + ' keydown ' + e.code
       + (e.defaultPrevented ? ' (page handled it)' : ' (page did not handle it)')), 0);
   });
-  window.addEventListener('error', (e) => log.push(stamp() + ' page error: ' + e.message));
+  window.addEventListener('error', (e) => push(stamp() + ' page error: ' + e.message));
   window.addEventListener('unhandledrejection', (e) =>
-    log.push(stamp() + ' unhandled rejection: ' + ((e.reason && e.reason.message) || e.reason)));
+    push(stamp() + ' unhandled rejection: ' + ((e.reason && e.reason.message) || e.reason)));
 })();"#;
 
 /// The facts the spike asks for, as text. Same-origin fetch, so the Age

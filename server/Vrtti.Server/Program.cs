@@ -109,8 +109,22 @@ app.Use(async (context, next) =>
     }
 
     var db = context.RequestServices.GetRequiredService<Db>();
-    using (var conn = db.Open())
+    if (path.StartsWithSegments("/api/model"))
     {
+        // Model calls wait on an external LLM for seconds and touch no SQLite tables, so
+        // close the connection immediately instead of holding one across the HTTP call.
+        using var modelConn = db.Open();
+        if (Devices.ByTokenHash(modelConn, Devices.HashToken(bearer)) is not { } modelCaller)
+        {
+            await Unauthorized(context, "unauthorized");
+            return;
+        }
+
+        context.Items[typeof(Caller)] = modelCaller;
+    }
+    else
+    {
+        var conn = context.GetConnection(db);
         if (Devices.ByTokenHash(conn, Devices.HashToken(bearer)) is not { } caller)
         {
             await Unauthorized(context, "unauthorized");
@@ -201,18 +215,19 @@ api.MapPost("/model/diacritics", async (DiacriticsModel model, DiacriticsRequest
         : Results.Ok(new DiacriticsResponse(answer.Text));
 });
 
-api.MapGet("/changes", (HttpContext context, Db db, long? since, int? limit, string? spaces) =>
+api.MapGet("/changes", (HttpContext context, Db db, long? since, int? limit, string? spaces, int? content) =>
 {
     var caller = context.Caller();
     var from = since is > 0 ? since.Value : 0;
     var take = Math.Clamp(limit ?? 200, 1, 500);
+    var includeContent = content != 0;
     var names = (spaces ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     if (!names.All(SpaceLog.IsSpaceName))
     {
         return Results.BadRequest(new ErrorResponse(SpaceLog.BadSpaceName));
     }
 
-    using var conn = db.Open();
+    var conn = context.GetConnection(db);
     var readable = SpaceLog.Readable(conn, caller.Id);
     // "spaces=a,b" narrows the caller's spaces; it never widens them. Absent or empty
     // means all of them.
@@ -222,13 +237,7 @@ api.MapGet("/changes", (HttpContext context, Db db, long? since, int? limit, str
     }
 
     IReadOnlyCollection<string> wanted = names.Length > 0 ? names.ToHashSet() : readable;
-    // One row over the page size answers "is there more?" without a second count query.
-    var changes = Revisions.Changes(conn, from, take + 1, wanted);
-    var more = changes.Count > take;
-    if (more)
-    {
-        changes.RemoveAt(changes.Count - 1);
-    }
+    var (changes, more) = Revisions.Changes(conn, from, take, wanted, includeContent);
 
     // An empty page must not move the cursor backward, so it keeps the old value.
     var next = changes.Count > 0 ? changes[^1].Seq : from;
@@ -275,16 +284,17 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
         : null;
     var serverTime = clock.GetUtcNow().ToUnixTimeMilliseconds();
 
-    using var conn = db.Open();
+    var conn = context.GetConnection(db);
     // BEGIN IMMEDIATE (deferred: false) takes the write lock before the first read. With a
     // deferred transaction two concurrent pushes could both read the same current revision
     // and then race for rev + 1; one would fail on the UNIQUE(doc_id, rev) constraint.
     using var transaction = conn.BeginTransaction(deferred: false);
 
     var readable = SpaceLog.Readable(conn, caller.Id);
-    var current = Revisions.Current(conn, id);
+    // Read only the header from the covering index; the full body is needed on 409 alone.
+    var head = Revisions.CurrentHead(conn, id);
     // 404 and not 403: a device outside the space must not learn that the note exists.
-    if (current is not null && !readable.Contains(current.Space))
+    if (head is not null && !readable.Contains(head.Space))
     {
         return Results.NotFound(new ErrorResponse("unknown document"));
     }
@@ -294,16 +304,16 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
         return Results.Json(new ErrorResponse($"not a member of {space}"), statusCode: 403);
     }
 
-    var currentRev = current?.Rev ?? 0;
+    var currentRev = head?.Rev ?? 0;
     if (request.BaseRev is { } claimed && claimed != currentRev)
     {
         // The client pushed against a revision that is no longer current. It gets the
         // current one back and resolves the conflict locally (architecture.md section 3).
-        return Results.Json(new ConflictResponse(current), statusCode: 409);
+        return Results.Json(new ConflictResponse(Revisions.Current(conn, id)), statusCode: 409);
     }
 
     var rev = currentRev + 1;
-    var prevSpace = current is not null && current.Space != space ? current.Space : null;
+    var prevSpace = head is not null && head.Space != space ? head.Space : null;
     var seq = Revisions.Insert(
         conn, id, rev, request.Kind, request.Content, meta,
         caller.Id, request.ClientTime, serverTime, space, prevSpace);
@@ -314,7 +324,7 @@ api.MapPost("/docs/{id}/revisions", (HttpContext context, Db db, TimeProvider cl
 
 api.MapGet("/docs/{id}", (HttpContext context, Db db, string id) =>
 {
-    using var conn = db.Open();
+    var conn = context.GetConnection(db);
     var change = Revisions.Current(conn, id);
     return change is null || !SpaceLog.Readable(conn, context.Caller().Id).Contains(change.Space)
         ? Results.NotFound(new ErrorResponse("unknown document"))
@@ -323,20 +333,20 @@ api.MapGet("/docs/{id}", (HttpContext context, Db db, string id) =>
 
 api.MapGet("/docs/{id}/revisions", (HttpContext context, Db db, string id) =>
 {
-    using var conn = db.Open();
+    var conn = context.GetConnection(db);
     var readable = SpaceLog.Readable(conn, context.Caller().Id);
-    var current = Revisions.Current(conn, id);
-    return current is null || !readable.Contains(current.Space)
+    var head = Revisions.CurrentHead(conn, id);
+    return head is null || !readable.Contains(head.Space)
         ? Results.NotFound(new ErrorResponse("unknown document"))
         : Results.Ok(Revisions.History(conn, id, readable));
 });
 
 api.MapGet("/docs/{id}/revisions/{rev:long}", (HttpContext context, Db db, string id, long rev) =>
 {
-    using var conn = db.Open();
+    var conn = context.GetConnection(db);
     var readable = SpaceLog.Readable(conn, context.Caller().Id);
-    var current = Revisions.Current(conn, id);
-    var change = current is not null && readable.Contains(current.Space) ? Revisions.One(conn, id, rev) : null;
+    var head = Revisions.CurrentHead(conn, id);
+    var change = head is not null && readable.Contains(head.Space) ? Revisions.One(conn, id, rev) : null;
     return change is null || !readable.Contains(change.Space)
         ? Results.NotFound(new ErrorResponse("unknown revision"))
         : Results.Ok(change);
@@ -351,9 +361,9 @@ api.MapDelete("/docs/{id}/revisions", (HttpContext context, Db db, string id, lo
         return Results.BadRequest(new ErrorResponse("below is required"));
     }
 
-    using var conn = db.Open();
-    var current = Revisions.Current(conn, id);
-    if (current is not null && !SpaceLog.Readable(conn, context.Caller().Id).Contains(current.Space))
+    var conn = context.GetConnection(db);
+    var head = Revisions.CurrentHead(conn, id);
+    if (head is not null && !SpaceLog.Readable(conn, context.Caller().Id).Contains(head.Space))
     {
         return Results.NotFound(new ErrorResponse("unknown document"));
     }

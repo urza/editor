@@ -132,7 +132,6 @@ export function segments(text) {
   let docCs = 0;
   let docEn = 0;
 
-  const lines = text.split("\n");
   let offset = 0;
   /** @type {{ from: number, code: boolean } | null} */
   let open = null;
@@ -140,18 +139,25 @@ export function segments(text) {
   /** @param {number} to */
   function close(to) {
     if (!open) return;
-    const own = open.code ? null : detectLanguage(text.slice(open.from, to));
+    /** @type {Lang | null} */
+    let own = null;
     if (!open.code) {
+      // Score each paragraph once and reuse the counts for both paragraph and
+      // document language verdicts instead of scanning every word twice (C5).
       const s = score(text.slice(open.from, to));
       docCs += s.cs;
       docEn += s.en;
+      if (s.cs > s.en) own = "cs";
+      else if (s.en > s.cs) own = "en";
     }
     paras.push({ from: open.from, to, code: open.code, own });
     open = null;
   }
 
-  for (const line of lines) {
-    const end = offset + line.length;
+  while (offset <= text.length) {
+    const nl = text.indexOf("\n", offset);
+    const end = nl < 0 ? text.length : nl;
+    const line = text.slice(offset, end);
     if (open && open.code) {
       // Inside a fence: only another fence line ends it.
       if (FENCE.test(line)) close(end);
@@ -163,6 +169,7 @@ export function segments(text) {
     } else if (!open) {
       open = { from: offset, code: false };
     }
+    if (nl < 0) break;
     offset = end + 1;
   }
   close(text.length);
