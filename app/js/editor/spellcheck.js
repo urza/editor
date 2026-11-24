@@ -30,6 +30,7 @@ import { Facet, StateEffect, StateField } from "@codemirror/state";
 import { language } from "@codemirror/language";
 import { forEachDiagnostic, forceLinting, linter } from "@codemirror/lint";
 import { openMenu } from "../ui/menu.js";
+import { hasWorkers } from "../model/capabilities.js";
 import * as hunspell from "./hunspell.js";
 import { plainLang } from "./lang.js";
 import { activeLangs, judge, mergeSuggestions } from "./mixed.js";
@@ -54,12 +55,10 @@ const STORAGE_KEY = "vrtti.spellcheck";
 // 600 ms is long enough that a fast typist never triggers a pass mid-word.
 const LINT_DELAY = 600;
 
-// Harper is fast (measured: 10,400 characters in 80 ms in Chromium) but it
-// runs on the main thread, and each pass copies the whole document to wasm.
-// At 100,000 characters a pass costs the better part of a second, which is a
-// visible freeze. Long documents get no spellcheck rather than a stutter.
-// A worker (harper.js also ships WorkerLinter) is the way to lift this cap.
-const MAX_DOC_CHARS = 100000;
+// Main-thread fallback caps linting at 100 KB to avoid freezing input; the
+// dedicated worker lifts the cap to 1 MB with per-paragraph memoization (C5).
+const MAX_DOC_CHARS_FALLBACK = 100000;
+const MAX_DOC_CHARS_WORKER = 1000000;
 
 // Harper offers up to a dozen spellings for a badly mangled word. The tooltip
 // is a row of buttons, so past a handful it stops being a quick fix.
@@ -555,16 +554,161 @@ function typoMark(from, to, word, fixes) {
   };
 }
 
+// ---- Dedicated spellcheck worker bridge (C5) --------------------------------
+//
+// Runs Harper and Hunspell off the main thread when `Worker` is available,
+// falling back to main-thread WASM only in environments without Web Workers.
+
+/** @type {Worker | null} */
+let spellWorker = null;
+let spellWorkerBroken = false;
+let nextWorkerMsgId = 1;
+let nextWorkerLintReqId = 0;
+/** @type {Map<number, { resolve: (v: any) => void, reject: (e: any) => void }>} */
+const workerPending = new Map();
+
+function useWorker() {
+  return hasWorkers && !spellWorkerBroken;
+}
+
+function getSpellWorker() {
+  if (!useWorker()) return null;
+  if (!spellWorker) {
+    try {
+      spellWorker = new Worker(new URL("./spellcheck.worker.js", import.meta.url), {
+        type: "module",
+      });
+      spellWorker.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || typeof data !== "object") return;
+        if (data.event === "engine-ready" || data.event === "idle-filled") {
+          relintAll();
+          return;
+        }
+        const entry = workerPending.get(data.id);
+        if (!entry) return;
+        workerPending.delete(data.id);
+        if (data.ok) entry.resolve(data.result);
+        else entry.reject(new Error(data.error || "spellcheck worker error"));
+      });
+      spellWorker.addEventListener("error", (err) => {
+        console.error("[vrtti] spellcheck worker failed, falling back to main thread", err);
+        spellWorkerBroken = true;
+        spellWorker = null;
+        for (const [, entry] of workerPending) entry.reject(new Error("worker crashed"));
+        workerPending.clear();
+        relintAll();
+      });
+    } catch (err) {
+      console.error("[vrtti] spellcheck worker unavailable", err);
+      spellWorkerBroken = true;
+      return null;
+    }
+  }
+  return spellWorker;
+}
+
+/** @param {Record<string, any>} payload @returns {Promise<any>} */
+function callWorker(payload) {
+  const worker = getSpellWorker();
+  if (!worker) return Promise.reject(new Error("no spellcheck worker"));
+  const id = nextWorkerMsgId++;
+  return new Promise((resolve, reject) => {
+    workerPending.set(id, { resolve, reject });
+    worker.postMessage({ ...payload, id });
+  });
+}
+
 /**
- * The lint source. Runs on the main thread; see MAX_DOC_CHARS.
+ * Turn a serialized worker action back into a CodeMirror diagnostic Action.
+ * @param {{ kind: number, text: string, name: string }} item
+ * @returns {import("@codemirror/lint").Action}
+ */
+function actionFromSerialized(item) {
+  const { kind, text, name } = item;
+  return {
+    name,
+    apply: (view, from, to) => {
+      const change =
+        kind === INSERT_AFTER
+          ? { from: to, to, insert: text }
+          : { from, to, insert: kind === REMOVE ? "" : text };
+      view.dispatch({
+        changes: change,
+        selection: { anchor: change.from + change.insert.length },
+        userEvent: "input.complete",
+      });
+    },
+  };
+}
+
+/**
+ * Wrap serialized worker Harper lint objects in the same shape as `LocalLinter`
+ * so command callers and `B5` run off-thread with zero main-thread Long Tasks.
+ */
+function makeWorkerHarperProxy() {
+  return {
+    /** @param {string} text @param {any} [options] */
+    async lint(text, options) {
+      const items = await callWorker({ op: "harperLint", text, options });
+      return items.map((/** @type {any} */ item) => ({
+        span: () => ({ start: item.start, end: item.end, free() {} }),
+        lint_kind: () => item.kind,
+        lint_kind_pretty: () => item.kindPretty,
+        message: () => item.message,
+        suggestions: () =>
+          item.suggestions.map((/** @type {any} */ s) => ({
+            kind: () => s.kind,
+            get_replacement_text: () => s.text,
+            free() {},
+          })),
+        free() {},
+      }));
+    },
+    /** @param {string} word */
+    isLikelyEnglish(word) {
+      return callWorker({ op: "isLikelyEnglish", word });
+    },
+  };
+}
+
+/**
+ * The lint source. Uses `spellcheck.worker.js` when available (up to 1 MB with
+ * stale-pass cancellation and paragraph caching), falling back to the main
+ * thread up to 100 KB where Web Workers are unavailable.
  * @param {EditorView} view
  * @returns {Promise<readonly import("@codemirror/lint").Diagnostic[]>}
  */
 async function spellSource(view) {
   lintedGeneration = generation;
-  if (!enabled || !isProse(view) || view.state.doc.length > MAX_DOC_CHARS) return [];
+  const maxChars = useWorker() ? MAX_DOC_CHARS_WORKER : MAX_DOC_CHARS_FALLBACK;
+  if (!enabled || !isProse(view) || view.state.doc.length > maxChars) return [];
 
   const langs = activeLangs(view.state.facet(noteSpellOff)?.());
+  if (!langs.cs && !langs.en) return [];
+
+  if (useWorker()) {
+    const startDoc = view.state.doc;
+    const reqId = ++nextWorkerLintReqId;
+    const text = startDoc.toString();
+    try {
+      const res = await callWorker({ op: "lint", text, langs, reqId });
+      if (res.stale || reqId !== nextWorkerLintReqId || view.state.doc !== startDoc) {
+        return [];
+      }
+      return (res.diagnostics ?? []).map((/** @type {any} */ d) => ({
+        from: d.from,
+        to: d.to,
+        severity: d.severity,
+        message: d.message,
+        source: d.source,
+        actions: (d.actions ?? []).map(actionFromSerialized),
+      }));
+    } catch {
+      if (useWorker()) return [];
+    }
+  }
+
   // A checker that failed to load counts as off: the other one then checks
   // every word (plan, "A checker that is not ready").
   if (hunspell.isBroken()) langs.cs = false;
@@ -666,6 +810,17 @@ async function spellSource(view) {
  * @returns {Promise<{ harper: any, czech: boolean }>}
  */
 export async function enginesForCommand() {
+  if (useWorker()) {
+    try {
+      const status = await callWorker({ op: "init", cs: true, en: true });
+      return {
+        harper: status.enReady ? makeWorkerHarperProxy() : null,
+        czech: Boolean(status.csReady),
+      };
+    } catch {
+      // Fall through to main-thread fallback if worker startup failed.
+    }
+  }
   const [harper, czech] = await Promise.all([
     loadHarper(),
     hunspell.load().then(
@@ -674,6 +829,92 @@ export async function enginesForCommand() {
     ),
   ]);
   return { harper, czech };
+}
+
+/**
+ * Compute Czech diacritic twins for `words` inside the spellcheck worker when
+ * available so command callers and benchmarks avoid main-thread WASM loads.
+ * @param {string[]} words
+ * @returns {Promise<string[][]>}
+ */
+export async function twinsForCommand(words) {
+  if (useWorker()) {
+    try {
+      return await callWorker({ op: "twinsBatch", words });
+    } catch {
+      // Fall through to main-thread Hunspell.
+    }
+  }
+  await hunspell.load();
+  return words.map((w) => hunspell.twinsNow(w));
+}
+
+/**
+ * Analyze prose words for `addDiacritics` inside the worker when available.
+ * @param {{ word: string, from: number, to: number }[]} prose
+ */
+export async function analyzeDiacriticsWords(prose) {
+  if (useWorker()) {
+    try {
+      return await callWorker({ op: "analyzeDiacritics", prose });
+    } catch {
+      // Fall through to main-thread fallback.
+    }
+  }
+  const { harper, czech } = await enginesForCommand();
+  if (!czech) return { czechLoaded: false };
+  /** @type {[number, string][]} */
+  const localEntries = [];
+  let ambiguous = 0;
+  /** @type {number[]} */
+  const plainOffsets = [];
+  /** @type {string[]} */
+  const englishOnlyWords = [];
+  /** @type {number[]} */
+  const englishAtOffsets = [];
+  let n = 0;
+  for (const { word, from: at } of prose) {
+    if (++n % 200 === 0) await new Promise((resolve) => setTimeout(resolve));
+    if (hunspell.isWord(word)) continue;
+    if (harper && (await englishNow(harper, word))) {
+      englishOnlyWords.push(word);
+      englishAtOffsets.push(at);
+      continue;
+    }
+    const twinList = hunspell.twinsNow(word);
+    if (twinList.length === 0) continue;
+    plainOffsets.push(at);
+    if (twinList.length === 1) localEntries.push([at, twinList[0]]);
+    else ambiguous++;
+  }
+  return {
+    czechLoaded: true,
+    localEntries,
+    ambiguous,
+    plainOffsets,
+    englishOnlyWords,
+    englishAtOffsets,
+  };
+}
+
+/**
+ * Return the subset of `words` accepted by the Czech dictionary, evaluated in
+ * the spellcheck worker when available.
+ * @param {string[]} words
+ * @returns {Promise<Set<string>>}
+ */
+export async function checkCzechWords(words) {
+  if (words.length === 0) return new Set();
+  if (useWorker()) {
+    try {
+      const valid = await callWorker({ op: "checkCzechWords", words });
+      return new Set(valid);
+    } catch {
+      // Fall through to main-thread Hunspell.
+    }
+  }
+  await hunspell.load();
+  return new Set(words.filter((w) => hunspell.isWord(w)));
 }
 
 /**

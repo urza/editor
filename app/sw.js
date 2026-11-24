@@ -3,9 +3,13 @@
 // app files change. gen_sw.py also writes the version into the line below,
 // so this file changes with every build: an iPhone ignored a change of the
 // imported sw-precache.js alone and kept an old build. Do not drop the ?v=.
-importScripts("./sw-precache.js?v=2aa84b44a169");
+importScripts("./sw-precache.js?v=473f14ea36d5-6ebf48c2260d");
 
 const CACHE = "vrtti-" + self.__PRECACHE.version;
+// Spellcheck WASM + Czech dictionary (~12.1 MB on the wire) live in their own
+// content-addressed cache so app-only deploys keep offline spellcheck intact
+// without re-downloading unchanged dictionaries on every release (C4).
+const SPELL_CACHE = "vrtti-spell-" + self.__PRECACHE.spellVersion;
 
 // The ~4,000 Twemoji SVGs are not precached (tools/gen_sw.py skips them); they
 // are cached one by one on first use. Their cache name is deliberately fixed
@@ -15,12 +19,24 @@ const CACHE = "vrtti-" + self.__PRECACHE.version;
 const EMOJI_CACHE = "vrtti-emoji";
 const EMOJI_PATH = "/vendor/twemoji/";
 
+async function ensureSpellPrecache() {
+  const urls = self.__PRECACHE.spell || [];
+  if (urls.length === 0) return;
+  const cache = await caches.open(SPELL_CACHE);
+  const missing = [];
+  for (const url of urls) {
+    if (!(await cache.match(url))) missing.push(url);
+  }
+  if (missing.length > 0) await cache.addAll(missing);
+}
+
 self.addEventListener("install", (event) => {
+  const appUrls = self.__PRECACHE.app || self.__PRECACHE.files || [];
   event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(self.__PRECACHE.files))
-      .then(() => self.skipWaiting())
+    Promise.all([
+      caches.open(CACHE).then((cache) => cache.addAll(appUrls)),
+      ensureSpellPrecache(),
+    ]).then(() => self.skipWaiting())
   );
 });
 
@@ -31,7 +47,7 @@ self.addEventListener("activate", (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((k) => k !== CACHE && k !== EMOJI_CACHE)
+            .filter((k) => k !== CACHE && k !== SPELL_CACHE && k !== EMOJI_CACHE)
             .map((k) => caches.delete(k))
         )
       )

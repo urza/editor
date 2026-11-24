@@ -463,7 +463,11 @@ async function runB5Platform(chromePath, srvUrl, { mobile = false, cpuThrottle =
         const lint95kMs = await lintText(${JSON.stringify(en95k)});
 
         const tCs = performance.now();
-        for (const w of ${JSON.stringify(csWords)}) hunspell.twinsNow(w);
+        if (typeof spellMod.twinsForCommand === "function") {
+          await spellMod.twinsForCommand(${JSON.stringify(csWords)});
+        } else {
+          for (const w of ${JSON.stringify(csWords)}) hunspell.twinsNow(w);
+        }
         const twins20Ms = +(performance.now() - tCs).toFixed(1);
 
         return {

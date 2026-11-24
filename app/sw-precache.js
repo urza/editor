@@ -1,6 +1,7 @@
 self.__PRECACHE = {
-  "version": "2aa84b44a169",
-  "files": [
+  "version": "473f14ea36d5",
+  "spellVersion": "6ebf48c2260d",
+  "app": [
     "./",
     "./app.css",
     "./icons/icon-192.png",
@@ -25,6 +26,7 @@ self.__PRECACHE = {
     "./js/editor/markdown.js",
     "./js/editor/mixed.js",
     "./js/editor/spellcheck.js",
+    "./js/editor/spellcheck.worker.js",
     "./js/editor/textlang.js",
     "./js/editor/transform.js",
     "./js/main.js",
@@ -160,6 +162,10 @@ self.__PRECACHE = {
     "./vendor/age-encryption/webauthn.js",
     "./vendor/age-encryption/x25519.js",
     "./vendor/crelt/index.js",
+    "./vendor/style-mod/index.js",
+    "./vendor/w3c-keyname/index.js"
+  ],
+  "spell": [
     "./vendor/dictionary-cs/index.aff",
     "./vendor/dictionary-cs/index.dic",
     "./vendor/dictionary-cs/license",
@@ -172,8 +178,6 @@ self.__PRECACHE = {
     "./vendor/hunspell/dist/Utilities.js",
     "./vendor/hunspell/dist/WasmMemoryManager.js",
     "./vendor/hunspell/wasm/hunspell.js",
-    "./vendor/hunspell/wasm/hunspell.wasm",
-    "./vendor/style-mod/index.js",
-    "./vendor/w3c-keyname/index.js"
+    "./vendor/hunspell/wasm/hunspell.wasm"
   ]
 };

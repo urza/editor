@@ -151,6 +151,7 @@ export function twinsOf(word, budget) {
  * @returns {string[]}
  */
 export function twinsNow(word) {
+  if (!engine) return [];
   return cache.get("t" + word) ?? compute("t" + word);
 }
 

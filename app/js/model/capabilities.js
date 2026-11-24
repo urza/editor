@@ -151,9 +151,16 @@ export async function checkForUpdate(onStatus = () => {}, opts = {}) {
     }
   }
   if (!took && "caches" in window) {
-    // The emoji cache stays: its files never change (sw.js).
+    // Keep both the emoji cache and the content-addressed spellcheck cache so
+    // a slow-network update fallback never discards 12 MB of dictionaries (C4).
     for (const name of await caches.keys()) {
-      if (name.startsWith("vrtti-") && name !== "vrtti-emoji") await caches.delete(name);
+      if (
+        name.startsWith("vrtti-") &&
+        name !== "vrtti-emoji" &&
+        !name.startsWith("vrtti-spell-")
+      ) {
+        await caches.delete(name);
+      }
     }
     console.log("[vrtti] the service worker kept its old build; its caches are gone");
   }
