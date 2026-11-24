@@ -1,0 +1,1581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>vrtti · Full-Stack Performance Review and Proposed Solutions</title>
+<style>
+/* Matches the Mariana dark palette in app/app.css and docs/note-lifecycle.html.
+   Single standalone file: no external fonts, scripts, or network assets needed. */
+:root {
+  --bg: #2E3238;
+  --panel: #22262A;
+  --deep: #1B1F23;
+  --raise: #393F46;
+  --rule: #515D6B;
+  --rule-strong: #647382;
+  --fg: #D9D9D9;
+  --head: #E6E6E6;
+  --dim: #8A96A3;
+  --orange: #F9AE58;
+  --green: #99C794;
+  --red: #EC5F67;
+  --blue: #6699CC;
+  --purple: #C695C6;
+  --cyan: #5FB3B3;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: Consolas, Menlo, "DejaVu Sans Mono", monospace;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+img, svg { max-width: 100%; }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* ---- Top presentation bar ---- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--raise);
+}
+.topbar-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 10px max(16px, env(safe-area-inset-left, 0px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--head);
+  font-weight: 500;
+}
+.topbar-brand img { width: 22px; height: 22px; border-radius: 5px; }
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.nav-link {
+  font-size: 12px;
+  color: var(--dim);
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+.nav-link:hover { background: var(--raise); color: var(--head); text-decoration: none; }
+.mode-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn {
+  appearance: none;
+  border: 1px solid var(--rule);
+  background: var(--raise);
+  color: var(--head);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  min-height: 32px;
+}
+.btn:hover { border-color: var(--blue); background: color-mix(in srgb, var(--blue) 18%, var(--raise)); }
+.btn.primary {
+  background: color-mix(in srgb, var(--blue) 26%, var(--panel));
+  border-color: var(--blue);
+  color: var(--head);
+}
+.slide-hud {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+body.deck-mode .slide-hud { display: flex; }
+body.deck-mode .topbar-nav { display: none; }
+
+/* ---- Page & Slide layout ---- */
+.wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding-block: 28px 80px;
+  padding-left: max(18px, env(safe-area-inset-left, 0px));
+  padding-right: max(18px, env(safe-area-inset-right, 0px));
+}
+
+.slide {
+  background: transparent;
+  padding-block: 28px 34px;
+  border-bottom: 1px solid var(--raise);
+}
+.slide:last-of-type { border-bottom: 0; }
+
+/* Slide deck mode shows one focused section at a time. */
+body.deck-mode {
+  background: var(--deep);
+}
+body.deck-mode .wrap {
+  padding-block: 20px 44px;
+}
+body.deck-mode .slide {
+  display: none;
+  background: var(--bg);
+  border: 1px solid var(--raise);
+  border-radius: 10px;
+  padding: 28px 32px 32px;
+  min-height: calc(100vh - 110px);
+}
+body.deck-mode .slide.is-active { display: block; }
+body.deck-mode .slide-footer-bar {
+  display: flex;
+}
+.slide-footer-bar {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: var(--panel);
+  z-index: 50;
+}
+.slide-progress {
+  height: 100%;
+  background: var(--blue);
+  width: 0%;
+  transition: width 160ms ease;
+}
+
+/* ---- Typography ---- */
+.brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.brand-row img { width: 34px; height: 34px; border-radius: 7px; }
+.eyebrow {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.slide-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+.slide-num {
+  color: var(--blue);
+  font-weight: 600;
+}
+h1 {
+  font-size: clamp(24px, 3.6vw, 34px);
+  font-weight: 600;
+  color: var(--head);
+  margin: 0 0 10px;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+h2 {
+  font-size: clamp(19px, 2.4vw, 24px);
+  font-weight: 600;
+  color: var(--head);
+  margin: 0 0 8px;
+  line-height: 1.25;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--head);
+  margin: 0 0 6px;
+}
+p { margin: 0 0 10px; max-width: 78ch; }
+.lede { color: var(--dim); font-size: 15.5px; max-width: 74ch; }
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+  margin-top: 14px;
+}
+code, kbd {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--head);
+  background: var(--panel);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+kbd {
+  background: var(--raise);
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+}
+
+/* ---- KPI Strip ---- */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.kpi {
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-top: 3px solid var(--c, var(--red));
+  border-radius: 7px;
+  padding: 14px 15px;
+}
+.kpi-val {
+  font-family: var(--mono);
+  font-size: 23px;
+  font-weight: 700;
+  color: var(--c, var(--head));
+  line-height: 1.15;
+}
+.kpi-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--head);
+  margin-top: 6px;
+}
+.kpi-sub {
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ---- Panels, Split Cards, Callouts ---- */
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.split-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-radius: 8px;
+  padding: 16px 18px;
+  min-width: 0;
+}
+.card.problem { border-left: 3px solid var(--red); }
+.card.solution { border-left: 3px solid var(--green); }
+.card.accent { border-left: 3px solid var(--blue); }
+.card.warn { border-left: 3px solid var(--orange); }
+.card.purple { border-left: 3px solid var(--purple); }
+.card ul { margin: 8px 0 0; padding-left: 18px; }
+.card li { margin-bottom: 6px; font-size: 13.5px; }
+.card li:last-child { margin-bottom: 0; }
+.card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.card-title h3 { margin: 0; }
+
+.callout {
+  background: color-mix(in srgb, var(--c, var(--blue)) 11%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--c, var(--blue)) 32%, var(--raise));
+  border-radius: 7px;
+  padding: 13px 16px;
+  margin-top: 14px;
+  font-size: 13.5px;
+}
+.callout b { color: var(--head); }
+
+/* ---- Pills / Tags ---- */
+.pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--c, var(--dim)) 20%, transparent);
+  color: var(--c, var(--dim));
+}
+.p-crit { --c: var(--red); }
+.p-high { --c: var(--orange); }
+.p-med  { --c: var(--blue); }
+.p-ok   { --c: var(--green); }
+.p-srv  { --c: var(--purple); }
+.p-desk { --c: var(--cyan); }
+
+/* ---- SVG Chart Container ---- */
+.viz {
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+  overflow-x: auto;
+}
+.viz-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.viz-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--head);
+}
+.viz-sub {
+  font-size: 12px;
+  color: var(--dim);
+}
+.viz svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.viz svg text {
+  font-family: var(--sans);
+}
+.viz svg text.mono {
+  font-family: var(--mono);
+}
+
+/* ---- Tables ---- */
+.tbl {
+  overflow-x: auto;
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-radius: 8px;
+  margin-top: 14px;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 620px;
+}
+th, td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--raise);
+  vertical-align: top;
+  font-size: 13px;
+}
+tr:last-child td { border-bottom: 0; }
+th {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--deep);
+}
+td.num, th.num {
+  text-align: right;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+.bad { color: var(--red); font-weight: 600; }
+.warn-txt { color: var(--orange); font-weight: 600; }
+.good { color: var(--green); font-weight: 600; }
+
+/* ---- Filterable Findings Explorer ---- */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  align-items: center;
+}
+.filter-group {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  padding: 3px;
+  border-radius: 7px;
+  flex-wrap: wrap;
+}
+.fbtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  min-height: 28px;
+}
+.fbtn:hover { color: var(--head); }
+.fbtn.active {
+  background: var(--raise);
+  color: var(--head);
+}
+.finding-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+  margin-left: auto;
+}
+.findings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.fcard {
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-top: 3px solid var(--c, var(--blue));
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fcard.hidden { display: none; }
+.fcard-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.fcard-id {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--head);
+}
+.fcard h3 { font-size: 14px; margin: 0; line-height: 1.35; }
+.fcard-where {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+.fcard-box {
+  background: var(--deep);
+  border-radius: 6px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+}
+.fcard-box b {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+.fcard-box.prob b { color: var(--red); }
+.fcard-box.sol b { color: var(--green); }
+
+/* ---- Code block ---- */
+pre {
+  margin: 10px 0 0;
+  background: var(--deep);
+  border: 1px solid var(--raise);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+
+/* ---- Roadmap ---- */
+.phase-col {
+  background: var(--panel);
+  border: 1px solid var(--raise);
+  border-top: 3px solid var(--c, var(--blue));
+  border-radius: 8px;
+  padding: 16px;
+}
+.phase-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--c, var(--blue));
+  font-weight: 700;
+}
+.phase-col h3 { margin: 4px 0 10px; font-size: 15px; }
+.phase-col ol { margin: 0; padding-left: 18px; }
+.phase-col li { font-size: 13px; margin-bottom: 8px; }
+.phase-col li b { color: var(--head); }
+
+.src {
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--raise);
+}
+
+/* ---- Responsive (Phone / Narrow screens) ---- */
+@media (max-width: 820px) {
+  .split, .split-3 { grid-template-columns: 1fr; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar-nav { display: none; }
+  body.deck-mode .slide { padding: 18px 16px 24px; min-height: auto; }
+}
+@media (max-width: 560px) {
+  .findings-grid { grid-template-columns: 1fr; }
+  .kpi-val { font-size: 19px; }
+  .finding-count { margin-left: 0; width: 100%; }
+}
+@media print {
+  .topbar, .slide-footer-bar, .filters { display: none !important; }
+  body, body.deck-mode { background: #fff; color: #111; }
+  .slide, body.deck-mode .slide { display: block !important; border: 0; break-after: page; padding: 12px 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-brand">
+      <img src="data:image/png;base64,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" alt="vrtti icon">
+      <span>vrtti · Performance Review</span>
+    </div>
+    <nav class="topbar-nav" aria-label="Sections">
+      <a class="nav-link" href="#overview">Summary</a>
+      <a class="nav-link" href="#bigfiles">Big Files</a>
+      <a class="nav-link" href="#scale">Note Scale</a>
+      <a class="nav-link" href="#network">Updates</a>
+      <a class="nav-link" href="#workers">Workers</a>
+      <a class="nav-link" href="#server">Server</a>
+      <a class="nav-link" href="#desktop">Desktop</a>
+      <a class="nav-link" href="#explorer">All Findings</a>
+      <a class="nav-link" href="#roadmap">Roadmap</a>
+    </nav>
+    <div class="mode-controls">
+      <div class="slide-hud" aria-live="polite">
+        <button class="btn" id="prev-slide" type="button" title="Previous slide (Left arrow)">Prev</button>
+        <span id="slide-counter">1 / 10</span>
+        <button class="btn" id="next-slide" type="button" title="Next slide (Right arrow)">Next</button>
+      </div>
+      <button class="btn primary" id="toggle-deck" type="button" title="Toggle slide presentation mode (P)">Present Slides</button>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <!-- SLIDE 1: OVERVIEW -->
+  <section class="slide is-active" id="overview" data-title="Overview">
+    <div class="brand-row">
+      <img src="data:image/png;base64,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" alt="vrtti icon">
+      <p class="eyebrow">vrtti · urza/editor · commit 0bafa3a</p>
+    </div>
+    <h1>Full-Stack Performance Review and Proposed Solutions</h1>
+    <p class="lede">This audit tests vrtti across the client PWA (<code>app/</code>), the ASP.NET Core <code>.NET 10</code> SQLite sync server (<code>server/</code>), and the Tauri desktop shell (<code>src-tauri/</code>). Live benchmarks ran on desktop, 4x CPU-throttled phones, simulated 3G links, and a server loaded with 10,000 notes and 100,000 revisions.</p>
+    <p class="meta">
+      <span><a href="https://github.com/urza/editor/blob/main/performance-review.md">Full Markdown report</a></span>
+      <span><a href="how-it-works.html">How vrtti works</a></span>
+      <span><a href="note-lifecycle.html">Where a note goes</a></span>
+      <span><a href="trust-model.html">How vrtti trusts devices</a></span>
+      <span><a href="https://github.com/urza/editor">GitHub repository</a></span>
+    </p>
+
+    <div class="kpis">
+      <div class="kpi" style="--c: var(--red)">
+        <div class="kpi-val">979 ms</div>
+        <div class="kpi-label">5 MB keystroke freeze</div>
+        <div class="kpi-sub">Logs/CSVs without blank lines in default Markdown. Drops to 4.3 ms in plain mode.</div>
+      </div>
+      <div class="kpi" style="--c: var(--red)">
+        <div class="kpi-val">344 ms</div>
+        <div class="kpi-label">Typing with drawer open</div>
+        <div class="kpi-sub">Every key destroys and rebuilds 2,500 Recent rows in <code>sidebar.js</code>.</div>
+      </div>
+      <div class="kpi" style="--c: var(--orange)">
+        <div class="kpi-val">120.8 s</div>
+        <div class="kpi-label">Fast 3G SW update</div>
+        <div class="kpi-sub">23.05 MB monolithic precache breaks the 30 s update timeout.</div>
+      </div>
+      <div class="kpi" style="--c: var(--red)">
+        <div class="kpi-val">2,385 ms</div>
+        <div class="kpi-label">Phone 4x spellcheck load</div>
+        <div class="kpi-sub">Main-thread Harper + Hunspell WASM freezes the UI over 2 seconds.</div>
+      </div>
+      <div class="kpi" style="--c: var(--orange)">
+        <div class="kpi-val">76.5 MB</div>
+        <div class="kpi-label">Phone heap at 5k notes</div>
+        <div class="kpi-sub">Boot loads every body into RAM and decrypts encrypted notes eagerly.</div>
+      </div>
+      <div class="kpi" style="--c: var(--purple)">
+        <div class="kpi-val">98.6 ms</div>
+        <div class="kpi-label">GET /api/spaces (100k revs)</div>
+        <div class="kpi-sub">Linear scan of full edit history. 91.4% bytes wasted on Titles only.</div>
+      </div>
+    </div>
+
+    <div class="callout" style="--c: var(--blue)">
+      <b>How to read this page:</b> Scroll normally for the full report, or click <b>Present Slides</b> (shortcut <kbd>P</kbd>) to step through one section per slide with <kbd>&larr;</kbd> and <kbd>&rarr;</kbd>. Every red card shows a measured bottleneck; every green card shows the matching proposed fix.
+    </div>
+  </section>
+
+  <!-- SLIDE 2: BIG FILES SMOKING GUN -->
+  <section class="slide" id="bigfiles" data-title="Big Files">
+    <div class="slide-kicker"><span class="slide-num">02 / 10</span><span>Client Editor · Critical Finding C2 + H2</span></div>
+    <h2>Big Files: Why a 5 MB Log Freezes Every Keystroke for Nearly One Second</h2>
+    <p class="lede"><code>lang.js</code> has nine language modes and no plain-text mode. <code>DEFAULT_LANG</code> is <code>"markdown"</code>, so every <code>.txt</code>, <code>.log</code>, <code>.csv</code>, and scratch note runs <code>@lezer/markdown</code>.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">Measured Keystroke Latency on Large Files (Lower Is Better)</span>
+        <span class="viz-sub">V8 CPU profile traced 93.8% of 428.9 ms dispatch to @lezer/markdown finishLeaf()</span>
+      </div>
+      <svg viewBox="0 0 920 265" role="img" aria-label="Bar chart comparing keystroke latency: 5 MB log in default markdown takes 449 ms dispatch and 979 ms frame, 1 MB on Phone 4x takes 393 ms, 5 MB markdown with blank lines takes 6.8 ms, and 5 MB with plain mode takes 4.3 ms.">
+        <!-- 16.7ms frame budget reference line -->
+        <line x1="295" y1="18" x2="295" y2="236" stroke="#99C794" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="301" y="28" fill="#99C794" font-size="11" class="mono">16.7 ms (60 fps)</text>
+
+        <!-- Row 1 -->
+        <text x="8" y="58" fill="#E6E6E6" font-size="12.5" font-weight="600">5 MB log (no blank lines)</text>
+        <text x="8" y="74" fill="#8A96A3" font-size="11">Desktop · default markdown</text>
+        <rect x="285" y="42" width="540" height="22" rx="4" fill="#EC5F67" fill-opacity="0.28" stroke="#EC5F67" stroke-width="1"/>
+        <rect x="285" y="42" width="248" height="22" rx="4" fill="#EC5F67"/>
+        <text x="833" y="57" fill="#EC5F67" font-size="12" font-weight="700" class="mono">449 / 979 ms</text>
+        <text x="293" y="57" fill="#1B1F23" font-size="11" font-weight="700" class="mono">dispatch 449 ms</text>
+
+        <!-- Row 2 -->
+        <text x="8" y="106" fill="#E6E6E6" font-size="12.5" font-weight="600">1 MB log (no blank lines)</text>
+        <text x="8" y="122" fill="#8A96A3" font-size="11">Phone 4x · default markdown</text>
+        <rect x="285" y="90" width="217" height="22" rx="4" fill="#EC5F67" fill-opacity="0.3" stroke="#EC5F67" stroke-width="1"/>
+        <rect x="285" y="90" width="196" height="22" rx="4" fill="#EC5F67"/>
+        <text x="510" y="105" fill="#EC5F67" font-size="12" font-weight="700" class="mono">356 / 393 ms</text>
+
+        <!-- Row 3 -->
+        <text x="8" y="154" fill="#E6E6E6" font-size="12.5" font-weight="600">1,000-row Markdown table</text>
+        <text x="8" y="170" fill="#8A96A3" font-size="11">Phone 4x · 64 KB note (fillsOf)</text>
+        <rect x="285" y="138" width="64" height="22" rx="4" fill="#F9AE58" fill-opacity="0.35" stroke="#F9AE58" stroke-width="1"/>
+        <rect x="285" y="138" width="29" height="22" rx="4" fill="#F9AE58"/>
+        <text x="357" y="153" fill="#F9AE58" font-size="12" font-weight="700" class="mono">51.6 / 114.8 ms</text>
+
+        <!-- Row 4 -->
+        <text x="8" y="202" fill="#E6E6E6" font-size="12.5" font-weight="600">5 MB prose (blank lines)</text>
+        <text x="8" y="218" fill="#8A96A3" font-size="11">Desktop · default markdown</text>
+        <rect x="285" y="186" width="10" height="22" rx="4" fill="#6699CC"/>
+        <text x="303" y="201" fill="#6699CC" font-size="12" font-weight="700" class="mono">4.2 to 6.8 ms dispatch (open: 32.3 ms)</text>
+
+        <!-- Row 5 -->
+        <text x="8" y="246" fill="#99C794" font-size="12.5" font-weight="600">5 MB log · Proposed plain mode</text>
+        <text x="8" y="260" fill="#8A96A3" font-size="11">Desktop · parser disabled</text>
+        <rect x="285" y="232" width="7" height="22" rx="4" fill="#99C794"/>
+        <text x="300" y="247" fill="#99C794" font-size="12" font-weight="700" class="mono">3.1 to 6.3 ms (~100x faster; open 18.7 ms = 28x faster)</text>
+      </svg>
+    </div>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Why It Happens</h3><span class="pill p-crit">C2 + H2</span></div>
+        <ul>
+          <li><b>Unbounded Markdown leaf:</b> Consecutive non-blank lines form one 5 MB <code>Paragraph</code> leaf. <code>finishLeaf()</code> parses the entire leaf synchronously on every keystroke.</li>
+          <li><b>Whole-table decoration (<code>markdown.js:199</code>):</b> <code>fillsOf()</code> walks every row and cell on every edit and scroll, running <code>/\p{Extended_Pictographic}/u</code> per character.</li>
+          <li><b>Synchronous word count (<code>statusbar.js:109</code>):</b> Selection changes run <code>countWords(sliceDoc)</code> synchronously. <code>Ctrl+A</code> on 5 MB takes <b>27.7 ms dispatch / 512.7 ms frame</b>.</li>
+          <li><b>Whole-file sniff and paste check:</b> <code>lang.js:281</code> runs <code>JSON.parse()</code> and <code>split("\n")</code> on full multi-MB files. <code>editor.js:348</code> flattens the full pre-paste doc.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Proposed Solutions</h3><span class="pill p-ok">Phase 0</span></div>
+        <ul>
+          <li><b>Add <code>"plain"</code> mode in <code>lang.js</code>:</b> Map <code>.log</code>, <code>.csv</code>, and <code>.tsv</code> to <code>MODES.plain = () =&gt; []</code>.</li>
+          <li><b>Auto-guard large files:</b> Switch to <code>"plain"</code> above <code>512 KB</code> or when a single paragraph exceeds <code>64 KB</code>, with a status bar override. Disable line wrap on lines over <code>20 KB</code>.</li>
+          <li><b>Cache table widths + visible rows only:</b> Reuse widths when <code>docChanged</code> is false, build fill widgets only in <code>view.visibleRanges</code>, and fast-path ASCII before regex.</li>
+          <li><b>Slice and debounce:</b> Debounce selection word count above 20k chars. Slice the first 16 KB in <code>sniff()</code>. Scan <code>before.iterLines()</code> with early exit on paste.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 3: PER-KEYSTROKE CASCADE & NOTE SCALE -->
+  <section class="slide" id="scale" data-title="Thousands of Notes">
+    <div class="slide-kicker"><span class="slide-num">03 / 10</span><span>Client Model &amp; Sidebar · Critical Findings C1 + C3</span></div>
+    <h2>Thousands of Notes: Per-Keystroke Sidebar Rebuilds and Full-Vault RAM Load</h2>
+    <p class="lede">Every keystroke flattens the document, emits a global <code>"change"</code> event, and rebuilds the entire sidebar DOM. Startup also pulls every note body into memory and decrypts all encrypted notes.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">Typing Hot Path: Current Cascade vs Proposed Scoped Update</span>
+        <span class="viz-sub">Measured at 5,000 notes (2,500 Recent rows) and 1,000 open tabs</span>
+      </div>
+      <svg viewBox="0 0 920 220" role="img" aria-label="Flow diagram comparing current per-keystroke cascade taking up to 344 ms against proposed scoped dirty-flag update taking under 1 ms.">
+        <defs>
+          <marker id="arr-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#EC5F67"/></marker>
+          <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#99C794"/></marker>
+        </defs>
+
+        <!-- Current path -->
+        <text x="10" y="22" fill="#EC5F67" font-size="11.5" font-weight="700" class="mono">TODAY (EVERY KEYSTROKE · UP TO 344 ms)</text>
+        <rect x="10" y="34" width="110" height="54" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.4"/>
+        <text x="65" y="57" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">Keystroke</text>
+        <text x="65" y="74" text-anchor="middle" fill="#8A96A3" font-size="10.5">editor.js:323</text>
+
+        <line x1="120" y1="61" x2="148" y2="61" stroke="#EC5F67" stroke-width="1.5" marker-end="url(#arr-r)"/>
+        <rect x="152" y="34" width="160" height="54" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.4"/>
+        <text x="232" y="56" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">doc.toString()</text>
+        <text x="232" y="73" text-anchor="middle" fill="#EC5F67" font-size="10.5">50 MB/s GC on 5 MB</text>
+
+        <line x1="312" y1="61" x2="340" y2="61" stroke="#EC5F67" stroke-width="1.5" marker-end="url(#arr-r)"/>
+        <rect x="344" y="34" width="150" height="54" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.4"/>
+        <text x="419" y="56" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">emit("change")</text>
+        <text x="419" y="73" text-anchor="middle" fill="#8A96A3" font-size="10.5">docs.js:1588</text>
+
+        <line x1="494" y1="61" x2="522" y2="61" stroke="#EC5F67" stroke-width="1.5" marker-end="url(#arr-r)"/>
+        <rect x="526" y="34" width="194" height="54" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.4"/>
+        <text x="623" y="56" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">sidebar.render()</text>
+        <text x="623" y="73" text-anchor="middle" fill="#EC5F67" font-size="10.5">replaceChildren 2,500 rows</text>
+
+        <line x1="720" y1="61" x2="748" y2="61" stroke="#EC5F67" stroke-width="1.5" marker-end="url(#arr-r)"/>
+        <rect x="752" y="34" width="158" height="54" rx="6" fill="#2E3238" stroke="#EC5F67" stroke-width="1.4"/>
+        <text x="831" y="56" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">warmPreviews()</text>
+        <text x="831" y="73" text-anchor="middle" fill="#8A96A3" font-size="10.5">copies + sorts all notes</text>
+
+        <!-- Proposed path -->
+        <text x="10" y="128" fill="#99C794" font-size="11.5" font-weight="700" class="mono">PROPOSED (SCOPED EDIT PATH · &lt; 1 ms JS)</text>
+        <rect x="10" y="140" width="110" height="54" rx="6" fill="#2E3238" stroke="#99C794" stroke-width="1.4"/>
+        <text x="65" y="163" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">Keystroke</text>
+        <text x="65" y="180" text-anchor="middle" fill="#99C794" font-size="10.5">CM6 B-tree O(log N)</text>
+
+        <line x1="120" y1="167" x2="148" y2="167" stroke="#99C794" stroke-width="1.5" marker-end="url(#arr-g)"/>
+        <rect x="152" y="140" width="174" height="54" rx="6" fill="#2E3238" stroke="#99C794" stroke-width="1.4"/>
+        <text x="239" y="162" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">markDirty(id)</text>
+        <text x="239" y="179" text-anchor="middle" fill="#99C794" font-size="10.5">no doc.toString() copy</text>
+
+        <line x1="326" y1="167" x2="354" y2="167" stroke="#99C794" stroke-width="1.5" marker-end="url(#arr-g)"/>
+        <rect x="358" y="140" width="218" height="54" rx="6" fill="#2E3238" stroke="#99C794" stroke-width="1.4"/>
+        <text x="467" y="162" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">Patch 1 active &lt;li&gt; only</text>
+        <text x="467" y="179" text-anchor="middle" fill="#8A96A3" font-size="10.5">only if line 1 or dirty dot changed</text>
+
+        <line x1="576" y1="167" x2="604" y2="167" stroke="#99C794" stroke-width="1.5" marker-end="url(#arr-g)"/>
+        <rect x="608" y="140" width="302" height="54" rx="6" fill="#2E3238" stroke="#99C794" stroke-width="1.4"/>
+        <text x="759" y="162" text-anchor="middle" fill="#E6E6E6" font-size="12" font-weight="600">300 ms debounce -&gt; persistNow(id)</text>
+        <text x="759" y="179" text-anchor="middle" fill="#99C794" font-size="10.5">pulls string once, writes IDB bodies store</text>
+      </svg>
+    </div>
+
+    <div class="tbl">
+      <table>
+        <thead>
+          <tr>
+            <th>Vault Scenario (4 KB notes)</th>
+            <th class="num">Reload Boot</th>
+            <th class="num">JS Heap</th>
+            <th class="num">DOM Nodes</th>
+            <th class="num">Typing (Drawer Closed)</th>
+            <th class="num">Drawer Open</th>
+            <th class="num">Typing (Drawer Open)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>10 notes (Desktop baseline)</td>
+            <td class="num">242.8 ms</td>
+            <td class="num">7.93 MB</td>
+            <td class="num">2,005</td>
+            <td class="num good">33.3 / 33.6 ms</td>
+            <td class="num">n/a</td>
+            <td class="num">n/a</td>
+          </tr>
+          <tr>
+            <td>1,000 notes, 100 open (Desktop)</td>
+            <td class="num">369.9 ms</td>
+            <td class="num">13.92 MB</td>
+            <td class="num">2,786</td>
+            <td class="num good">33.4 / 33.5 ms</td>
+            <td class="num">34.3 ms</td>
+            <td class="num warn-txt">33.3 / 66.2 ms</td>
+          </tr>
+          <tr>
+            <td>5,000 notes, 200 open, 2.5k recent (Desktop)</td>
+            <td class="num warn-txt">529.7 ms</td>
+            <td class="num">36.56 MB</td>
+            <td class="num warn-txt">8,346</td>
+            <td class="num good">33.3 / 33.6 ms</td>
+            <td class="num bad">291.7 ms</td>
+            <td class="num bad">166.6 / 344.2 ms</td>
+          </tr>
+          <tr>
+            <td>5,000 notes, 200 open (Phone 4x)</td>
+            <td class="num bad">912.6 ms</td>
+            <td class="num bad">76.49 MB</td>
+            <td class="num warn-txt">8,299</td>
+            <td class="num warn-txt">34.1 / 44.9 ms</td>
+            <td class="num">n/a</td>
+            <td class="num">n/a</td>
+          </tr>
+          <tr>
+            <td>1,000 open tabs (Desktop)</td>
+            <td class="num">373.7 ms</td>
+            <td class="num">18.47 MB</td>
+            <td class="num bad">23,716</td>
+            <td class="num bad">49.8 / 66.8 ms</td>
+            <td class="num">n/a</td>
+            <td class="num">n/a</td>
+          </tr>
+          <tr>
+            <td>500 encrypted x 16 KB (Phone 4x)</td>
+            <td class="num bad">712.2 ms + 1,404 ms</td>
+            <td class="num bad">44.85 MB</td>
+            <td class="num">3,629</td>
+            <td class="num">decrypt storm</td>
+            <td class="num warn-txt">67.5 ms (400 rows)</td>
+            <td class="num">n/a</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="split">
+      <div class="card solution">
+        <div class="card-title"><h3>Solution 1: Virtualized Keyed Sidebar</h3><span class="pill p-ok">C1</span></div>
+        <p>Keep existing <code>&lt;li&gt;</code> rows by <code>data-id</code> and render only the ~40 visible rows in long lists and drawers. DOM nodes stay near ~2,200 at 10,000+ notes, and Recent opens in under 16 ms.</p>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Solution 2: Split IDB Meta/Bodies + Lazy Previews</h3><span class="pill p-ok">C3</span></div>
+        <p>Load only lightweight metadata plus the active note body on boot. Drop eager <code>warmPreviews()</code> (desktop hides previews anyway), decrypt only visible phone rows via a 50-entry LRU, and cap <code>editor.js</code> <code>states</code> at 20 tabs.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 4: PWA PRECACHE & COLD LOAD -->
+  <section class="slide" id="network" data-title="Updates &amp; Cold Load">
+    <div class="slide-kicker"><span class="slide-num">04 / 10</span><span>PWA &amp; Service Worker · Critical Finding C4 + H1</span></div>
+    <h2>Updates and Cold Start: 23.05 MB Precache Breaks Fast 3G Updates</h2>
+    <p class="lede"><code>sw.js</code> caches all 174 files in one versioned cache. Editing one CSS line forces every phone to re-download 19.67 MB of unchanged spellcheck binaries, exceeding the 30 s timeout in <code>capabilities.js:147</code>.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">23.05 MB Service Worker Precache Composition (174 Files)</span>
+        <span class="viz-sub">85.3% is spellcheck WASM and Czech dictionary</span>
+      </div>
+      <svg viewBox="0 0 920 190" role="img" aria-label="Stacked bar showing 23.05 MB precache breakdown: Harper WASM 65.7 percent, Hunspell and Czech dict 19.6 percent, CodeMirror 6.4 percent, App code 4.3 percent, Crypto 3.8 percent. Below it, Fast 3G update takes 120.8 s versus 30 s timeout limit.">
+        <!-- Stacked bar -->
+        <rect x="10" y="16" width="591" height="34" rx="4" fill="#EC5F67"/>
+        <text x="305" y="38" text-anchor="middle" fill="#1B1F23" font-size="12" font-weight="700">Harper WASM · 15.15 MB (65.7%)</text>
+
+        <rect x="604" y="16" width="176" height="34" rx="4" fill="#F9AE58"/>
+        <text x="692" y="38" text-anchor="middle" fill="#1B1F23" font-size="11.5" font-weight="700">Hunspell/CS · 4.52 MB</text>
+
+        <rect x="783" y="16" width="58" height="34" rx="4" fill="#6699CC"/>
+        <rect x="844" y="16" width="38" height="34" rx="4" fill="#99C794"/>
+        <rect x="885" y="16" width="25" height="34" rx="4" fill="#C695C6"/>
+
+        <text x="910" y="68" text-anchor="end" font-size="11" class="mono">
+          <tspan fill="#6699CC">CM6 1.46 MB (6.4%)</tspan>
+          <tspan fill="#8A96A3"> · </tspan>
+          <tspan fill="#99C794">App 0.99 MB (4.3%)</tspan>
+          <tspan fill="#8A96A3"> · </tspan>
+          <tspan fill="#C695C6">Crypto 0.88 MB (73 files)</tspan>
+        </text>
+
+        <!-- Fast 3G update timeout chart (scale: 120.8 s = 540 px -> 4.47 px/s) -->
+        <text x="10" y="108" fill="#E6E6E6" font-size="12" font-weight="600">Fast 3G Update Time (1.6 Mbps) vs 30 s Timeout Wall</text>
+        <line x1="334" y1="116" x2="334" y2="156" stroke="#EC5F67" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="342" y="128" fill="#EC5F67" font-size="11" class="mono">30 s timeout (wipes cache)</text>
+
+        <text x="10" y="146" fill="#D9D9D9" font-size="12">Today (23.05 MB)</text>
+        <rect x="200" y="132" width="540" height="20" rx="4" fill="#EC5F67"/>
+        <text x="748" y="146" fill="#EC5F67" font-size="12" font-weight="700" class="mono">120.8 s (4x fail)</text>
+
+        <text x="10" y="176" fill="#99C794" font-size="12" font-weight="600">Proposed App Tier</text>
+        <rect x="200" y="162" width="44" height="20" rx="4" fill="#99C794"/>
+        <text x="252" y="176" fill="#99C794" font-size="12" font-weight="700" class="mono">~4 to 10 s (~2.5 MB raw / ~700 KB gzip)</text>
+      </svg>
+    </div>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Two Network Bottlenecks</h3><span class="pill p-crit">C4 + H1</span></div>
+        <ul>
+          <li><b>Monolithic SW cache (<code>sw.js:22</code>):</b> Every deploy re-fetches 15.63 MB Harper + 3.65 MB Czech dictionary + 73 <code>vendor/noble</code> files (including unused <code>post-quantum</code>, <code>bls12-381</code>, <code>secp256k1</code>, and <code>LICENSE</code> files).</li>
+          <li><b>121-request cold waterfall:</b> Unbundled ES modules chain across 5 to 7 dependency hops. Cold boot takes <b>540.9 ms</b> on localhost and <b>15.7 seconds</b> on Fast 3G.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Proposed Solutions</h3><span class="pill p-ok">Phase 1 + 2</span></div>
+        <ul>
+          <li><b>Three-tier SW caches:</b> Keep <code>vrtti-app-&lt;hash&gt;</code> (~2.5 MB) separate from lazy, asset-hashed <code>vrtti-spell-&lt;hash&gt;</code> (19.7 MB) and <code>vrtti-emoji</code>.</li>
+          <li><b>Prune <code>vendor/noble</code>:</b> Keep only X25519, Ed25519, ChaCha20-Poly1305, HKDF, SHA-256, and scrypt (drops ~50 files and ~600 KB).</li>
+          <li><b>Flatten cold waterfall:</b> Generate <code>&lt;link rel="modulepreload"&gt;</code> tags in <code>index.html</code> (or bundle vendored CM6 + noble into 2 files while keeping <code>app/js/</code> zero-build).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 5: MAIN-THREAD WORKERS (SPELLCHECK & CRYPTO) -->
+  <section class="slide" id="workers" data-title="Workers &amp; Phone">
+    <div class="slide-kicker"><span class="slide-num">05 / 10</span><span>Off-Thread Compute · Critical Finding C5 + H3</span></div>
+    <h2>Phone Freezes: Move Spellcheck WASM and Large-File Crypto to Web Workers</h2>
+    <p class="lede">Both Harper (15.6 MB WASM) and Hunspell (4.5 MB WASM + dictionary) load and lint on the main UI thread. Pure-JS <code>age</code> encryption also blocks the main thread on every 300 ms autosave.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">Phone (4x CPU) Main-Thread Blocking Tasks vs Worker Target</span>
+        <span class="viz-sub">Any task over 50 ms feels like a stutter; over 1,000 ms feels frozen</span>
+      </div>
+      <svg viewBox="0 0 920 225" role="img" aria-label="Horizontal bar chart of Phone 4x main-thread freezes: Spellcheck load 2385 ms, 95 KB Harper lint 1109 ms, 50 KB lint 811 ms, 5 MB age encrypt 260 ms, 20 Czech words twinsNow 130 ms, 1 MB age encrypt 65 ms.">
+        <line x1="284" y1="16" x2="284" y2="210" stroke="#99C794" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="290" y="26" fill="#99C794" font-size="11" class="mono">50 ms Long Task limit</text>
+
+        <text x="8" y="54" fill="#E6E6E6" font-size="12">Spellcheck load (single freeze)</text>
+        <rect x="274" y="39" width="465" height="20" rx="4" fill="#EC5F67"/>
+        <text x="747" y="53" fill="#EC5F67" font-size="12" font-weight="700" class="mono">2,385 ms (3.3 s total)</text>
+
+        <text x="8" y="88" fill="#E6E6E6" font-size="12">Harper lint (95 KB prose)</text>
+        <rect x="274" y="73" width="216" height="20" rx="4" fill="#EC5F67"/>
+        <text x="498" y="87" fill="#EC5F67" font-size="12" font-weight="700" class="mono">1,109 ms (Desktop: 226 ms)</text>
+
+        <text x="8" y="122" fill="#E6E6E6" font-size="12">Harper lint (50 KB prose)</text>
+        <rect x="274" y="107" width="158" height="20" rx="4" fill="#F9AE58"/>
+        <text x="440" y="121" fill="#F9AE58" font-size="12" font-weight="700" class="mono">810.8 ms (Desktop: 120 ms)</text>
+
+        <text x="8" y="156" fill="#E6E6E6" font-size="12">age.encrypt (5 MB / 1 MB autosave)</text>
+        <rect x="274" y="141" width="51" height="20" rx="4" fill="#F9AE58" fill-opacity="0.35" stroke="#F9AE58"/>
+        <rect x="274" y="141" width="13" height="20" rx="4" fill="#F9AE58"/>
+        <text x="333" y="155" fill="#F9AE58" font-size="12" font-weight="700" class="mono">64.5 ms (1 MB) / ~260 ms (5 MB)</text>
+
+        <text x="8" y="190" fill="#99C794" font-size="12" font-weight="600">Proposed: Dedicated Workers</text>
+        <rect x="274" y="175" width="4" height="20" rx="2" fill="#99C794"/>
+        <text x="294" y="189" fill="#99C794" font-size="12" font-weight="700" class="mono">0 ms UI freeze · lifts 100 KB spellcheck cap</text>
+      </svg>
+    </div>
+
+    <div class="split">
+      <div class="card solution">
+        <div class="card-title"><h3>Spellcheck Worker (<code>spellcheck.js</code>)</h3><span class="pill p-ok">C5</span></div>
+        <ul>
+          <li>Run Harper and Hunspell inside one dedicated module Worker (following <code>crypto/unlock.worker.js</code>).</li>
+          <li>Send doc version plus changed paragraphs or viewport slices, and drop stale responses on newer edits.</li>
+          <li>Remove the <code>MAX_DOC_CHARS = 100_000</code> cutoff safely.</li>
+          <li>Cache <code>score()</code> per paragraph in <code>textlang.js:145</code> and drop <code>text.split("")</code> in <code>adddiacritics.js:205</code>.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Crypto Worker + Header Slice (<code>age.js</code>)</h3><span class="pill p-ok">H3</span></div>
+        <ul>
+          <li>Offload <code>age.encrypt</code> / <code>age.decrypt</code> above 32 KB to a persistent Crypto Worker with zero-copy <code>Uint8Array</code> transfers.</li>
+          <li>Slice up to the <code>"---"</code> header footer in <code>countRecipients()</code> (<code>age.js:127</code>), cutting 5 MB scans from <b>12.7 ms</b> to <b>&lt; 0.1 ms</b>.</li>
+          <li>Wrap identity and signing keys under one scrypt key in keyring v2 (halving ~4 to 5 s phone passphrase unlock).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 6: SYNC CLIENT & SEARCH -->
+  <section class="slide" id="sync-search" data-title="Sync Client &amp; Search">
+    <div class="slide-kicker"><span class="slide-num">06 / 10</span><span>Sync Client &amp; Search · High Findings H4 + H5</span></div>
+    <h2>Sync Client and Search: Unbatched Pulls, 20k Truncation, and Unyielded Scans</h2>
+    <p class="lede">Large vaults expose strict sequential loops in both <code>sync/client.js</code> and <code>ui/search.js</code>. Both paths can be batched and yielded without changing the protocol or architecture.</p>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Sync Client Problems (<code>sync/client.js</code>)</h3><span class="pill p-high">H4</span></div>
+        <ul>
+          <li><b>200x transaction storm (line 1098):</b> <code>pullSpace</code> loops <code>await store.applyRemote(change)</code> one item at a time. Syncing 2,000 notes runs 2,000 IDB transactions, 2,000 sidebar rebuilds, and 2,000 <code>warmPreviews()</code> scans.</li>
+          <li><b>Silent truncation at 20,000 notes (line 90):</b> <code>MAX_PAGES = 100</code> silently drops notes past 20,000 in <code>allNotes()</code> and <code>space.backup</code>.</li>
+          <li><b>Concurrency = 1:</b> <code>push()</code>, <code>rewrapStubs()</code>, <code>reencryptStale()</code>, and <code>backup.js:writeFiles()</code> run one call at a time (100 dirty notes on 150 ms RTT = 15+ s).</li>
+          <li><b>Titles-only waste:</b> Downloads full bodies and throws away <b>91.4% to 93.4%</b> of bytes in <code>applyStub()</code>.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Sync Client Solutions</h3><span class="pill p-ok">Phase 1</span></div>
+        <ul>
+          <li><b><code>store.applyRemoteBatch(changes)</code>:</b> Commit one 200-change page inside a single IDB <code>readwrite</code> transaction and emit one <code>"change"</code> event.</li>
+          <li><b>Remove the 100-page cap:</b> Loop while <code>body.hasMore</code> is true, guarded by checking that <code>cursor</code> strictly advances.</li>
+          <li><b>Bounded pool (4 to 6 workers):</b> Run push, rewrap, reencrypt, and backup writes in parallel.</li>
+          <li><b>Request <code>?content=0</code>:</b> Pair with server S3 to cut <code>Titles only</code> traffic by over 90%.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Search Problems (<code>ui/search.js</code>)</h3><span class="pill p-high">H5</span></div>
+        <ul>
+          <li><b>Starves UI on plaintext tabs (line 344):</b> <code>await store.textOf()</code> resolves in a microtask, never yielding to paint or typing.</li>
+          <li><b>Wasted allocations (line 189):</b> Calls <code>text.split(/\r?\n/)</code> on every note even with zero hits, and builds DOM nodes for hidden <code>... N more</code> rows up front.</li>
+          <li><b>Disk walk traps (line 293):</b> Reads files sequentially (concurrency 1) and walks <code>node_modules</code>, <code>target</code>, <code>dist</code>, <code>bin</code>, and <code>obj</code>.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Search Solutions</h3><span class="pill p-ok">Phase 2</span></div>
+        <ul>
+          <li><b>Fast pre-check:</b> Test <code>indexOf</code> or regex <code>.test()</code> before splitting lines; compute line numbers only around match offsets.</li>
+          <li><b>Yield and batch DOM:</b> Yield every ~12 ms, batch results into a <code>DocumentFragment</code> every ~50 ms, and render hidden matches only on expand.</li>
+          <li><b>Skip build folders + parallelize:</b> Skip <code>node_modules</code> / <code>target</code> / <code>dist</code> / <code>bin</code> / <code>obj</code>, read with concurrency 8 (or Rust <code>disk_search</code> on desktop).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 7: SYNC SERVER -->
+  <section class="slide" id="server" data-title="Sync Server">
+    <div class="slide-kicker"><span class="slide-num">07 / 10</span><span>ASP.NET Core .NET 10 + SQLite · Server Findings S1 to S5</span></div>
+    <h2>Sync Server: Linear Revision Scans, Overflow Reads, and OOM Risk</h2>
+    <p class="lede"><code>Vrtti.Server</code> has only an append-only <code>revisions</code> table and no materialized <code>documents</code> head table. Every 60-second <code>GET /api/spaces</code> poll grows slower as edit history accumulates.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">GET /api/spaces Latency vs Total Edit History (Release .NET 10 + Real SQLite)</span>
+        <span class="viz-sub">EXPLAIN QUERY PLAN confirms correlated MAX(seq) subqueries and SCAN members</span>
+      </div>
+      <svg viewBox="0 0 920 205" role="img" aria-label="Bar chart of GET /api/spaces scaling: 13.5 ms at 5k revs, 47.7 ms at 50k revs, 98.6 ms at 100k revs, projected 980 ms at 1M revs, versus under 5 ms flat with a materialized documents table.">
+        <text x="10" y="34" fill="#D9D9D9" font-size="12">1k docs / 5k revs (47 MB DB)</text>
+        <rect x="260" y="20" width="46" height="20" rx="4" fill="#6699CC"/>
+        <text x="314" y="34" fill="#6699CC" font-size="12" font-weight="600" class="mono">13.5 ms avg</text>
+
+        <text x="10" y="68" fill="#D9D9D9" font-size="12">5k docs / 50k revs (323 MB DB)</text>
+        <rect x="260" y="54" width="162" height="20" rx="4" fill="#F9AE58"/>
+        <text x="430" y="68" fill="#F9AE58" font-size="12" font-weight="600" class="mono">47.7 ms avg</text>
+
+        <text x="10" y="102" fill="#E6E6E6" font-size="12" font-weight="600">10k docs / 100k revs (546 MB DB)</text>
+        <rect x="260" y="88" width="335" height="20" rx="4" fill="#EC5F67"/>
+        <text x="603" y="102" fill="#EC5F67" font-size="12" font-weight="700" class="mono">98.6 ms avg (110.7 ms max)</text>
+
+        <text x="10" y="136" fill="#8A96A3" font-size="12">1M total revisions (projected)</text>
+        <rect x="260" y="122" width="520" height="20" rx="4" fill="#EC5F67" fill-opacity="0.28" stroke="#EC5F67" stroke-dasharray="4 3"/>
+        <text x="788" y="136" fill="#EC5F67" font-size="12" font-weight="700" class="mono">~1,000 ms / poll</text>
+
+        <text x="10" y="176" fill="#99C794" font-size="12.5" font-weight="600">Proposed: documents head table</text>
+        <rect x="260" y="162" width="18" height="20" rx="4" fill="#99C794"/>
+        <text x="286" y="176" fill="#99C794" font-size="12" font-weight="700" class="mono">&lt; 5 ms flat (independent of edit history)</text>
+      </svg>
+    </div>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Verified Server Bottlenecks</h3><span class="pill p-srv">S1 to S5</span></div>
+        <ul>
+          <li><b>Correlated scans (<code>SpaceLog.cs:86</code>, <code>Revisions.cs</code>):</b> <code>/api/changes</code> scans all spaces <code>rowid &gt; $since</code> with 3 correlated subqueries + temp B-tree sort.</li>
+          <li><b>Missing index (<code>Db.cs:122</code>):</b> <code>members</code> has PK <code>(space, device_id)</code>; <code>Readable()</code> runs full <code>SCAN members</code> on every request.</li>
+          <li><b>Unbounded JSON OOM + 91% waste:</b> 200 x 2 MB docs = 400 MB single JSON response; no <code>?content=0</code> mode for <code>Titles only</code>.</li>
+          <li><b>Overflow page reads (<code>Revisions.cs:126</code>):</b> <code>LENGTH(content)</code> reads ~100 MB of overflow pages for 203 revs (<b>69.8 ms</b>). <code>Program.cs</code> loads full <code>content</code> on every POST/GET/DELETE.</li>
+          <li><b>Double DB open + <code>synchronous = FULL</code>:</b> Auth middleware and handler each open SQLite and run <code>PRAGMA busy_timeout</code>.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Proposed Server Schema &amp; API Fixes</h3><span class="pill p-ok">Phase 0 + 1</span></div>
+        <pre><code>CREATE TABLE documents (
+  doc_id TEXT PRIMARY KEY, space TEXT NOT NULL,
+  prev_space TEXT, head_seq INTEGER NOT NULL,
+  rev INTEGER NOT NULL, deleted INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL, size INTEGER NOT NULL
+);
+CREATE INDEX documents_space_seq
+  ON documents(space, head_seq);
+CREATE INDEX members_device
+  ON members(device_id, space);</code></pre>
+        <ul>
+          <li>Add <code>size INTEGER</code> on <code>revisions</code> insert (kills 69.8 ms overflow scans) and <code>CurrentHead()</code> (skips body except on 409 conflict).</li>
+          <li>Add <code>maxBytes = 4 MB</code> cap and <code>?content=0</code> to <code>/api/changes</code>.</li>
+          <li>Share one request-scoped <code>SqliteConnection</code>, set <code>synchronous = NORMAL</code> + cache/mmap pragmas, enable response compression, and add retention/compaction.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 8: DESKTOP SHELL (TAURI) -->
+  <section class="slide" id="desktop" data-title="Desktop Shell">
+    <div class="slide-kicker"><span class="slide-num">08 / 10</span><span>Tauri Rust Shell · Desktop Findings D1 to D6</span></div>
+    <h2>Desktop Shell: Blocking Async I/O, Triple-IPC Autosave, and Stat Overhead</h2>
+    <p class="lede"><code>src-tauri/src/disk.rs</code> runs synchronous <code>fs_err</code> calls directly on Tokio worker threads, stats every directory entry, and runs three IPC calls plus <code>fsync</code> on every 300 ms file autosave.</p>
+
+    <div class="viz">
+      <div class="viz-head">
+        <span class="viz-title">Measured Desktop Filesystem &amp; IPC Micro-Benchmarks (Linux ext4)</span>
+        <span class="viz-sub">Penalties are larger on Windows NTFS, macOS APFS, cloud folders, and SMB shares</span>
+      </div>
+      <svg viewBox="0 0 920 182" role="img" aria-label="Bar chart comparing current disk.rs patterns against proposed fixes: 5000-file directory list drops from 18.38 ms to 2.78 ms, 10 KB write drops from 1.34 ms to 0.31 ms, and 5 MB IPC drops 29.81 ms of JSON overhead.">
+        <text x="8" y="34" fill="#E6E6E6" font-size="12" font-weight="600">disk_list (5,000 files)</text>
+        <rect x="240" y="16" width="368" height="14" rx="3" fill="#EC5F67"/>
+        <text x="616" y="27" fill="#EC5F67" font-size="11.5" class="mono">18.38 ms (fs::metadata per entry)</text>
+        <rect x="240" y="34" width="56" height="14" rx="3" fill="#99C794"/>
+        <text x="304" y="45" fill="#99C794" font-size="11.5" font-weight="700" class="mono">2.78 ms (d_type · 6.61x faster)</text>
+
+        <text x="8" y="92" fill="#E6E6E6" font-size="12" font-weight="600">Autosave 10 KB write</text>
+        <rect x="240" y="74" width="268" height="14" rx="3" fill="#F9AE58"/>
+        <text x="516" y="85" fill="#F9AE58" font-size="11.5" class="mono">1.34 ms + 3 IPC calls (sync_all every 300 ms)</text>
+        <rect x="240" y="92" width="62" height="14" rx="3" fill="#99C794"/>
+        <text x="310" y="103" fill="#99C794" font-size="11.5" font-weight="700" class="mono">0.31 ms + 1 IPC (4.32x faster)</text>
+
+        <text x="8" y="150" fill="#E6E6E6" font-size="12" font-weight="600">5 MB text IPC bridge</text>
+        <rect x="240" y="132" width="460" height="14" rx="3" fill="#EC5F67"/>
+        <text x="708" y="143" fill="#EC5F67" font-size="11.5" class="mono">+29.81 ms JSON stringify/parse</text>
+        <rect x="240" y="150" width="24" height="14" rx="3" fill="#99C794"/>
+        <text x="272" y="161" fill="#99C794" font-size="11.5" font-weight="700" class="mono">Raw tauri::ipc::Response (zero JSON escaping)</text>
+      </svg>
+    </div>
+
+    <div class="split">
+      <div class="card problem">
+        <div class="card-title"><h3>Desktop Shell Gaps</h3><span class="pill p-desk">D1 to D6</span></div>
+        <ul>
+          <li><b>Tokio starvation (<code>disk.rs:798-975</code>):</b> Blocking <code>fs_err</code> calls sit inside <code>pub async fn</code> commands without <code>spawn_blocking</code>.</li>
+          <li><b>Discarded <code>mtime</code> (<code>native.js:229</code>):</b> <code>disk_write</code> returns <code>Written { mtime }</code>, JS drops it, and <code>docs.js:1372</code> fires a third <code>disk_stat</code> IPC call.</li>
+          <li><b>No native search or watcher:</b> JS pulls every folder file over 2 IPC calls and polls open files every 30 seconds.</li>
+          <li><b>Startup and RAM hazards:</b> <code>Disk::load()</code> runs sync <code>canonicalize()</code> before window open (hangs offline SMB); <code>update.rs:75</code> pins ~80 MB installer bytes in RAM on "Later"; <code>lib.rs:372</code> spawns an 8 s sleeping OS thread per load; <code>debug.rs:76</code> grows without bound.</li>
+        </ul>
+      </div>
+      <div class="card solution">
+        <div class="card-title"><h3>Proposed Desktop Solutions</h3><span class="pill p-ok">Phase 0 + 2</span></div>
+        <ul>
+          <li><b><code>spawn_blocking</code> + <code>entry.file_type()</code>:</b> Move all disk I/O off Tokio workers; call <code>fs::metadata()</code> only on symlinks.</li>
+          <li><b>Single-IPC autosave:</b> Pass <code>expectedMtime</code> into <code>disk_write</code>, return and reuse <code>mtime</code>, and throttle <code>sync_all()</code> to Ctrl+S / blur / 5 s.</li>
+          <li><b>Binary IPC + Rust <code>disk_search</code> + <code>notify</code>:</b> Use <code>tauri::ipc::Response</code> for text reads/writes, search folders natively in Rust, and replace 30 s polling with OS file watches.</li>
+          <li><b>Clean startup/memory:</b> Lazy root canonicalization, temp-file installer staging, <code>tokio::time::sleep</code>, and a 500-entry log ring buffer.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- SLIDE 9: INTERACTIVE ALL-FINDINGS EXPLORER -->
+  <section class="slide" id="explorer" data-title="All Findings Explorer">
+    <div class="slide-kicker"><span class="slide-num">09 / 10</span><span>Complete Audit Matrix · 22 Findings Paired With Solutions</span></div>
+    <h2>All Findings and Proposed Solutions</h2>
+    <p class="lede">Filter by layer or delivery phase to inspect every bottleneck, source reference, measured cost, and concrete fix.</p>
+
+    <div class="filters">
+      <div class="filter-group" role="group" aria-label="Filter by layer">
+        <button class="fbtn active" data-layer="all" type="button">All Layers</button>
+        <button class="fbtn" data-layer="client" type="button">Client PWA</button>
+        <button class="fbtn" data-layer="server" type="button">Sync Server</button>
+        <button class="fbtn" data-layer="desktop" type="button">Desktop Shell</button>
+      </div>
+      <div class="filter-group" role="group" aria-label="Filter by phase">
+        <button class="fbtn active" data-phase="all" type="button">All Phases</button>
+        <button class="fbtn" data-phase="p0" type="button">Phase 0</button>
+        <button class="fbtn" data-phase="p1" type="button">Phase 1</button>
+        <button class="fbtn" data-phase="p2" type="button">Phase 2</button>
+      </div>
+      <span class="finding-count" id="finding-count">Showing 22 of 22 findings</span>
+    </div>
+
+    <div class="findings-grid" id="findings-grid">
+      <article class="fcard" data-layer="client" data-phase="p0" style="--c: var(--red)">
+        <div class="fcard-top"><span class="fcard-id">C1</span><span class="pill p-crit">Critical</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 0+1</span></div>
+        <h3>Per-keystroke change cascade rebuilds sidebar</h3>
+        <div class="fcard-where">editor.js:323 · docs.js:1588,1864 · sidebar.js:1630,1819</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Every key flattens <code>doc.toString()</code> and rebuilds all sidebar rows. Typing hits 344 ms with 2,500 Recent rows open; 1,000 tabs reach 23,716 DOM nodes.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Mark dirty without string copy, split edit events to patch only the active row, and virtualize lists above 100 rows.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p0" style="--c: var(--red)">
+        <div class="fcard-top"><span class="fcard-id">C2</span><span class="pill p-crit">Critical</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Default Markdown freezes large non-blank-line files</h3>
+        <div class="fcard-where">lang.js:48,81-96 · @lezer/markdown finishLeaf()</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>5 MB logs/CSVs form one paragraph leaf, blocking every keystroke for 423 to 979 ms (Desktop) and 393 ms on 1 MB (Phone 4x).</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Add <code>"plain"</code> mode and auto-switch above 512 KB or 64 KB single paragraphs. Cuts dispatch to 3.1 to 6.3 ms (~100x faster).</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p1" style="--c: var(--red)">
+        <div class="fcard-top"><span class="fcard-id">C3</span><span class="pill p-crit">Critical</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>Full-DB load into RAM and eager warmPreviews()</h3>
+        <div class="fcard-where">idb.js:413 · docs.js:1831,4124 · editor.js:425</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>5,000 small notes push Phone 4x heap to 76.5 MB. 500 x 16 KB encrypted notes burn 1,404 ms after boot even when desktop hides previews.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Split IDB into <code>meta</code> and <code>bodies</code>, load bodies lazily, remove eager decryption, and cap <code>EditorState</code> cache at 20 tabs.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p1" style="--c: var(--red)">
+        <div class="fcard-top"><span class="fcard-id">C4</span><span class="pill p-crit">Critical</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>Monolithic 23.05 MB SW precache breaks 3G updates</h3>
+        <div class="fcard-where">app/sw.js:22 · gen_sw.py:103 · capabilities.js:147</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>19.67 MB of spellcheck binaries re-download on every deploy. Fast 3G takes 120.8 s, breaking the 30 s update timeout and wiping caches.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Split into <code>vrtti-app</code> (~2.5 MB), lazy asset-hashed <code>vrtti-spell</code>, and <code>vrtti-emoji</code>. Prune ~50 unused <code>vendor/noble</code> files.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p2" style="--c: var(--red)">
+        <div class="fcard-top"><span class="fcard-id">C5</span><span class="pill p-crit">Critical</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 2</span></div>
+        <h3>Main-thread Harper + Hunspell WASM freezes UI</h3>
+        <div class="fcard-where">spellcheck.js:61,207 · hunspell.js · textlang.js:145 · adddiacritics.js:205</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Phone 4x freezes for 2,385 ms on load and 1,109 ms linting 95 KB prose. Main-thread cost forces a hard 100 KB cutoff.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Run both WASM engines in one module Worker with paragraph/viewport incremental linting. Cache <code>score()</code> and remove <code>split("")</code>.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p2" style="--c: var(--orange)">
+        <div class="fcard-top"><span class="fcard-id">H1</span><span class="pill p-high">High</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 2</span></div>
+        <h3>Cold start fires 121 ES module requests</h3>
+        <div class="fcard-where">app/index.html · app/vendor/*</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>5 to 7 waterfall hops push empty-cache Fast 3G cold boot to 15.7 seconds (540.9 ms localhost).</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Generate <code>&lt;link rel="modulepreload"&gt;</code> tags or pre-bundle only vendor libs (CM6 + noble) into 2 files while keeping <code>app/js/</code> zero-build.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p0" style="--c: var(--orange)">
+        <div class="fcard-top"><span class="fcard-id">H2</span><span class="pill p-high">High</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Sync big-file hooks (word count, sniff, tables)</h3>
+        <div class="fcard-where">statusbar.js:109 · lang.js:281 · editor.js:348 · markdown.js:199</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>5 MB <code>Ctrl+A</code> takes 512.7 ms frame; 1,000-row table drops Phone 4x to 114.8 ms/key; 5.2 MB invalid JSON sniff takes 18.8 ms (~75 ms phone).</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Debounce selection word count, slice 16 KB for <code>sniff()</code>, early-exit paste blank check, cache table widths and decorate visible rows only.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p2" style="--c: var(--orange)">
+        <div class="fcard-top"><span class="fcard-id">H3</span><span class="pill p-high">High</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 0+2</span></div>
+        <h3>Main-thread age crypto + double scrypt unlock</h3>
+        <div class="fcard-where">crypto/age.js:127 · docs.js:1023 · crypto/keyring.js:196,404</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>1 MB autosave encrypt blocks Phone 4x for 64.5 ms (~260 ms for 5 MB). <code>countRecipients()</code> decodes full 6.9 MB (12.7 ms). Two serial scrypt calls double unlock time.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Slice header in <code>countRecipients()</code> (Phase 0). Move crypto &gt;32 KB to a Worker and wrap both keys under one scrypt KEK in v2 (Phase 2).</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p1" style="--c: var(--orange)">
+        <div class="fcard-top"><span class="fcard-id">H4</span><span class="pill p-high">High</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>Unbatched sync pulls, 20k cap, and serial push</h3>
+        <div class="fcard-where">sync/client.js:90,1075,1098,1393 · backup.js:62</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>200 remote changes open 200 IDB transactions and 200 renders. <code>MAX_PAGES = 100</code> truncates backups at 20k notes. Serial loops stall on high RTT.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Add <code>applyRemoteBatch()</code>, loop on <code>hasMore</code> with cursor check, add 4 to 6 concurrency pool, and pass <code>?content=0</code> for Titles only.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p2" style="--c: var(--orange)">
+        <div class="fcard-top"><span class="fcard-id">H5</span><span class="pill p-high">High</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 2</span></div>
+        <h3>Unyielded Search in Files + dependency walks</h3>
+        <div class="fcard-where">ui/search.js:189,293-321,344</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Plaintext tab scan blocks input without yielding, splits non-matching notes, and walks <code>node_modules</code>/<code>target</code> sequentially.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Pre-check with <code>indexOf</code> before splitting, yield every 12 ms, batch DOM fragments, skip build dirs, and read at concurrency 8.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p1" style="--c: var(--blue)">
+        <div class="fcard-top"><span class="fcard-id">M1</span><span class="pill p-med">Medium</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>Startup cleanup, originName() graph, full broadcasts</h3>
+        <div class="fcard-where">docs.js:282,4294 · sidebar.js:700 · sync/client.js:612</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Boot runs 4 serial sweeps before first paint; every synced row recomputes trust graph; every autosave clones 5 MB over <code>BroadcastChannel</code>.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Defer cleanup past first paint in one batch tx, cache <code>Map&lt;deviceId, name&gt;</code>, and broadcast metadata-only notices above 64 KB.</div>
+      </article>
+
+      <article class="fcard" data-layer="client" data-phase="p0" style="--c: var(--blue)">
+        <div class="fcard-top"><span class="fcard-id">M2</span><span class="pill p-med">Medium</span><span class="pill p-med">Client</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Layout thrash, zoom JSON parse, firstLineTitle split</h3>
+        <div class="fcard-where">sidebar.js:737,1129 · zoom.js:35 · docs.js:124</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Drag-over calls <code>getBoundingClientRect()</code> per row; Arrow keys check <code>offsetParent</code>; wheel ticks parse <code>localStorage</code> JSON twice.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Cache drag midpoints on pointerdown, query open containers directly, cache zoom object in RAM, and slice 1 KB in <code>firstLineTitle()</code>.</div>
+      </article>
+
+      <article class="fcard" data-layer="server" data-phase="p1" style="--c: var(--purple)">
+        <div class="fcard-top"><span class="fcard-id">S1</span><span class="pill p-crit">Critical</span><span class="pill p-srv">Server</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>No materialized documents head table</h3>
+        <div class="fcard-where">SpaceLog.cs:86 · Revisions.cs · Db.cs</div>
+        <div class="fcard-box prob"><b>Measured Problem</b><code>GET /api/spaces</code> grows linearly from 13.5 ms (5k revs) to 98.6 ms (100k revs). <code>/api/changes</code> runs 3 correlated subqueries + temp B-tree sort.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Maintain a <code>documents</code> head table inside the revision insert transaction, indexed on <code>(space, head_seq)</code>.</div>
+      </article>
+
+      <article class="fcard" data-layer="server" data-phase="p0" style="--c: var(--purple)">
+        <div class="fcard-top"><span class="fcard-id">S2</span><span class="pill p-high">High</span><span class="pill p-srv">Server</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Missing index on members(device_id)</h3>
+        <div class="fcard-where">Db.cs:122 · SpaceLog.cs:58</div>
+        <div class="fcard-box prob"><b>Measured Problem</b><code>EXPLAIN QUERY PLAN</code> confirmed full table <code>SCAN members</code> in <code>Readable()</code> on every authenticated sync call.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Add covering index <code>CREATE INDEX IF NOT EXISTS members_device ON members(device_id, space);</code>.</div>
+      </article>
+
+      <article class="fcard" data-layer="server" data-phase="p1" style="--c: var(--purple)">
+        <div class="fcard-top"><span class="fcard-id">S3</span><span class="pill p-crit">Critical</span><span class="pill p-srv">Server</span><span class="pill p-ok">Phase 1</span></div>
+        <h3>Unbounded /api/changes payload + no stubs mode</h3>
+        <div class="fcard-where">Revisions.cs · Program.cs</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>200 x 2 MB notes produce a 400 MB JSON response (OOM risk). <code>Titles only</code> spaces waste 91.4% to 93.4% of bytes.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Enforce a 4 MB response byte budget (min 1 doc) and add <code>?content=0</code> to omit <code>content</code> from SQLite SELECT.</div>
+      </article>
+
+      <article class="fcard" data-layer="server" data-phase="p0" style="--c: var(--purple)">
+        <div class="fcard-top"><span class="fcard-id">S4</span><span class="pill p-high">High</span><span class="pill p-srv">Server</span><span class="pill p-ok">Phase 0+2</span></div>
+        <h3>Full content reads, LENGTH() overflow scans, no pruning</h3>
+        <div class="fcard-where">Program.cs:285,328,338,355 · Revisions.cs:88,126</div>
+        <div class="fcard-box prob"><b>Measured Problem</b><code>LENGTH(content)</code> scans ~100 MB overflow pages (69.8 ms for 203 revs). Every POST/DELETE reads full old body. 100k revs hit 546 MB.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Add <code>CurrentHead()</code> and a stored <code>size</code> column (Phase 0). Add 30-day retention + daily snapshot compaction + incremental vacuum (Phase 2).</div>
+      </article>
+
+      <article class="fcard" data-layer="server" data-phase="p0" style="--c: var(--purple)">
+        <div class="fcard-top"><span class="fcard-id">S5</span><span class="pill p-med">Medium</span><span class="pill p-srv">Server</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Double SQLite open, synchronous=FULL, no compression</h3>
+        <div class="fcard-where">Db.cs:30 · Program.cs:112</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Every HTTP request opens SQLite twice and runs <code>PRAGMA busy_timeout</code> twice. WAL keeps <code>synchronous = FULL</code> and ships raw JSON.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Share one scoped <code>SqliteConnection</code> per request, set <code>synchronous = NORMAL</code> + 32 MB cache + 256 MB mmap, and enable Brotli/Gzip.</div>
+      </article>
+
+      <article class="fcard" data-layer="desktop" data-phase="p0" style="--c: var(--cyan)">
+        <div class="fcard-top"><span class="fcard-id">D1</span><span class="pill p-high">High</span><span class="pill p-desk">Desktop</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Blocking fs_err calls on Tokio async workers</h3>
+        <div class="fcard-where">src-tauri/src/disk.rs:798-975</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>All <code>pub async fn disk_*</code> commands execute blocking syscalls directly on Tokio worker threads, stalling other IPC commands on slow disks or SMB.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Wrap filesystem work in <code>tauri::async_runtime::spawn_blocking</code> (or use sync Tauri command functions).</div>
+      </article>
+
+      <article class="fcard" data-layer="desktop" data-phase="p0" style="--c: var(--cyan)">
+        <div class="fcard-top"><span class="fcard-id">D2</span><span class="pill p-high">High</span><span class="pill p-desk">Desktop</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>Three IPC calls + sync_all() on every 300 ms autosave</h3>
+        <div class="fcard-where">docs.js:1325,1367,1372 · native.js:229 · disk.rs:496</div>
+        <div class="fcard-box prob"><b>Measured Problem</b><code>native.js</code> drops returned <code>mtime</code>, forcing a third <code>disk_stat</code> IPC. <code>sync_all()</code> slows 10 KB writes 4.3x and stalls cloud folders.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Reuse returned <code>mtime</code>, pass <code>expectedMtime</code> into <code>disk_write</code> (1 IPC total), and throttle <code>sync_all()</code> to Ctrl+S / blur / 5 s.</div>
+      </article>
+
+      <article class="fcard" data-layer="desktop" data-phase="p0" style="--c: var(--cyan)">
+        <div class="fcard-top"><span class="fcard-id">D3</span><span class="pill p-high">High</span><span class="pill p-desk">Desktop</span><span class="pill p-ok">Phase 0</span></div>
+        <h3>disk_list calls fs::metadata() on every entry</h3>
+        <div class="fcard-where">src-tauri/src/disk.rs:818</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>Listing a 5,000-file folder takes 18.38 ms on ext4 vs 2.78 ms using <code>d_type</code> (6.61x slower; 10x to 30x worse on NTFS/SMB).</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Check <code>entry.file_type()</code> first and call <code>fs::metadata()</code> only when <code>is_symlink()</code> is true.</div>
+      </article>
+
+      <article class="fcard" data-layer="desktop" data-phase="p2" style="--c: var(--cyan)">
+        <div class="fcard-top"><span class="fcard-id">D4</span><span class="pill p-med">Medium</span><span class="pill p-desk">Desktop</span><span class="pill p-ok">Phase 2</span></div>
+        <h3>JSON string IPC on disk_read and disk_write</h3>
+        <div class="fcard-where">src-tauri/src/disk.rs:859-907 · native.js</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>JSON escaping and parsing add 29.81 ms and ~3x transient memory on 5 MB text files (unlike <code>disk_read_bytes</code>).</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Transfer raw UTF-8 bytes via <code>tauri::ipc::Response</code> and <code>tauri::ipc::Request</code>, decoding once with <code>TextDecoder</code>.</div>
+      </article>
+
+      <article class="fcard" data-layer="desktop" data-phase="p2" style="--c: var(--cyan)">
+        <div class="fcard-top"><span class="fcard-id">D5+D6</span><span class="pill p-med">Medium</span><span class="pill p-desk">Desktop</span><span class="pill p-ok">Phase 0+2</span></div>
+        <h3>No Rust search/watcher + startup/RAM hygiene</h3>
+        <div class="fcard-where">lib.rs:221,372 · update.rs:75,305 · debug.rs:76</div>
+        <div class="fcard-box prob"><b>Measured Problem</b>JS folder search sends 2 IPCs per file; 30 s polling stats open files; offline SMB hangs startup; deferred update pins ~80 MB RAM.</div>
+        <div class="fcard-box sol"><b>Proposed Solution</b>Spill pending update to temp file, cap debug log, use <code>tokio::time::sleep</code> (Phase 0). Add lazy roots, Rust <code>disk_search</code>, and <code>notify</code> watcher (Phase 2).</div>
+      </article>
+    </div>
+  </section>
+
+  <!-- SLIDE 10: ROADMAP & TARGET BUDGETS -->
+  <section class="slide" id="roadmap" data-title="Roadmap &amp; Budgets">
+    <div class="slide-kicker"><span class="slide-num">10 / 10</span><span>Execution Plan &amp; Measurable Verification Targets</span></div>
+    <h2>Phased Roadmap and Target Performance Budgets</h2>
+    <p class="lede">Each phase ships independently as focused PRs with clear before/after benchmark numbers.</p>
+
+    <div class="split-3">
+      <div class="phase-col" style="--c: var(--green)">
+        <div class="phase-tag">Phase 0 · Quick Wins</div>
+        <h3>Eliminate Instant Freezes</h3>
+        <ol>
+          <li><b>Plain mode + large-file guard</b> (<code>lang.js</code>, <code>editor.js</code>): 100x faster 5 MB log editing.</li>
+          <li><b>Scoped edit events</b> (<code>editor.js</code>, <code>docs.js</code>, <code>sidebar.js</code>): stop per-key <code>doc.toString()</code> and full redraws.</li>
+          <li><b>Markdown table cache</b> (<code>markdown.js</code>): visible widgets + cached widths.</li>
+          <li><b>Big-file slices</b>: debounce selection words; slice <code>sniff()</code>, <code>countRecipients()</code>, <code>firstLineTitle()</code>.</li>
+          <li><b>Server quick wins</b>: <code>members_device</code> index, <code>CurrentHead()</code>, stored <code>size</code>, shared conn, WAL pragmas, compression.</li>
+          <li><b>Desktop quick wins</b>: <code>spawn_blocking</code>, <code>file_type()</code>, reuse <code>mtime</code>, temp-file update, ring log, async sleep.</li>
+        </ol>
+      </div>
+
+      <div class="phase-col" style="--c: var(--blue)">
+        <div class="phase-tag">Phase 1 · Scale to 5,000+ Notes</div>
+        <h3>Fast Phones &amp; Slow Links</h3>
+        <ol>
+          <li><b>Three-tier SW cache</b> (<code>sw.js</code>, <code>gen_sw.py</code>): separate 2.5 MB app from 19.7 MB lazy spellcheck; prune <code>vendor/noble</code>.</li>
+          <li><b>Virtualized keyed sidebar</b> (<code>sidebar.js</code>): keep DOM near ~2,200 nodes at 10,000+ notes.</li>
+          <li><b>IDB meta/bodies split</b> (<code>idb.js</code>, <code>docs.js</code>, <code>editor.js</code>): lazy body loads, drop eager <code>warmPreviews()</code>, 20-tab state LRU.</li>
+          <li><b>Batched sync + <code>?content=0</code></b> (<code>sync/client.js</code>): 1 IDB tx per page, drop 20k cap, concurrency 4 to 6, cut 91% stub waste.</li>
+          <li><b>Server <code>documents</code> table + 4 MB cap</b> (<code>Db.cs</code>, <code>SpaceLog.cs</code>, <code>Revisions.cs</code>): O(1) space stats and OOM protection.</li>
+        </ol>
+      </div>
+
+      <div class="phase-col" style="--c: var(--purple)">
+        <div class="phase-tag">Phase 2 · Deep Architecture</div>
+        <h3>Zero-Freeze Workers &amp; Native I/O</h3>
+        <ol>
+          <li><b>Spellcheck Web Worker</b> (<code>spellcheck.js</code>, <code>hunspell.js</code>): zero load/lint freezes and lift the 100 KB cutoff.</li>
+          <li><b>Crypto Worker + keyring v2</b> (<code>age.js</code>, <code>keyring.js</code>): off-thread encryption &gt;32 KB and single-scrypt unlock.</li>
+          <li><b>Yielding search + Rust <code>disk_search</code> + <code>notify</code></b>: fast folder search and zero 30 s polling.</li>
+          <li><b>Binary IPC + lazy roots</b> (<code>disk.rs</code>, <code>lib.rs</code>): raw UTF-8 transfers and non-blocking offline SMB boot.</li>
+          <li><b>History compaction + <code>modulepreload</code></b>: bounded SQLite disk growth and &lt;3 s Fast 3G cold start.</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="tbl">
+      <table>
+        <thead>
+          <tr>
+            <th>Verification Metric</th>
+            <th class="num">Measured Today</th>
+            <th class="num">Target Budget</th>
+            <th>Delivered By</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Keystroke to paint (Desktop · 5,000 notes drawer open or 5 MB log)</td>
+            <td class="num bad">344 ms / 979 ms</td>
+            <td class="num good">&lt; 16 ms (p95)</td>
+            <td>Phase 0 (C1, C2) + Phase 1</td>
+          </tr>
+          <tr>
+            <td>Keystroke to paint (Phone 4x · 5,000 notes or 1 MB file)</td>
+            <td class="num bad">44.9 ms / 393 ms</td>
+            <td class="num good">&lt; 33 ms (p95)</td>
+            <td>Phase 0 (C1, C2, H2)</td>
+          </tr>
+          <tr>
+            <td>Startup to editable note (Phone 4x · 5,000 notes, 500 encrypted)</td>
+            <td class="num bad">913 ms + 1,404 ms · 76.5 MB</td>
+            <td class="num good">&lt; 600 ms · &lt; 25 MB heap</td>
+            <td>Phase 1 (C3)</td>
+          </tr>
+          <tr>
+            <td>Service Worker app deploy download (Fast 3G)</td>
+            <td class="num bad">120.8 s (timeout fail)</td>
+            <td class="num good">&lt; 10 s</td>
+            <td>Phase 1 (C4)</td>
+          </tr>
+          <tr>
+            <td>Main-thread Long Tasks on spellcheck load or 95 KB lint (Phone 4x)</td>
+            <td class="num bad">2,385 ms / 1,109 ms</td>
+            <td class="num good">0 tasks &gt; 50 ms</td>
+            <td>Phase 2 (C5)</td>
+          </tr>
+          <tr>
+            <td><code>GET /api/spaces</code> and <code>/api/changes</code> (10k docs / 100k revs)</td>
+            <td class="num bad">98.6 ms / 94.3 ms</td>
+            <td class="num good">&lt; 10 ms (p95)</td>
+            <td>Phase 0 (S2, S5) + Phase 1 (S1)</td>
+          </tr>
+          <tr>
+            <td><code>GET /api/docs/{id}/revisions</code> (203 x 512 KB revs)</td>
+            <td class="num bad">69.8 ms</td>
+            <td class="num good">&lt; 5 ms</td>
+            <td>Phase 0 (S4 stored size)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="src">Checked against <code>urza/editor</code> at commit <code>0bafa3a</code>. Full technical write-up with exact SQL query plans and all raw numbers lives in <a href="https://github.com/urza/editor/blob/main/performance-review.md"><code>performance-review.md</code></a>. Authored by d3mina (Gemini 4 Neon).</p>
+  </section>
+
+</main>
+
+<div class="slide-footer-bar" aria-hidden="true"><div class="slide-progress" id="slide-progress"></div></div>
+
+<script>
+(() => {
+  // Presentation slide deck toggle + keyboard navigation.
+  const slides = Array.from(document.querySelectorAll(".slide"));
+  const toggleBtn = document.getElementById("toggle-deck");
+  const prevBtn = document.getElementById("prev-slide");
+  const nextBtn = document.getElementById("next-slide");
+  const counter = document.getElementById("slide-counter");
+  const progress = document.getElementById("slide-progress");
+  let active = 0;
+
+  function showSlide(index) {
+    active = Math.max(0, Math.min(slides.length - 1, index));
+    slides.forEach((el, i) => el.classList.toggle("is-active", i === active));
+    counter.textContent = (active + 1) + " / " + slides.length;
+    progress.style.width = (((active + 1) / slides.length) * 100) + "%";
+    prevBtn.disabled = active === 0;
+    nextBtn.disabled = active === slides.length - 1;
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+
+  function setDeckMode(on) {
+    document.body.classList.toggle("deck-mode", on);
+    toggleBtn.textContent = on ? "Exit Slides" : "Present Slides";
+    if (on) showSlide(active);
+  }
+
+  toggleBtn.addEventListener("click", () => {
+    setDeckMode(!document.body.classList.contains("deck-mode"));
+  });
+  prevBtn.addEventListener("click", () => showSlide(active - 1));
+  nextBtn.addEventListener("click", () => showSlide(active + 1));
+
+  document.addEventListener("keydown", (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if (event.key === "p" || event.key === "P") {
+      event.preventDefault();
+      setDeckMode(!document.body.classList.contains("deck-mode"));
+      return;
+    }
+    if (!document.body.classList.contains("deck-mode")) return;
+    if (event.key === "ArrowRight" || event.key === " " || event.key === "PageDown") {
+      event.preventDefault();
+      showSlide(active + 1);
+    } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+      event.preventDefault();
+      showSlide(active - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setDeckMode(false);
+    }
+  });
+
+  // Findings matrix layer + phase filters.
+  let layer = "all";
+  let phase = "all";
+  const cards = Array.from(document.querySelectorAll(".fcard"));
+  const countEl = document.getElementById("finding-count");
+
+  function applyFilters() {
+    let shown = 0;
+    for (const card of cards) {
+      const okLayer = layer === "all" || card.dataset.layer === layer;
+      const okPhase = phase === "all" || card.dataset.phase === phase;
+      const visible = okLayer && okPhase;
+      card.classList.toggle("hidden", !visible);
+      if (visible) shown++;
+    }
+    countEl.textContent = "Showing " + shown + " of " + cards.length + " findings";
+  }
+
+  for (const btn of document.querySelectorAll(".fbtn[data-layer]")) {
+    btn.addEventListener("click", () => {
+      layer = btn.dataset.layer;
+      for (const b of document.querySelectorAll(".fbtn[data-layer]")) {
+        b.classList.toggle("active", b === btn);
+      }
+      applyFilters();
+    });
+  }
+  for (const btn of document.querySelectorAll(".fbtn[data-phase]")) {
+    btn.addEventListener("click", () => {
+      phase = btn.dataset.phase;
+      for (const b of document.querySelectorAll(".fbtn[data-phase]")) {
+        b.classList.toggle("active", b === btn);
+      }
+      applyFilters();
+    });
+  }
+})();
+</script>
+</body>
+</html>
