@@ -1389,6 +1389,11 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   position: absolute;
   inset: 0;
   z-index: 10;
+  /* Lock the horizontal axis on the panel itself: overflow-y: auto alone
+     computes overflow-x to auto, letting any wide row make the whole panel
+     drift sideways on touch screens. Horizontal scrollers (.settings-jump,
+     .settings-grid-wrap) handle their own overflow inside. */
+  overflow-x: hidden;
   overflow-y: auto;
   /* Keyboard focus scrolls a row out from under the sticky head. */
   scroll-padding-top: var(--ui-top-h);
@@ -1497,7 +1502,10 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   display: none;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
   padding: 0 0 8px;
   border-bottom: 1px solid #353B43;
@@ -1832,12 +1840,18 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   color: #FFFFFF;
 }
 
+/* flex-shrink: 1 + min-width: 0 + max-width: 100% are load-bearing on phones:
+   a long sync status ("synced · last sync …") inside this wrapper otherwise
+   keeps its max-content width and widens the entire settings panel past the
+   viewport. */
 .settings-actions {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 .settings-actions > [hidden] { display: none; }
 
@@ -1845,7 +1859,8 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
    takes the panel button's frame, so a select and a button side by side in
    one list look like one family of controls. */
 .settings-select {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: 100%;
   padding: 4px 8px;
   border: 1px solid var(--st-selection-border);
   border-radius: 3px;
@@ -1923,7 +1938,14 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
    tick where a device is a member. It scrolls sideways on a phone rather
    than squeezing the space names; the first column stays sticky so the
    device name remains visible beside distant space columns. */
-.settings-grid-wrap { overflow-x: auto; margin-top: 6px; }
+.settings-grid-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  margin-top: 6px;
+}
 .settings-grid { border-collapse: collapse; font-size: var(--ui-md); }
 .settings-grid th,
 .settings-grid td {
