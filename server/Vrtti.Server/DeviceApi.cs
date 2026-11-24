@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
 
 namespace Vrtti.Server;
 
@@ -14,6 +15,23 @@ public static class Auth
     public static Caller Caller(this HttpContext context) =>
         context.Items[typeof(Caller)] as Caller
         ?? throw new InvalidOperationException("no device on this request");
+
+    /// <summary>
+    /// Returns the request's shared <see cref="SqliteConnection"/>, opening one on first use and
+    /// registering it for disposal at the end of the response so auth and endpoint share one handle.
+    /// </summary>
+    public static SqliteConnection GetConnection(this HttpContext context, Db db)
+    {
+        if (context.Items[typeof(SqliteConnection)] is SqliteConnection existing)
+        {
+            return existing;
+        }
+
+        var conn = db.Open();
+        context.Items[typeof(SqliteConnection)] = conn;
+        context.Response.RegisterForDispose(conn);
+        return conn;
+    }
 }
 
 /// <summary>Registration, successors and joins (architecture.md section 27).</summary>
@@ -42,13 +60,13 @@ public static partial class DeviceApi
                 return Results.Json(new ErrorResponse("only the server token registers a device"), statusCode: 403);
             }
 
-            return Register(db, clock, request, viaServerToken: true, predecessor: null);
+            return Register(context, db, clock, request, viaServerToken: true, predecessor: null);
         });
 
         // A change of the passphrase switch makes a new key pair and so a new device. The
         // old device token vouches for it, once.
         api.MapPost("/devices/successor", (HttpContext context, Db db, TimeProvider clock, RegisterRequest request) =>
-            Register(db, clock, request, viaServerToken: false, predecessor: context.Caller().Id));
+            Register(context, db, clock, request, viaServerToken: false, predecessor: context.Caller().Id));
 
         api.MapPost("/joins", (HttpContext context, Db db, TimeProvider clock, JoinCreateRequest request) =>
         {
@@ -62,7 +80,7 @@ public static partial class DeviceApi
                 return Results.BadRequest(new ErrorResponse("slot, verifier and spaces are required"));
             }
 
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             using var transaction = conn.BeginTransaction(deferred: false);
             // A member gives away only spaces it is in; the server enforces it here, and
             // the add entries later need the membership anyway.
@@ -129,7 +147,7 @@ public static partial class DeviceApi
         // The member's next sync finds the device that used its code.
         api.MapGet("/joins", (HttpContext context, Db db) =>
         {
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return Results.Ok(Devices.Pending(conn, context.Caller().Id));
         });
 
@@ -140,7 +158,7 @@ public static partial class DeviceApi
                 return Results.BadRequest(new ErrorResponse("reply and mac are required"));
             }
 
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return Devices.Answer(conn, slot, context.Caller().Id, reply, mac)
                 ? Results.NoContent()
                 : Results.NotFound(new ErrorResponse("no pending join of yours on this slot"));
@@ -149,21 +167,21 @@ public static partial class DeviceApi
         // The new device polls here and shows "Waiting for <member>…" while both are null.
         api.MapGet("/joins/{slot}/reply", (HttpContext context, Db db, string slot) =>
         {
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             return Devices.ReplyFor(conn, slot, context.Caller().Id) is { } reply
                 ? Results.Ok(reply)
                 : Results.NotFound(new ErrorResponse("no join of this device on this slot"));
         });
     }
 
-    static IResult Register(Db db, TimeProvider clock, RegisterRequest request, bool viaServerToken, string? predecessor)
+    static IResult Register(HttpContext context, Db db, TimeProvider clock, RegisterRequest request, bool viaServerToken, string? predecessor)
     {
         if (request.Id is not { Length: > 0 and <= 64 } id || !Devices.IsTokenHash(request.TokenHash))
         {
             return Results.BadRequest(new ErrorResponse("id and tokenHash (64 lowercase hex) are required"));
         }
 
-        using var conn = db.Open();
+        var conn = context.GetConnection(db);
         return Devices.Register(conn, id, request.TokenHash!, viaServerToken, predecessor, clock.GetUtcNow().ToUnixTimeMilliseconds())
             ? Results.Created("/api/devices", null)
             : Results.Conflict(new ErrorResponse(predecessor is null

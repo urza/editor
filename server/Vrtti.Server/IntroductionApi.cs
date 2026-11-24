@@ -17,9 +17,9 @@ public static class IntroductionApi
     {
         // Every registered device reads every entry: a device needs the entries of
         // devices it shares no space with, or it cannot follow a chain to them.
-        api.MapGet("/introductions", (Db db) =>
+        api.MapGet("/introductions", (HttpContext context, Db db) =>
         {
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             using var cmd = Db.Command(conn, "SELECT device, by, replaces, sig FROM introductions ORDER BY created, rowid");
             using var reader = cmd.ExecuteReader();
             var all = new List<Introduction>();
@@ -47,7 +47,7 @@ public static class IntroductionApi
                 return Results.Json(new ErrorResponse("by must be the calling device"), statusCode: 403);
             }
 
-            using var conn = db.Open();
+            var conn = context.GetConnection(db);
             if (SpaceLog.DeviceIdOf(device) is not { } deviceId || !Devices.Exists(conn, deviceId))
             {
                 return Results.BadRequest(new ErrorResponse("device is not a registered device"));
