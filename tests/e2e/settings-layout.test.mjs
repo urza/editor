@@ -414,7 +414,7 @@ describe(
         "Storage",
         "App",
       ]);
-      assert.match(info.spacesEmpty, /No spaces on this device yet/);
+      assert.match(info.spacesEmpty, /No spaces yet/);
       assert.equal(info.hasNewSpaceBtn, true);
       assert.equal(info.newNotesListChildren, 0, "New notes must be a single select row, not a nested list");
       assert.equal(info.newNotesVal, "");
@@ -551,8 +551,39 @@ describe(
         const listRowsDisplay = getComputedStyle(panel.querySelector('[data-key="list-rows"]')).display;
         const sidebarNewDisplay = getComputedStyle(panel.querySelector('[data-key="sidebar-new"]')).display;
 
+        // Verify every visible hint stays within 2 lines on a phone screen,
+        // and that the (i) info button toggles extra details without overflow
+        // or collapsing on live sync repaints.
+        const longHints = [];
+        for (const hint of panel.querySelectorAll(".settings-hint")) {
+          if (hint.closest("[hidden], details:not([open])")) continue;
+          const r = hint.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          const lh = parseFloat(getComputedStyle(hint).lineHeight) || 18;
+          const lines = Math.round(r.height / lh);
+          if (lines > 2) {
+            longHints.push({
+              key: hint.closest("[data-key]")?.dataset.key ?? "",
+              lines,
+              text: hint.textContent,
+            });
+          }
+        }
+        const spellRow = panel.querySelector('[data-key="spellcheck"]');
+        const infoBtn = spellRow.querySelector(".settings-info-btn");
+        const moreEl = spellRow.querySelector(".settings-more");
+        const moreInitiallyHidden = moreEl.hidden;
+        infoBtn.click();
+        const moreOpenAfterClick = !moreEl.hidden && infoBtn.getAttribute("aria-expanded") === "true";
+        await window.vrtti.sync.syncNow();
+        await new Promise((r) => setTimeout(r, 60));
+        const moreStillOpenAfterSync = !moreEl.hidden;
+        infoBtn.click();
+        const moreClosedAfterSecondClick = moreEl.hidden && infoBtn.getAttribute("aria-expanded") === "false";
+
         // Verify zero horizontal overflow on the panel itself (including with
-        // a long sync status string and open Keys disclosure).
+        // a long sync status string, open Keys, and an open (i) disclosure).
+        infoBtn.click();
         const statusVal = panel.querySelector('[data-key="sync-status"] .settings-value');
         statusVal.textContent = "synced · last sync 11:28:15 PM · test: connected";
         panel.querySelector('[data-key="security-keys"] details').open = true;
@@ -576,6 +607,11 @@ describe(
           gridThPos,
           listRowsDisplay,
           sidebarNewDisplay,
+          longHints,
+          moreInitiallyHidden,
+          moreOpenAfterClick,
+          moreStillOpenAfterSync,
+          moreClosedAfterSecondClick,
           panelCW: panel.clientWidth,
           panelSW: panel.scrollWidth,
           offenders,
@@ -599,6 +635,11 @@ describe(
       assert.equal(phone.gridThPos, "sticky");
       assert.equal(phone.listRowsDisplay, "flex");
       assert.equal(phone.sidebarNewDisplay, "none");
+      assert.deepEqual(phone.longHints, [], "every visible hint on a phone must fit in at most 2 lines");
+      assert.equal(phone.moreInitiallyHidden, true);
+      assert.equal(phone.moreOpenAfterClick, true);
+      assert.equal(phone.moreStillOpenAfterSync, true);
+      assert.equal(phone.moreClosedAfterSecondClick, true);
       assert.equal(phone.panelSW, phone.panelCW, "phone settings panel must not scroll horizontally");
       assert.deepEqual(phone.offenders, [], "no non-scroller element may extend outside the phone settings panel");
     });

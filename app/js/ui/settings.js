@@ -69,7 +69,8 @@ let testResult = "";
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a row (or heading text of a subhead).
- * @property {string} [hint]   Small line under the label.
+ * @property {string} [hint]   Short line under the label (1-2 lines on a phone).
+ * @property {string} [more]   Optional extra explanation hidden behind an inline (i) button.
  * @property {() => any} [get]        toggle: the state. text/select: the value.
  * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text/select:
  *                             dispatch the new value.
@@ -292,9 +293,8 @@ const SECTIONS = [
         type: "stepper",
         key: "editor-size",
         label: "Editor text size",
-        hint:
-          "The note text only. A setting of this device, so it never syncs. " +
-          "Ctrl+wheel over a note zooms that note alone, on this device.",
+        hint: "Note text only. This device.",
+        more: "Does not sync to other devices. Ctrl+wheel over a note zooms that note alone on this device.",
         unit: " px",
         min: EDITOR.min,
         max: EDITOR.max,
@@ -306,7 +306,7 @@ const SECTIONS = [
         type: "stepper",
         key: "ui-size",
         label: "Interface text size",
-        hint: "The sidebar, the status bar, the menus and this panel.",
+        hint: "Sidebar, status bar, menus.",
         unit: " %",
         min: UI.min,
         max: UI.max,
@@ -318,9 +318,8 @@ const SECTIONS = [
         type: "toggle",
         key: "sidebar-new",
         label: "The + button in the sidebar",
-        hint:
-          "A phone also has the round + over the editor, so this one can go. " +
-          "A setting of this device.",
+        hint: "This device only.",
+        more: "A phone also has the round + over the editor, so this button can be hidden.",
         get: () => sidebarNewButtonShown(),
         set: () => run("view.sidebarNewButton"),
       },
@@ -332,9 +331,8 @@ const SECTIONS = [
         type: "toggle",
         key: "list-rows",
         label: "Longer rows in the note list",
-        hint:
-          "Each note shows two lines of its text in place of one. " +
-          "A setting of this device.",
+        hint: "Two preview lines per note.",
+        more: "Shows two lines of each note's text in place of one. Stays on this device.",
         get: () => listRowsLong(),
         set: () => run("view.listRows"),
       },
@@ -348,10 +346,10 @@ const SECTIONS = [
         type: "toggle",
         key: "spellcheck",
         label: "Spellcheck (English and Czech)",
-        hint:
-          "Offline. A word is marked only when each language of the note rejects it: " +
-          "a typo red, Czech without diacritics and style hints blue. " +
-          "A setting of this device.",
+        hint: "Offline. This device only.",
+        more:
+          "Marks a word only when each active language of the note rejects it: " +
+          "red for typos, blue for missing Czech diacritics and style hints.",
         get: () => isEnabled(),
         set: () => run("spell.toggle"),
       },
@@ -362,7 +360,7 @@ const SECTIONS = [
         key: "spell-cs",
         label: "Czech in this note",
         visible: () => Boolean(store?.activeId),
-        hint: "A setting of the open note. It syncs with the note.",
+        hint: "Syncs with this note.",
         get: () => noteLangOn("cs"),
         set: () => run("spell.lang", "cs"),
       },
@@ -371,7 +369,7 @@ const SECTIONS = [
         key: "spell-en",
         label: "English in this note",
         visible: () => Boolean(store?.activeId),
-        hint: "A setting of the open note. It syncs with the note.",
+        hint: "Syncs with this note.",
         get: () => noteLangOn("en"),
         set: () => run("spell.lang", "en"),
       },
@@ -390,7 +388,8 @@ const SECTIONS = [
         type: "info",
         key: "model-state",
         label: "Model",
-        hint: "The model of the sync server for “Add diacritics (vllm)”. The sync server checks it when you open Settings.",
+        hint: "Server model for Add diacritics.",
+        more: "The sync server checks vLLM live when you open Settings (at most every 30 seconds).",
         visible: () => Boolean(sync?.hasModel),
         value: async () => {
           await sync?.probeModel();
@@ -405,11 +404,11 @@ const SECTIONS = [
       {
         type: "toggle",
         key: "model-czech",
-        label: "Model may fix English-looking words in Czech paragraphs",
-        hint:
-          "For \u201cAdd diacritics (vllm)\u201d. Short Czech words such as az, tim or mit " +
-          "look English to the checker. On: the model may write až, tím, mít in a Czech " +
-          "paragraph, and it may also change a real English word there. A setting of this device.",
+        label: "Fix English-looking words in Czech",
+        hint: "For Add diacritics. This device.",
+        more:
+          "Short Czech words such as az, tim, or mit look English to the checker. " +
+          "When on, the model may write až, tím, or mít in a Czech paragraph, and it may also change a real English word there.",
         visible: () => Boolean(sync?.hasModel),
         get: () => modelFixesCzechParagraphs(),
         set: () => setModelFixesCzechParagraphs(!modelFixesCzechParagraphs()),
@@ -425,16 +424,17 @@ const SECTIONS = [
         type: "info",
         key: "sync-url",
         label: "Server",
-        hint: "Your own vrtti server. Without one, your notes stay on this device.",
+        hint: "Without one, notes stay local.",
         value: () => (sync?.isConfigured || sync?.needsUpgrade ? sync.config.url : "none"),
       },
       {
         type: "action",
         key: "sync-connect",
         label: "Sync with a server",
-        hint:
-          "The first device types the server URL and the VRTTI_TOKEN. Every other device pastes an invite " +
-          "from “Invite a device” in Settings › Devices on a device that syncs.",
+        hint: "Use a server token or an invite.",
+        more:
+          "The first device enters the server URL and VRTTI_TOKEN. Every other device pastes an invite " +
+          "from “Invite a device” in Settings › Devices on a synced device.",
         button: "connect",
         // Shown before device setup too: a new device looks for sync here, not
         // in Settings › Security. The connect flow makes the keys when the
@@ -446,7 +446,7 @@ const SECTIONS = [
         type: "action",
         key: "sync-status",
         label: "Status",
-        hint: "Sync runs by itself after each edit and once a minute.",
+        hint: "Syncs after edits and every minute.",
         visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
         value: () => syncStatusText(),
         actions: [
@@ -476,7 +476,7 @@ const SECTIONS = [
         type: "action",
         key: "sync-disconnect",
         label: "Stop syncing this device",
-        hint: "This device forgets its server. Your notes stay here.",
+        hint: "Forgets the server. Notes stay here.",
         button: "stop",
         danger: true,
         visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
@@ -496,15 +496,16 @@ const SECTIONS = [
         type: "list",
         key: "sync-spaces",
         label: "Your spaces",
-        hint: hasDisk
-          ? "Click a color square to change a space's color. Pick how notes open on this device, or back up a space to a folder."
-          : "Tap a color square to change a space's color. Pick how notes open on this device.",
+        hint: hasDisk ? "Click a color square to change it." : "Tap a color square to change it.",
+        more: hasDisk
+          ? "Choose whether each space opens notes as tabs or lists titles only. Back up writes every note of a space into a folder as plain text or .age files."
+          : "Choose whether each space opens notes as tabs or lists titles only. To leave a space, untick this device in Settings › Devices.",
         headerAction: {
           key: "space-create",
           button: "+ new space",
           act: () => run("space.create"),
         },
-        empty: "No spaces on this device yet. Create one to sync notes with your other devices.",
+        empty: "No spaces yet. Create one to sync notes.",
         visible: () => Boolean(sync?.isConfigured),
         rows: spaceRows,
       },
@@ -512,9 +513,10 @@ const SECTIONS = [
         type: "select",
         key: "sync-new-notes",
         label: "New notes",
-        hint:
-          "Where a new note goes: one of your spaces, or Local only. With Local only, you sync a note " +
-          "from its menu. Only you change this; a new space does not.",
+        hint: "Default space for new notes.",
+        more:
+          "Pick one of your spaces or Local only. With Local only, sync a note from its menu. " +
+          "Only you change this setting; creating a space does not.",
         visible: () => Boolean(sync?.isConfigured),
         get: () => sync?.defaultSpace() ?? "",
         options: () => [
@@ -543,9 +545,10 @@ const SECTIONS = [
         type: "action",
         key: "sync-all",
         label: "Sync every open note",
-        hint:
-          "Turns on sync for each note in this window's Open list, into the " +
-          "New notes space, or a space you pick when that is Local only. Notes in Recent and files stay as they are.",
+        hint: "Syncs local notes in Open.",
+        more:
+          "Turns on sync for each note in this window's Open list, into the New notes space " +
+          "(or a space you pick when set to Local only). Notes in Recent and files stay as they are.",
         button: "sync all",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("sync.all"),
@@ -565,7 +568,8 @@ const SECTIONS = [
         type: "action",
         key: "device-name",
         label: "This device",
-        hint: "The name your other devices show for this one. Invite another device to add it to this server.",
+        hint: "Name shown on other devices.",
+        more: "Invite another device to add it to this server and share spaces with it.",
         visible: () => Boolean(sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
         actions: [
@@ -583,24 +587,22 @@ const SECTIONS = [
         key: "sync-directory-missing",
         callout: true,
         text:
-          "Update the sync server. This server has no device directory, so a device shows here " +
-          "only when it shares a space with this device.",
+          "Update the sync server. Without a device directory, devices appear here only when they share a space.",
         visible: () => Boolean(sync?.isConfigured && sync.directoryMissing),
       },
       {
         type: "grid",
         key: "device-grid",
         label: "Space access",
-        hint:
-          "Only ticked devices get and decrypt a space's notes. Untick this device to leave a space. " +
-          "Click a space name to change its color.",
+        hint: "Ticked devices receive and decrypt notes.",
+        more: "Untick a device to remove it, or untick this device to leave a space. Click a space name to change its color.",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         grid: deviceGrid,
       },
       {
         type: "note",
         key: "device-no-spaces",
-        text: "Create a space in Spaces above to choose which devices receive its notes. You can still invite devices now.",
+        text: "Create a space in Spaces above to share notes.",
         visible: () => Boolean(sync?.isConfigured && !sync.mySpaces().length),
       },
     ],
@@ -618,9 +620,8 @@ const SECTIONS = [
         type: "action",
         key: "device-setup",
         label: "Set up this device",
-        hint:
-          "This device gets a key and a name. Your first device also makes a recovery key; " +
-          "every other device joins with an invite.",
+        hint: "Creates a name and keys.",
+        more: "Your first device also creates a recovery key. Every other device joins with an invite.",
         button: "set up",
         visible: () => !keyring?.isSetUp,
         act: () => run("device.setup"),
@@ -631,7 +632,7 @@ const SECTIONS = [
         type: "info",
         key: "security-device-name",
         label: "This device",
-        hint: "The name stored with this device's key.",
+        hint: "Name stored with this key.",
         visible: () => Boolean(keyring?.isSetUp && !sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
       },
@@ -639,9 +640,10 @@ const SECTIONS = [
         type: "action",
         key: "passphrase-switch",
         label: "Ask for a passphrase at start",
-        hint:
-          "Off: this device keeps its key and opens your notes at once. On: each start asks for the passphrase. " +
-          "A change gives this device new keys.",
+        hint: "Prompt for a passphrase on open.",
+        more:
+          "Off: keeps its key and opens notes at once. On: asks for the passphrase at each start. " +
+          "Changing this gives this device new keys.",
         button: "change",
         visible: () => Boolean(keyring?.isSetUp && keyring.isUnlocked),
         value: () => (keyring?.askPassphrase ? "on" : "off"),
@@ -651,7 +653,8 @@ const SECTIONS = [
         type: "action",
         key: "crypto-unlock",
         label: "Unlock",
-        hint: "Asks your passphrase. Your notes then open until you press Lock or close the last window.",
+        hint: "Open encrypted notes.",
+        more: "Asks for your passphrase. Notes stay open until you press Lock or close the last window.",
         button: "unlock",
         visible: () => Boolean(keyring?.isSetUp) && !keyring?.isUnlocked,
         act: () => run("crypto.unlock"),
@@ -660,7 +663,8 @@ const SECTIONS = [
         type: "action",
         key: "crypto-lock",
         label: "Lock",
-        hint: "Encrypted notes close until you unlock again. Their undo history is dropped.",
+        hint: "Close encrypted notes.",
+        more: "Encrypted notes stay closed until you unlock again. Undo history for those notes is dropped.",
         button: "lock",
         visible: () => Boolean(keyring?.isUnlocked && keyring.askPassphrase),
         act: () => run("crypto.lock"),
@@ -669,7 +673,7 @@ const SECTIONS = [
         type: "details",
         key: "security-keys",
         label: "Device and recovery keys",
-        hint: "Public age keys for this device and offline recovery. Not a secret.",
+        hint: "Public age keys. Not a secret.",
         visible: () => Boolean(keyring?.isSetUp || keyring?.recoveryRecipients.length),
         blocks: () => {
           /** @type {DetailBlock[]} */
@@ -678,7 +682,7 @@ const SECTIONS = [
             list.push({
               key: "device-key",
               label: "Device key",
-              hint: "This device's public key, not a secret.",
+              hint: "Public key for this device.",
               value: keyring.deviceRecipient,
             });
           }
@@ -686,8 +690,7 @@ const SECTIONS = [
             list.push({
               key: "recovery-key",
               label: "Recovery key (public)",
-              hint:
-                "Every synced note is encrypted to this key too, so its private half opens every note with the age tool.",
+              hint: "Opens every synced note offline with age.",
               value: keyring.recoveryRecipients.join(" "),
             });
           }
@@ -706,7 +709,8 @@ const SECTIONS = [
         type: "info",
         key: "persisted",
         label: "Persistent storage",
-        hint: "Without it the browser may delete your notes when disk space runs low.",
+        hint: "Prevents automatic browser cleanup.",
+        more: "Without persistent storage, the browser may delete your notes when disk space runs low.",
         value: async () => ((await isPersisted()) ? "granted" : "not granted"),
       },
       {
@@ -723,7 +727,8 @@ const SECTIONS = [
         type: "action",
         key: "request-persist",
         label: "Request persistent storage",
-        hint: "Chrome grants it silently to an installed app; other browsers ask.",
+        hint: "Ask the browser to keep data.",
+        more: "Chrome grants it silently to an installed app; other browsers ask.",
         button: "request",
         // Pointless once the grant exists, so the row disappears with it.
         visible: async () => !(await isPersisted()),
@@ -743,10 +748,8 @@ const SECTIONS = [
         type: "action",
         key: "update",
         label: "Version",
-        hint:
-          "Built " +
-          new Date(BUILD.builtAt).toLocaleString() +
-          ". Looks for a newer build; if there is one, the app loads it and starts again.",
+        hint: "Built " + new Date(BUILD.builtAt).toLocaleString(),
+        more: "Checks for a newer build. If one exists, the app loads it and starts again.",
         value: () => updateStatus ?? BUILD.commit,
         button: "check",
         // The check reports in steps ("checking…", then the result, then
@@ -762,7 +765,8 @@ const SECTIONS = [
         type: "action",
         key: "log",
         label: "Log",
-        hint: "What the app did lately, and its errors. Copy it into a bug report.",
+        hint: "Recent events and errors.",
+        more: "Open and copy the log when reporting a problem.",
         button: "show",
         act: () => run("app.log"),
       },
@@ -793,20 +797,53 @@ const SECTIONS = [
 ];
 
 /**
+ * Build the label column for a settings row. A short `hint` stays visible in
+ * one or two lines; optional longer `more` text hides behind an inline "i"
+ * button so normal scanning stays compact on phones.
  * @param {string} label
  * @param {string} [hint]
+ * @param {string} [more]
  */
-function labelBlock(label, hint) {
+function labelBlock(label, hint, more) {
   const wrap = document.createElement("div");
   wrap.className = "settings-label";
-  const name = document.createElement("div");
+  const nameRow = document.createElement("div");
+  nameRow.className = "settings-label-row";
+  const name = document.createElement("span");
   name.textContent = label;
-  wrap.appendChild(name);
+  nameRow.appendChild(name);
+  wrap.appendChild(nameRow);
   if (hint) {
     const small = document.createElement("p");
     small.className = "settings-hint";
     small.textContent = hint;
     wrap.appendChild(small);
+  }
+  if (more) {
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "settings-info-btn";
+    infoBtn.textContent = "i";
+    infoBtn.title = "More info";
+    infoBtn.setAttribute("aria-label", "More about " + label);
+    infoBtn.setAttribute("aria-expanded", "false");
+
+    const moreEl = document.createElement("p");
+    moreEl.className = "settings-more";
+    moreEl.textContent = more;
+    moreEl.hidden = true;
+
+    infoBtn.addEventListener("click", (event) => {
+      // Stop propagation so an info button inside a <summary> or interactive
+      // wrapper toggles only its own disclosure.
+      event.stopPropagation();
+      event.preventDefault();
+      const open = moreEl.hidden;
+      moreEl.hidden = !open;
+      infoBtn.setAttribute("aria-expanded", String(open));
+    });
+    nameRow.appendChild(infoBtn);
+    wrap.appendChild(moreEl);
   }
   return wrap;
 }
@@ -896,7 +933,7 @@ function makeRow(item, refresh) {
       row.appendChild(anchor);
     }
   } else if (item.type !== "details" && !(item.type === "list" && item.headerAction)) {
-    labels = labelBlock(item.label ?? "", item.hint);
+    labels = labelBlock(item.label ?? "", item.hint, item.more);
     row.appendChild(labels);
   }
 
@@ -1059,7 +1096,7 @@ function makeRow(item, refresh) {
     if (item.headerAction) {
       const headerRow = document.createElement("div");
       headerRow.className = "settings-list-header";
-      labels = labelBlock(item.label ?? "", item.hint);
+      labels = labelBlock(item.label ?? "", item.hint, item.more);
       const headerBtn = makeActionButton(item.headerAction, refresh);
       headerRow.append(labels, headerBtn);
       row.appendChild(headerRow);
@@ -1254,7 +1291,7 @@ function makeRow(item, refresh) {
     details.className = "settings-details";
     const summary = document.createElement("summary");
     summary.className = "settings-details-summary";
-    summary.appendChild(labelBlock(item.label ?? "", item.hint));
+    summary.appendChild(labelBlock(item.label ?? "", item.hint, item.more));
     const chevron = document.createElement("span");
     chevron.className = "settings-details-state";
     chevron.setAttribute("aria-hidden", "true");
