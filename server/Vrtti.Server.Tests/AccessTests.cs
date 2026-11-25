@@ -84,6 +84,45 @@ public class AccessTests
         Assert.Equal(HttpStatusCode.BadRequest, tombstone.StatusCode);
     }
 
+    [Fact]
+    public async Task The_shared_settings_reach_each_device_and_must_be_an_age_file()
+    {
+        var (app, phone, dev) = await Start();
+        using var _ = app;
+        var meta = new { kind = "shared-settings" };
+
+        // phone and dev share no space. The settings still go from one to the other,
+        // because each registered device reads the keyring space.
+        using var push = await Push(phone.Http, "shared-settings", "keyring", meta: meta);
+        Assert.Equal(HttpStatusCode.Created, push.StatusCode);
+        var changes = await dev.Http.GetFromJsonAsync<ChangesResponse>("/api/changes");
+        var change = Assert.Single(changes!.Changes);
+        Assert.Equal("shared-settings", change.DocId);
+        Assert.Equal(Age, change.Content);
+
+        // The other device writes the next revision, and a stale one gets the 409.
+        using var devPush = await Push(dev.Http, "shared-settings", "keyring", baseRev: 1, meta: meta);
+        Assert.Equal(HttpStatusCode.Created, devPush.StatusCode);
+        using var stale = await Push(phone.Http, "shared-settings", "keyring", baseRev: 1, meta: meta);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+
+        // The user's words come from the notes: no readable copy on the server.
+        using var plain = await Push(phone.Http, "shared-settings", "keyring", baseRev: 2, content: "{\"v\":1}", meta: meta);
+        Assert.Equal(HttpStatusCode.BadRequest, plain.StatusCode);
+        using var title = await Push(phone.Http, "shared-settings", "keyring", baseRev: 2, meta: new { kind = "shared-settings", title = "x" });
+        Assert.Equal(HttpStatusCode.BadRequest, title.StatusCode);
+
+        // Like the keyring record: it stays in keyring, and no device removes it.
+        using var outOfKeyring = await Push(phone.Http, "shared-settings", "personal", baseRev: 2);
+        Assert.Equal(HttpStatusCode.BadRequest, outOfKeyring.StatusCode);
+        using var tombstone = await Push(dev.Http, "shared-settings", "keyring", baseRev: 2, kind: "deleted", content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, tombstone.StatusCode);
+
+        // Still no third document in the keyring space.
+        using var other = await Push(dev.Http, "other-settings", "keyring", meta: meta);
+        Assert.Equal(HttpStatusCode.BadRequest, other.StatusCode);
+    }
+
     [Theory]
     [InlineData("plain text", null)]
     [InlineData(" -----BEGIN AGE ENCRYPTED FILE-----", null)]

@@ -18,7 +18,8 @@
 
 import { deleteSetting, getSetting, putSetting } from "../storage/idb.js";
 import { on, post } from "../model/channel.js";
-import { KEYRING_ID, KEYRING_SPACE } from "../model/docs.js";
+import { KEYRING_ID, KEYRING_SPACE, SETTINGS_ID } from "../model/docs.js";
+import { isSystemRecord } from "../model/lifecycle.js";
 import { hasDisk } from "../model/capabilities.js";
 import { entryKey } from "../crypto/keyring.js";
 import { sha256Hex } from "../crypto/sign.js";
@@ -85,6 +86,10 @@ const POLL = 60000;
 // Long enough that a sentence of typing is one revision, short enough that the
 // other device sees it while the user is still looking at the screen.
 const DEBOUNCE = 2000;
+// What a server from before the shared settings (§29) answers to their push.
+// The text is fixed in every such build (Program.cs before 2026-11-24), which
+// is why it can be matched here.
+const OLD_SERVER_REFUSAL = "only the keyring document lives in keyring";
 
 /**
  * The server's rule for a space name (architecture.md §25). The client checks
@@ -126,6 +131,8 @@ function newToken() {
  * @property {boolean} [directoryMissing]  The server has no device directory.
  *   In the status because only the leader pulls, and every window's Settings
  *   shows the note.
+ * @property {boolean} [settingsRefused]  The server is from before the shared
+ *   settings (§29). In the status for the same reason.
  */
 
 /**
@@ -178,6 +185,13 @@ export function createSyncClient({ store, keyring }) {
   const sent = new Set();
   /** The server has no /api/introductions (an older build). */
   let directoryMissing = false;
+  /**
+   * The server refused the shared settings record (an older build, §29).
+   * Until the next start of the app the record is not pushed again: without
+   * this stop every round, one a minute, would fail and the status bar would
+   * read "sync failed" for a server that is merely older.
+   */
+  let settingsRefused = false;
   /** @type {{slot: string, code: string, modes?: Record<string, "tab" | "list">} | null} */
   let joining = null;
   /** @type {SyncStatus} */
@@ -284,6 +298,18 @@ export function createSyncClient({ store, keyring }) {
   function recipients(space) {
     if (!isMine(space)) return [];
     return states[space].members.map((key) => parseEntryKey(key)?.recipient ?? "").filter(Boolean);
+  }
+
+  /**
+   * The age recipients of the known devices (knownSet): the readers of the
+   * shared settings (§29). Those settings belong to no space, so no space
+   * log can name their readers; the known devices are "all devices of the
+   * user" as far as this device can tell, and they are the rows of the grid
+   * in Settings > Devices.
+   * @returns {string[]}
+   */
+  function knownRecipients() {
+    return [...new Set([...knownSet()].map((key) => parseEntryKey(key)?.recipient ?? "").filter(Boolean))];
   }
 
   /** @param {string} space */
@@ -1000,6 +1026,12 @@ export function createSyncClient({ store, keyring }) {
         if (!states[space].members.includes(newKey)) await append(space, { op: "add", device: newKey });
       }
     }
+    // A revision of the shared settings that came while the device was
+    // locked is encrypted for the old key. This opens it while that key is
+    // still here: the old keys go as soon as the last note is encrypted
+    // again (reencryptStale below), and the round that would open the
+    // revision comes after that.
+    await store.refreshSharedSettings();
     // Every note encrypted now is encrypted for the old keys.
     await keyring.adopt(next, [...store.encryptedIds()]);
     rebuild();
@@ -1196,7 +1228,7 @@ export function createSyncClient({ store, keyring }) {
       return;
     }
     unreadable.delete(record.id);
-    const { payload, sentMtime } = prepared;
+    const { payload, sentMtime, readers } = prepared;
     if (attach) payload.baseRev = null;
     // Read before the request: the push clears `purge`, and the user can type
     // while it is in flight, which is what afterPush compares against.
@@ -1218,11 +1250,25 @@ export function createSyncClient({ store, keyring }) {
     }
     // 404: the note sits in a space this device is not a member of any more
     // (a move by another member, §27). The copy here goes to the trash.
-    if (res.status === 404 && record.kind !== "keyring") return store.trash(record.id);
+    if (res.status === 404 && !isSystemRecord(record)) return store.trash(record.id);
+    // A server from before §29 lets only the keyring record into the keyring
+    // space, and answers 400 with this sentence. Not an error of this device:
+    // the settings stay local, and the Spellcheck page says why. The sentence
+    // is tested, not the status alone: the current server answers 400 too,
+    // for a push that is wrong (plain text), and that must show as an error.
+    if (res.status === 400 && record.id === SETTINGS_ID) {
+      const body = await res.clone().json().catch(() => ({}));
+      if (String(body?.error ?? "").includes(OLD_SERVER_REFUSAL)) {
+        settingsRefused = true;
+        console.log("[vrtti] the sync server is older than the shared settings; they stay on this device");
+        return;
+      }
+    }
     if (!res.ok) throw httpError(res);
 
     const body = await res.json();
     await store.afterPush(record.id, body.rev, sentUpdatedAt, sentMtime, payload.kind);
+    if (readers !== undefined) await store.sharedSettingsPushed(readers);
 
     if (purge) {
       // The doc just turned encrypted, and the older revisions still hold its
@@ -1238,6 +1284,35 @@ export function createSyncClient({ store, keyring }) {
   }
 
   /**
+   * The records a round can push. The shared settings are left out in two
+   * cases, and stay dirty for later:
+   * - An older server refused them. They wait for the next start of the app.
+   * - This device holds a revision it cannot read yet (`unread`), and that
+   *   can still change: the device is locked, or its join is not done, so
+   *   the sender did not know it. A push now would go on top of that
+   *   revision without its entries, and the other devices would have to
+   *   notice and push them again. The merge after the unlock sends one
+   *   revision with everything (model/docs.js, refreshSharedSettings).
+   *
+   * An unlocked device after its join does push on top of a revision that it
+   * cannot read: no key of this device opens that revision, and no wait
+   * changes it. Its sender can be a lost device, or a removed device that
+   * encrypted for itself alone. Held back, the settings of this device, and
+   * of each device that joins through it, would never sync again. A sender
+   * that is alive has the entries of its revision, and merges them into the
+   * next one.
+   *
+   * A record that is left out must not count as work either, or each edit
+   * of any note would start a round that has nothing to send.
+   */
+  function pushable() {
+    const mayOpenLater = !keyring.isUnlocked || joining !== null;
+    return store
+      .dirtyRecords()
+      .filter((record) => !(record.id === SETTINGS_ID && (settingsRefused || (record.unread && mayOpenLater))));
+  }
+
+  /**
    * Push every dirty record. One refused note must not hold back the notes
    * after it in every round, so the loop goes on and rethrows the first error
    * at the end, for the status. A wrong token or no network would fail every
@@ -1246,7 +1321,7 @@ export function createSyncClient({ store, keyring }) {
   async function push() {
     /** @type {unknown} */
     let firstError;
-    for (const record of store.dirtyRecords()) {
+    for (const record of pushable()) {
       try {
         await pushOne(record);
       } catch (err) {
@@ -1269,8 +1344,19 @@ export function createSyncClient({ store, keyring }) {
     return Boolean(keyring.isSetUp && record && !record.sync);
   }
 
+  /**
+   * The same for the shared settings record (§29). It exists only once the
+   * user changed a rule or a word, or a pull brought it; a device that never
+   * did either has nothing to attach.
+   */
+  function settingsNeedAttach() {
+    const record = store.get(SETTINGS_ID);
+    return Boolean(keyring.isSetUp && record && !record.sync);
+  }
+
   async function ensureKeyringSynced() {
     if (keyringNeedsAttach()) await store.setSync(KEYRING_ID, true, KEYRING_SPACE);
+    if (settingsNeedAttach()) await store.setSync(SETTINGS_ID, true, KEYRING_SPACE);
   }
 
   /** Pull, then push. Single-flight; a call during a run buys one more run. */
@@ -1319,6 +1405,9 @@ export function createSyncClient({ store, keyring }) {
         // The upgrade and the re-encryption run once the members are known.
         await store.sealSynced();
         await store.reencryptStale();
+        // After the directory and the logs above: the readers of the shared
+        // settings are the known devices as of this round.
+        await store.refreshSharedSettings();
         await push();
         await rewrapStubs();
         lastSyncAt = Date.now();
@@ -1326,6 +1415,7 @@ export function createSyncClient({ store, keyring }) {
           state: "idle",
           lastSyncAt,
           directoryMissing,
+          settingsRefused,
           message: joined
             ? undefined
             : keyring.signer
@@ -1369,6 +1459,7 @@ export function createSyncClient({ store, keyring }) {
     if (next?.url !== config?.url) {
       sent.clear();
       directoryMissing = false;
+      settingsRefused = false;
     }
     config = next;
     if (next) await putSetting(CONFIG_KEY, next);
@@ -1690,7 +1781,7 @@ export function createSyncClient({ store, keyring }) {
       if (!isConfigured()) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        if (store.dirtyRecords().length > 0 || keyringNeedsAttach()) syncNow();
+        if (pushable().length > 0 || keyringNeedsAttach() || settingsNeedAttach()) syncNow();
       }, DEBOUNCE);
     };
     store.events.addEventListener("change", armPushDebounce);
@@ -1717,6 +1808,7 @@ export function createSyncClient({ store, keyring }) {
     modeOf,
     defaultSpace,
     recipients,
+    knownRecipients,
     logSeq,
     colorOf,
     mySpaces,
@@ -1744,6 +1836,11 @@ export function createSyncClient({ store, keyring }) {
     // The server has no device directory: Settings › Devices asks for an update.
     get directoryMissing() {
       return started ? directoryMissing : status.directoryMissing === true;
+    },
+    // The server is from before the shared settings: the Spellcheck page says
+    // that they stay on this device.
+    get settingsRefused() {
+      return started ? settingsRefused : status.settingsRefused === true;
     },
     get isJoining() {
       return joining !== null;

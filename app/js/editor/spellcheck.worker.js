@@ -19,6 +19,8 @@ import { createHunspellFromStrings } from "../../vendor/hunspell/dist/Hunspell.j
 import { WORD, twins } from "./diacritics.js";
 import { judge, mergeSuggestions } from "./mixed.js";
 import { segments } from "./textlang.js";
+import { buildCatalog } from "./spellrules.js";
+import { wordKey } from "../model/spellsettings.js";
 
 const HARPER_WASM_URL = new URL(
   "../../vendor/harper/harper_wasm_slim_bg.wasm",
@@ -83,8 +85,30 @@ let idleScheduled = false;
 let latestLintReqId = 0;
 
 /**
+ * The spellcheck settings that all devices share, as the main thread sent
+ * them (op "config"; editor/spellcheck.js, sendWorkerConfig). `rules` is the
+ * complete map of the Harper rules the user changed: setLintConfig replaces
+ * Harper's whole map on each call, and a missing rule runs at its default.
+ * `words` holds the keys of "My words" (wordKey). `plain` is the device
+ * switch "Mark Czech without diacritics"; it travels here with the shared
+ * settings because the word rule (mixed.js, judge) runs in this worker.
+ * @type {{ rules: Record<string, boolean>, words: Set<string>, plain: boolean }}
+ */
+let config = { rules: {}, words: new Set(), plain: true };
+
+/**
+ * Whether the user's own list has this word, in any capitalization.
+ * @param {string} word
+ */
+function isMine(word) {
+  return config.words.size > 0 && config.words.has(wordKey(word));
+}
+
+/**
  * @typedef {{ kind: number, text: string, name: string }} SerializedAction
- * @typedef {{ from: number, to: number, severity: "warning" | "info", message: string, source: string, actions: SerializedAction[] }} SerializedDiag
+ * @typedef {{ from: number, to: number, severity: "warning" | "info", message: string, source: string, actions: SerializedAction[], rule?: string }} SerializedDiag
+ *   `rule` is the Harper rule that made the mark ("LongSentences"), for the
+ *   button "Turn off" of the main thread. The app's own marks have none.
  */
 
 /** @param {Response} res */
@@ -99,6 +123,9 @@ function loadHarper() {
       const binary = harperMod.createBinaryModuleFromUrl(HARPER_WASM_URL, "slim");
       const local = new harperMod.LocalLinter({ binary });
       await local.setup();
+      // Before the first pass: a rule the user turned off must not flash its
+      // marks once at each start.
+      await local.setLintConfig(config.rules);
       harperEngine = local;
       return local;
     })().catch((err) => {
@@ -321,8 +348,12 @@ function serializeSuggestion(suggestion) {
   return { kind, text, name: kind === REMOVE ? "Remove" : text };
 }
 
-/** @param {any} lint @returns {SerializedDiag} */
-function serializeHarperLint(lint) {
+/**
+ * @param {any} lint
+ * @param {string} rule  The Harper rule that made the lint.
+ * @returns {SerializedDiag}
+ */
+function serializeHarperLint(lint, rule) {
   const span = lint.span();
   const from = span.start;
   const to = span.end;
@@ -344,6 +375,9 @@ function serializeHarperLint(lint) {
     message: lint.message(),
     source: lint.lint_kind_pretty(),
     actions,
+    // A kind ("Readability") is shared by many rules, so the rule cannot be
+    // guessed from it.
+    rule,
   };
   lint.free();
   return d;
@@ -410,6 +444,7 @@ async function lintDocument(text, requestedLangs, reqId) {
   /** @type {{ incomplete: boolean }} */
   let deferred = { incomplete: false };
   const ask = {
+    mine: isMine,
     czech: (/** @type {string} */ w) => isCzechWord(w),
     twins: (/** @type {string} */ w) => answerCzech("t" + w, budget, deferred),
   };
@@ -432,15 +467,26 @@ async function lintDocument(text, requestedLangs, reqId) {
     const relDiags = [];
 
     if (useEnglishPass) {
-      const lints = await harperEngine.lint(paraText);
-      for (const raw of lints) {
-        const d = serializeHarperLint(raw);
+      // organizedLints and not lint: it gives the same lints by rule, and a
+      // lint alone does not say which rule made it.
+      const byRule = await harperEngine.organizedLints(paraText);
+      const lints = Object.entries(byRule).flatMap(([rule, list]) =>
+        /** @type {any[]} */ (list).map((raw) => ({ raw, rule }))
+      );
+      for (const { raw, rule } of lints) {
+        const d = serializeHarperLint(raw, rule);
         const word = paraText.slice(d.from, d.to);
+        // My words: no red mark on a word of the list, whichever Harper rule
+        // made the mark and also for a token the word rule below does not
+        // cover ("v2ray"). After "Add to my words" the mark must be gone,
+        // and a filter by rule would leave the marks of every rule but
+        // SpellCheck.
+        if (d.severity === "warning" && isMine(word)) continue;
         if (d.severity !== "warning" || !/^[\p{L}\p{M}'’-]+$/u.test(word)) {
           relDiags.push(d);
           continue;
         }
-        const verdict = judge(word, langs, { ...ask, english: () => false });
+        const verdict = judge(word, langs, { ...ask, english: () => false }, config.plain);
         if (verdict === "typo") {
           const czech = langs.cs ? answerCzech("s" + word, budget, deferred) ?? [] : [];
           const names = d.actions.map((a) => a.name);
@@ -459,10 +505,10 @@ async function lintDocument(text, requestedLangs, reqId) {
       /** @type {Map<string, boolean | null>} */
       const english = new Map();
       for (const { word, from, to } of proseWordsInPara(paraText)) {
-        if (langs.en && !english.has(word) && !(langs.cs && isCzechWord(word))) {
+        if (langs.en && !english.has(word) && !isMine(word) && !(langs.cs && isCzechWord(word))) {
           english.set(word, await englishWord(word, budget, deferred));
         }
-        const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null });
+        const verdict = judge(word, langs, { ...ask, english: (w) => english.get(w) ?? null }, config.plain);
         if (verdict === "ok") continue;
         if (verdict === "pending") {
           deferred.incomplete = true;
@@ -587,6 +633,22 @@ self.addEventListener("message", async (event) => {
       } else {
         result = await lintDocument(msg.text, msg.langs, msg.reqId);
       }
+    } else if (op === "config") {
+      const rulesChanged = JSON.stringify(msg.rules ?? {}) !== JSON.stringify(config.rules);
+      config = { rules: msg.rules ?? {}, words: new Set(msg.words ?? []), plain: msg.plain !== false };
+      if (harperEngine) await harperEngine.setLintConfig(config.rules);
+      // Every cached paragraph was linted with the old settings. No pass is
+      // in the middle of a paragraph here: a pass waits for Harper alone, and
+      // those waits end before the next message is read.
+      paraCache.clear();
+      // The fixes of a word come from a Harper lint of that word alone
+      // (computeEnglishFixes), so they follow the rules: with SpellCheck off
+      // the list is empty, and it must not stay empty when the rule is back.
+      if (rulesChanged) englishSuggestions.clear();
+      result = true;
+    } else if (op === "catalog") {
+      const h = await loadHarper();
+      result = h ? await buildCatalog(h) : null;
     } else if (op === "harperLint") {
       result = await rawHarperLint(msg.text, msg.options);
     } else if (op === "isLikelyEnglish") {

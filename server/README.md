@@ -165,7 +165,7 @@ Push body:
 "attach without a claim" and always appends. `deleted` tells other devices to remove
 their copy; `detached` means the document left sync and the local copies stay.
 
-The server refuses plain text with a 400, in each space but `keyring`:
+The server refuses plain text with a 400, for each document but the keyring record:
 
 - the content of a `text` row starts with `-----BEGIN AGE ENCRYPTED FILE-----`;
   a tombstone has no content, or age content;
@@ -232,10 +232,13 @@ A device reads and writes the spaces of which it is a member, and the `keyring` 
 - A push, a tombstone and a purge need a membership of the current space of the note
   (else 404). A push to a space of which the caller is not a member is a 403, so a move
   needs both spaces.
-- `keyring` holds one document, `keyring`, and that document lives nowhere else (else
-  400). It has no tombstone. Every device writes this space, a removed one too, and the
-  plain-text check skips it, so any other document there would reach each device as a
-  readable note.
+- `keyring` holds two documents, `keyring` and `shared-settings`, and they live nowhere
+  else (else 400). They have no tombstone. Every device writes this space, a removed one
+  too, so any other document there would reach each device as a note.
+  - `keyring` is the list of devices. The plain-text check skips it.
+  - `shared-settings` holds the settings that all devices of the user share (the changed
+    spellcheck rules and the user's own words). It is an armored age file, encrypted by
+    the client for the devices it knows, and the plain-text check applies to it.
 
 ## Changes
 

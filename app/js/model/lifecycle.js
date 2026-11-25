@@ -31,6 +31,20 @@ export function spaceBadge(name) {
 }
 
 /**
+ * The records the user never opens: the device list (kind "keyring") and
+ * the shared spellcheck settings (kind "shared-settings"). They are buffer
+ * records so that they persist and sync on the existing path, but they are
+ * no notes. Every rule for notes (the lists, Recent, Trash, the 30 days)
+ * must skip them, or a settings record would land in the Trash like an old
+ * note. One function, so a third such record needs one new line.
+ * @param {{ kind?: string } | null | undefined} record
+ * @returns {boolean}
+ */
+export function isSystemRecord(record) {
+  return record?.kind === "keyring" || record?.kind === "shared-settings";
+}
+
+/**
  * Whether a closed buffer record has exceeded the 30-day local Recent limit.
  * Synced notes never auto-expire from closing; file-backed records with
  * `file.unwritten` hold unsaved text not yet on disk and never auto-expire.
@@ -43,7 +57,7 @@ export function spaceBadge(name) {
  * @returns {boolean}
  */
 export function isRecentExpired(record, now = Date.now()) {
-  if (!record || record.kind === "keyring") return false;
+  if (!record || isSystemRecord(record)) return false;
   if (record.sync || record.trashedAt) return false;
   if (record.file?.unwritten) return false;
   if (typeof record.closedAt !== "number" || !Number.isFinite(record.closedAt)) return false;

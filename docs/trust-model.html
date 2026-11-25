@@ -237,6 +237,7 @@ age1q8x…           <span class="tk-c">encryption key (public)</span>
         <thead><tr><th>The server tries to</th><th>Result</th><th>Why</th></tr></thead>
         <tbody>
           <tr><td>Read a note</td><td><span class="tag ok">no</span></td><td>Notes encrypt for the members' keys and the recovery key. The server holds none.</td></tr>
+          <tr><td>Read the spellcheck settings</td><td><span class="tag ok">no</span></td><td>The rule switches and your own words encrypt for the keys of the devices your device knows, and the recovery key.</td></tr>
           <tr><td>Add its own key to a space</td><td><span class="tag ok">no</span></td><td>The entry needs the signature of a current member.</td></tr>
           <tr><td>Make a device known</td><td><span class="tag ok">no</span></td><td>An introduction needs the signature of a known device.</td></tr>
           <tr><td>Change an old entry</td><td><span class="tag ok">no</span></td><td>The signature fails, and the next entry holds its hash.</td></tr>
@@ -272,6 +273,7 @@ age1q8x…           <span class="tk-c">encryption key (public)</span>
       <li>A device that someone takes over can change the spaces it belongs to, and lock your other devices out of those spaces. It cannot read or change other spaces.</li>
       <li>A taken-over device can vouch for a fake key (unchecked in your grids) or make a space such as <code>000</code> and add your phone. Your phone opens <code>000</code> as <i>Titles only</i>, and its <b>New notes</b> target never switches spaces on its own.</li>
       <li>A device you remove from a space keeps the notes it downloaded before removal. Removal protects new revisions only.</li>
+      <li>A device you removed from every space still gets the shared spellcheck settings (the rule switches and your own words), and it can still write them, because they belong to no space and the server cannot remove a device. A taken-over device can change your rules and your words on the other devices, or stop their sync with revisions that no other device can read. It gets no note and it can change no note.</li>
       <li>A person who controls the server during a join can guess the code offline. Each guess costs one <code>scrypt</code> run, and the code expires after ten minutes.</li>
       <li>The recovery key is for emergency decryption only. It plays no part in the trust model.</li>
     </ul>

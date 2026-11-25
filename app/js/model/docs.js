@@ -76,7 +76,8 @@ import { needsReencrypt } from "../crypto/spaces.js";
 // (editor/lang.js explains why the two stay together).
 import { detectFromName, isLang } from "../editor/lang.js";
 import { on, post } from "./channel.js";
-import { isRecentExpired, stubTitle, TRASH_KEEP } from "./lifecycle.js";
+import { isRecentExpired, isSystemRecord, stubTitle, TRASH_KEEP } from "./lifecycle.js";
+import { emptySettings, joinCopies, mergeSettings, readSettings } from "./spellsettings.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
@@ -98,6 +99,9 @@ import { isRecentExpired, stubTitle, TRASH_KEEP } from "./lifecycle.js";
  * @property {(space: string) => string[]} recipients  The members' recipients,
  *   from the verified log; empty for a space this device does not know.
  * @property {(space: string) => number} logSeq  The log position applied.
+ * @property {() => string[]} knownRecipients  The age recipients of the
+ *   known devices (sync/client.js, knownSet): the readers of the shared
+ *   settings, which belong to no space.
  */
 
 // Fixed id, not a UUID: every device must arrive at the same record so sync
@@ -111,6 +115,10 @@ export const DEFAULT_SPACE = "personal";
 // settings say: a device that misses the device list cannot read what the
 // others encrypt to it (§13.3). It is never in the modes map.
 export const KEYRING_SPACE = "keyring";
+// The hidden record of the settings that all devices share: the changed
+// spellcheck rules and "My words" (model/spellsettings.js). A fixed id for the
+// same reason as the keyring: every device must arrive at the same record.
+export const SETTINGS_ID = "shared-settings";
 const SAVE_DELAY = 300;
 // Slow poll for external edits. Window focus is the responsive trigger; this
 // only covers a window that stays focused while another program writes.
@@ -506,9 +514,10 @@ export function createDocStore({
   // only way the UI reaches records, so filtering here hides it everywhere.
   // Do not drop this filter to "simplify"; the sidebar would grow a row of raw
   // JSON and closing it would corrupt the keyring.
+  // The shared settings record (SETTINGS_ID) is hidden by the same filter.
   /** @param {BufferRecord} record */
   function isDocument(record) {
-    return record.kind !== "keyring";
+    return !isSystemRecord(record);
   }
 
   // This window's tabs, in tab order (architecture.md §14). A tab whose
@@ -660,7 +669,7 @@ export function createDocStore({
    * @param {BufferRecord} record
    */
   async function trash(record) {
-    if (record.sync?.space && record.kind !== "keyring") {
+    if (record.sync?.space && !isSystemRecord(record)) {
       record.originSpace = record.sync.space;
     }
     record.trashedAt ??= Date.now();
@@ -1127,25 +1136,67 @@ export function createDocStore({
   }
 
   /**
-   * Write a record the user never opens: the keyring today. It goes into the
-   * Map and into IndexedDB like any other, but nothing activates it and no
-   * debounce owns it, because no editor is ever attached to it.
+   * Write a record the user never opens: the keyring and the shared settings.
+   * It goes into the Map and into IndexedDB like any other, but nothing
+   * activates it and no debounce owns it, because no editor is ever attached
+   * to it.
    * @param {BufferRecord} record
    */
   async function putSystemRecord(record) {
     buffers.set(record.id, record);
     await persist({ ...record });
-    // One event for a write here and for a pull (architecture.md §13.3).
-    // The keyring follows it through main.js (setContent), for device names
-    // only: who reads a note comes from the space logs (§27).
-    if (record.kind === "keyring") emit("system", { id: record.id });
+    emitSystem(record);
     emit("change");
     return record;
+  }
+
+  /**
+   * One event for a write here, for a pull, and for a write in another
+   * window (architecture.md §13.3). The keyring follows "system" through
+   * main.js (setContent), for device names only: who reads a note comes from
+   * the space logs (§27). The settings have an event of their own, so a new
+   * word does not make every keyring listener run.
+   * @param {BufferRecord} record
+   */
+  function emitSystem(record) {
+    emit(record.kind === "keyring" ? "system" : "shared-settings", { id: record.id });
   }
 
   /** The hidden keyring record, or undefined before setup. */
   function keyringRecord() {
     return buffers.get(KEYRING_ID);
+  }
+
+  /**
+   * The settings that all devices share (model/spellsettings.js). Empty
+   * settings before the first change.
+   * @returns {import("./spellsettings.js").SpellSettings}
+   */
+  function sharedSettings() {
+    return readSettings(buffers.get(SETTINGS_ID)?.content);
+  }
+
+  /**
+   * Store new shared settings. Every window may call this: the record has no
+   * owner, like the keyring, and the other windows get it through persist().
+   * @param {import("./spellsettings.js").SpellSettings} settings
+   */
+  async function writeSharedSettings(settings) {
+    const previous = buffers.get(SETTINGS_ID);
+    const now = Date.now();
+    /** @type {BufferRecord} */
+    const record = {
+      id: SETTINGS_ID,
+      kind: "shared-settings",
+      createdAt: now,
+      ...previous,
+      content: JSON.stringify(settings),
+      updatedAt: now,
+    };
+    // Dirty when synced, so the other devices get the change. The "change"
+    // event of putSystemRecord arms the push (sync/client.js, start).
+    if (record.sync) record.sync = { ...record.sync, dirty: true };
+    await putSystemRecord(record);
   }
 
   /**
@@ -2677,7 +2728,7 @@ export function createDocStore({
    * says something about the note goes into `sealed`.
    * @typedef {Object} RecordMeta
    * @property {import("../storage/idb.js").EncMeta} [enc]
-   * @property {'scratch' | 'keyring'} [kind]
+   * @property {'scratch' | 'keyring' | 'shared-settings'} [kind]
    * @property {string} [sealed]  Armored age, for the same readers as the text: SealedMeta.
    */
 
@@ -2711,9 +2762,10 @@ export function createDocStore({
     if (on) {
       // An already attached record is left alone: overwriting its rev with 0
       // would make the next push claim a revision the server passed long ago.
-      if (!record.sync && record.kind === "keyring") {
+      if (!record.sync && isSystemRecord(record)) {
         // The device directory is no note: it is plain JSON in its own space,
-        // and the server lets it through as the one exception (§27).
+        // and the server lets it through as the one exception (§27). The
+        // shared settings live in the same space, as an age file (§29).
         record.sync = { rev: 0, dirty: true, space: KEYRING_SPACE };
       } else if (!record.sync) {
         const target = space ?? spaces.defaultSpace();
@@ -2783,18 +2835,33 @@ export function createDocStore({
     // A file-backed doc travels as a scratch doc, always: the disk link is per
     // device (architecture.md §3), and the other device has no such file. Do
     // not "fix" this by sending kind 'file'; it would arrive as a broken link.
-    meta.kind = record.kind === "keyring" ? "keyring" : "scratch";
+    meta.kind = isSystemRecord(record) ? /** @type {"keyring" | "shared-settings"} */ (record.kind) : "scratch";
     if (record.enc !== undefined) meta.enc = record.enc;
     let sentMtime = record.file?.mtime;
     /** @type {string | null} */
     let content = null;
+    /** @type {string | undefined} */
+    let readers;
     if (!tombstone) {
       const read = await bodyOf(record.id);
       content = read.content;
       if (record.file) sentMtime = read.mtime;
-      // Everything else about a note travels sealed, for the same readers
-      // as its text (§27): the server holds no readable title.
-      if (record.kind !== "keyring") {
+      if (record.kind === "shared-settings") {
+        // Plain JSON on this device, like every setting, and an age file on
+        // the wire: the words come from the user's notes, and the server
+        // reads no note text (§29). The readers are the known devices,
+        // because the settings belong to no space.
+        const recipients = [...spaces.knownRecipients()].sort();
+        readers = recipients.join("\n");
+        // The list of readers goes inside the encrypted text. An age file
+        // hides who can open it, so without the list a device that pulls this
+        // revision could not tell whether a device it knows was left out, and
+        // each device would push the settings back once to be safe.
+        const wire = JSON.stringify({ ...readSettings(read.content), readers: recipients });
+        content = await codec.encode(wire, codec.newEncMeta("space"), keyring, recipients);
+      } else if (record.kind !== "keyring") {
+        // Everything else about a note travels sealed, for the same readers
+        // as its text (§27): the server holds no readable title.
         record.origin ??= await deviceId();
         meta.sealed = await sealMeta(record);
       }
@@ -2809,7 +2876,7 @@ export function createDocStore({
       clientTime: record.updatedAt,
       space: spaceOf(record),
     };
-    return { payload, sentMtime };
+    return { payload, sentMtime, readers };
   }
 
   /**
@@ -2883,7 +2950,7 @@ export function createDocStore({
    * @param {BufferRecord} record @returns {string}
    */
   function spaceOf(record) {
-    return record.sync?.space ?? (record.kind === "keyring" ? KEYRING_SPACE : DEFAULT_SPACE);
+    return record.sync?.space ?? (isSystemRecord(record) ? KEYRING_SPACE : DEFAULT_SPACE);
   }
 
   /** Records waiting for a push, keyring first. @returns {BufferRecord[]} */
@@ -2894,7 +2961,7 @@ export function createDocStore({
       // tombstone may go: a tombstone carries no text.
       // Do NOT filter out `trashedAt`: a user-trashed note keeps `trashedAt`
       // while its `deleted` tombstone waits to push (§28).
-      .filter((b) => b.sync?.dirty && (b.kind === "keyring" || b.enc || b.sync.tombstone))
+      .filter((b) => b.sync?.dirty && (isSystemRecord(b) || b.enc || b.sync.tombstone))
       // The keyring goes first: a document encrypted to a device the other end
       // has never heard of is unreadable there, and the device list is what
       // teaches it about that device (architecture.md §13.3).
@@ -3110,6 +3177,149 @@ export function createDocStore({
     await putSystemRecord(next);
   }
 
+  // ---- The shared settings on the wire (architecture.md §29) ---------------
+  //
+  // `sync.readers` of the settings record is the list of devices that can
+  // open the server's current revision, as far as this device knows: the
+  // list inside the revision it pulled last, or the list of its own last
+  // push. It is one string, the age recipients sorted and joined by "\n".
+
+  /**
+   * The server's copy of the shared settings, pulled or handed back by a
+   * refused push (409). The two copies merge entry by entry, the newer entry
+   * wins (model/spellsettings.js), and no conflict copy is ever made: this
+   * record has no text a user could lose.
+   *
+   * A revision this device cannot decrypt is kept, not dropped: the pull
+   * position moves past it, so it would never come again. That is a locked
+   * device, or a new device that the sender did not know yet.
+   * @param {BufferRecord | undefined} record  The local settings record.
+   * @param {Change} change
+   */
+  async function applyRemoteSettings(record, change) {
+    if (change.kind !== "text" || typeof change.content !== "string") return;
+    const now = Date.now();
+    /** @type {BufferRecord} */
+    const next = record ?? {
+      id: SETTINGS_ID,
+      kind: "shared-settings",
+      content: JSON.stringify(emptySettings()),
+      createdAt: now,
+      updatedAt: now,
+    };
+    // Local changes keep their `dirty` until a merge below says otherwise.
+    next.sync = { ...next.sync, rev: change.rev, dirty: next.sync?.dirty ?? false, space: KEYRING_SPACE };
+    const opened = await openSettings(change.content);
+    if (opened) mergeOpened(next, opened);
+    else next.unread = change.content;
+    await putSystemRecord(next);
+  }
+
+  /**
+   * Merge a decrypted revision of the server into the record. The caller
+   * stores the record.
+   * @param {BufferRecord} record  With `sync` set.
+   * @param {{ settings: import("./spellsettings.js").SpellSettings, readers: string }} opened
+   */
+  function mergeOpened(record, opened) {
+    const text = JSON.stringify(mergeSettings(readSettings(record.content), opened.settings));
+    // updatedAt moves only with the content: afterPush reads a moved stamp as
+    // "changed while the push was in flight" and keeps the record dirty.
+    if (text !== record.content) record.updatedAt = Date.now();
+    record.content = text;
+    delete record.unread;
+    if (!record.sync) return;
+    // Dirty exactly when this device holds something the server's copy
+    // lacks. The remote goes through the same merge alone, so the two strings
+    // differ only by what the local copy adds (as the keyring, §21).
+    record.sync.dirty = text !== JSON.stringify(mergeSettings(emptySettings(), opened.settings));
+    record.sync.readers = opened.readers;
+  }
+
+  /**
+   * @param {string} content  An age file with the settings.
+   * @returns {Promise<{ settings: import("./spellsettings.js").SpellSettings, readers: string } | null>}
+   *   null when this device cannot decrypt it now.
+   */
+  async function openSettings(content) {
+    let text;
+    try {
+      text = await codec.decode(content, codec.newEncMeta("space"), keyring);
+    } catch (err) {
+      if (err instanceof codec.LockedError) return null;
+      throw err;
+    }
+    /** @type {string[]} */
+    let readers = [];
+    try {
+      const list = JSON.parse(text)?.readers;
+      if (Array.isArray(list)) readers = list.filter((r) => typeof r === "string");
+    } catch {
+      // Not JSON: readSettings below gives empty settings, and no readers
+      // means "unknown", which the check in refreshSharedSettings repairs.
+    }
+    return { settings: readSettings(text), readers: readers.sort().join("\n") };
+  }
+
+  /**
+   * Before each push round, two repairs:
+   *
+   * 1. Merge a kept revision that can be read now (the user unlocked).
+   * 2. Mark the record for a push when a known device is not among the
+   *    readers of the server's current revision. Without this a new device
+   *    could not read the settings until the user next changed a rule or a
+   *    word, which can be weeks.
+   *
+   * No push for step 2 while a revision is still unreadable here: this
+   * device does not know what the server holds or for whom, and a new device
+   * in the middle of its join would push an empty copy that only it can read.
+   * The device that can read the revision does the repair. Two devices that
+   * do not know each other would else answer each revision of the other with
+   * a push of their own, without end.
+   *
+   * A change of the user on this device is another matter: it goes out on
+   * top of the unreadable revision once the device is unlocked and its join
+   * is done (sync/client.js, pushable), and that push ends the wait
+   * (sharedSettingsPushed).
+   */
+  async function refreshSharedSettings() {
+    const record = buffers.get(SETTINGS_ID);
+    if (!record?.sync) return;
+    if (record.unread) {
+      const opened = await openSettings(record.unread);
+      if (!opened) return;
+      mergeOpened(record, opened);
+      await putSystemRecord(record);
+    }
+    if (record.sync.dirty) return;
+    const readers = new Set((record.sync.readers ?? "").split("\n"));
+    // A subset test, not equality: a sender that knows more devices than
+    // this one must not be "corrected" by a push that leaves them out.
+    if (spaces.knownRecipients().every((recipient) => readers.has(recipient))) return;
+    record.sync.dirty = true;
+    await persist({ ...record });
+  }
+
+  /**
+   * A push of the settings was accepted: its readers are the readers of the
+   * server's current revision now.
+   *
+   * A kept revision (`unread`) goes: it is not the server's current revision
+   * any more. An unlocked device pushed on top of it because no key of this
+   * device opens it (sync/client.js, pushable). A device that could read it
+   * has its entries, and merges them into the next revision when it pulls
+   * this one. Kept, it would stop the repair of the readers for ever
+   * (refreshSharedSettings), also for the devices that join later.
+   * @param {string} readers  The value pushPayload returned.
+   */
+  async function sharedSettingsPushed(readers) {
+    const record = buffers.get(SETTINGS_ID);
+    if (!record?.sync || (record.sync.readers === readers && !record.unread)) return;
+    record.sync.readers = readers;
+    delete record.unread;
+    await persist({ ...record });
+  }
+
   // ---- Routing between windows (architecture.md §14.3) --------------------
   // The sync leader pulls for every window, but a buffer has one writer: its
   // owner. A change for a buffer another live window holds travels to it as
@@ -3232,7 +3442,8 @@ export function createDocStore({
    * @param {string | null} spaceWin
    */
   async function routeTarget(id, record, meta, spaceWin) {
-    if (id === KEYRING_ID) return null;
+    // No window owns a system record: the window that pulled it applies it.
+    if (id === KEYRING_ID || id === SETTINGS_ID) return null;
     const owner = workspaces.ownerOf(id);
     const target = owner ?? (record ? null : spaceWin ?? MAIN_WORKSPACE);
     if (!target || target === workspaces.id) return null;
@@ -3288,22 +3499,27 @@ export function createDocStore({
     // device list. No device writes one; it is dropped, not opened as a note.
     const isKeyring = id === KEYRING_ID;
     if (!isKeyring && meta.kind === "keyring") return;
+    // The shared settings are the second record under a fixed id, in the
+    // same space (§29). The rest of this function is about notes, so both
+    // records leave it early, below.
+    const isSettings = id === SETTINGS_ID;
+    const isSystem = isKeyring || isSettings;
     // The same rule for the space. Every device writes `keyring`, a removed
     // one too, and the server skips its plain-text check there (§27), so a
     // note in it would open as a readable tab on each device. The server
     // refuses such a row; this drops one from a server that did not.
-    if ((space === KEYRING_SPACE) !== isKeyring) return;
+    if ((space === KEYRING_SPACE) !== isSystem) return;
 
     // Settled local Trash is an offline backup with sync off (§28): never let
     // a remote change mutate it or mix `trashedAt` with a live `sync`.
-    if (record && !isKeyring && record.trashedAt && !record.sync) return;
+    if (record && !isSystem && record.trashedAt && !record.sync) return;
 
-    const spaceWin = isKeyring ? null : await liveSpaceWindow(space);
+    const spaceWin = isSystem ? null : await liveSpaceWindow(space);
 
     // An unknown document outside an Open as tab space becomes a stub (§25),
     // unless a live Space Window currently owns that space (§28). Decided
     // before routing: the stubs belong to the leader, and no window owns id.
-    if (!record && !isKeyring) {
+    if (!record && !isSystem) {
       const mode = spaces.modeOf(space);
       if (mode === undefined || change.kind !== "text") {
         // Not a space of this device (the note moved away, §27), or a
@@ -3322,6 +3538,9 @@ export function createDocStore({
     // receives `keyring`, whatever its settings say.
     if (isKeyring) {
       return applyRemoteKeyring(record, change);
+    }
+    if (isSettings) {
+      return applyRemoteSettings(record, change);
     }
 
     // The note moved to a space this device is not a member of (§27): the
@@ -3588,13 +3807,19 @@ export function createDocStore({
       const space = change.space;
       const isKeyring = id === KEYRING_ID;
       if (!isKeyring && meta.kind === "keyring") continue;
-      if ((space === KEYRING_SPACE) !== isKeyring) continue;
-      if (record && !isKeyring && record.trashedAt && !record.sync) continue;
+      // The same guards as applyRemote, which must stay in step with these:
+      // the keyring space holds two system records, the keyring and the
+      // shared settings (§29). Neither takes a fast path; both go to
+      // applyRemote at the end of the loop. A guard here that knows only the
+      // keyring drops every pulled revision of the settings without a trace.
+      const isSystem = isKeyring || id === SETTINGS_ID;
+      if ((space === KEYRING_SPACE) !== isSystem) continue;
+      if (record && !isSystem && record.trashedAt && !record.sync) continue;
 
       const spaceWin = await cachedSpaceWin(space);
 
       // Fast path 1: unknown id in a `list` space (or non-text/non-member) -> stub ops.
-      if (!record && !isKeyring) {
+      if (!record && !isSystem) {
         const mode = spaces.modeOf(space);
         if (mode === undefined || change.kind !== "text") {
           if (effectiveRemote(id)) stageDropRemote(id);
@@ -3689,7 +3914,7 @@ export function createDocStore({
   function heldSpaces() {
     const held = new Set();
     for (const record of buffers.values()) {
-      if (record.sync && record.kind !== "keyring") held.add(spaceOf(record));
+      if (record.sync && !isSystemRecord(record)) held.add(spaceOf(record));
     }
     for (const stub of remotes.values()) held.add(stub.space);
     return held;
@@ -3706,7 +3931,7 @@ export function createDocStore({
       if (owner) await workspaces.dissolve(owner, { silent: true });
       for (const record of [...buffers.values()]) {
         // The keyring's space is received by every device, always.
-        if (!record.sync || record.kind === "keyring" || spaceOf(record) !== space) continue;
+        if (!record.sync || isSystemRecord(record) || spaceOf(record) !== space) continue;
         await trashNote(record.id);
       }
       await forgetRemotes(space);
@@ -4111,7 +4336,7 @@ export function createDocStore({
    */
   function idsInSpace(space) {
     return [...buffers.values()]
-      .filter((r) => r.sync && !r.sync.tombstone && !r.trashedAt && r.kind !== "keyring" && spaceOf(r) === space)
+      .filter((r) => r.sync && !r.sync.tombstone && !r.trashedAt && !isSystemRecord(r) && spaceOf(r) === space)
       .map((r) => r.id);
   }
 
@@ -4631,15 +4856,22 @@ export function createDocStore({
       typeof record.content !== "string" &&
       typeof previous?.content === "string";
     if (loaded) record.content = previous?.content;
+    // The settings record is the one record that every window writes, so a
+    // copy from another window can cross a write here. The entries merge;
+    // a replace would take a switch back that the user just made (see
+    // joinCopies in model/spellsettings.js). The result is not stored from
+    // here: it is dirty where it has something new, and the window that
+    // syncs stores it with the push.
+    if (id === SETTINGS_ID && previous) record = joinCopies(previous, record);
     buffers.set(id, record);
     // A language switched in another window (or pulled by the sync leader)
     // changes no text, so nothing below would repaint the marks.
     if ((previous?.spellOff ?? []).join() !== (record.spellOff ?? []).join()) {
       emit("spell", { id });
     }
-    if (record.kind === "keyring") {
+    if (isSystemRecord(record)) {
       plain.delete(id);
-      emit("system", { id });
+      emitSystem(record);
       emit("change");
       return;
     }
@@ -4829,6 +5061,10 @@ export function createDocStore({
     clearClosedAt,
     putSystemRecord,
     keyringRecord,
+    sharedSettings,
+    writeSharedSettings,
+    refreshSharedSettings,
+    sharedSettingsPushed,
     load,
     start,
     create,

@@ -9,7 +9,7 @@
 // that had a blue word, and keeps only the changes that pass checkAnswer.
 
 import { WORD, checkAnswer } from "./diacritics.js";
-import { analyzeDiacriticsWords, checkCzechWords, wordsIn } from "./spellcheck.js";
+import { analyzeDiacriticsWords, checkCzechWords, isMyWord, wordsIn } from "./spellcheck.js";
 import { segments } from "./textlang.js";
 
 // vLLM batches requests that arrive together on the GPU, so many paragraphs at
@@ -68,7 +68,11 @@ export async function addDiacritics(view, { model, notice, wholeNote = false, st
   // The start of every prose word in the range. The model may change only
   // these: a paragraph also holds links and inline code, and a model that
   // writes "články" into a URL would break the link (code review, finding 1).
-  const prose = wordsIn(text, from, to);
+  // A word of "My words" is correct as it is written: it gets no blue mark,
+  // so the command must not add diacritics to it either. Left out here, at
+  // the one list both steps read: the local step never sees it, and the
+  // model may not change it, because its start is not in `starts`.
+  const prose = wordsIn(text, from, to).filter((w) => !isMyWord(w.word));
   const starts = new Set(prose.map((w) => w.from));
 
   const analyzed = await analyzeDiacriticsWords(prose);
