@@ -148,7 +148,13 @@ function computeCzech(key) {
       ? hunspellEngine.getSpellingSuggestions(word).slice(0, MAX_ACTIONS)
       : twins(word, (w) => hunspellEngine.testSpelling(w)) ?? [];
   czechCache.set(key, list);
-  czechPending.delete(key);
+  // No `czechPending.delete(key)` here, on purpose. A paragraph that ran out
+  // of budget queues the word and shows no mark for it. A later paragraph of
+  // the same pass can have budget for the same word and lands here. If that
+  // took the word out of the queue, the idle fill would find nothing to do,
+  // would announce no new pass, and the first paragraph would stay without
+  // its mark until the next edit. Only the idle fill empties the queue
+  // (scheduleIdleFill), so a word that was put off always leads to a new pass.
   return list;
 }
 
@@ -209,7 +215,7 @@ async function computeEnglishFixes(word) {
     lint.free();
   }
   englishSuggestions.set(word, list);
-  englishFixPending.delete(word);
+  // No `englishFixPending.delete(word)` here: see computeCzech.
   return list;
 }
 
@@ -241,7 +247,11 @@ function scheduleIdleFill() {
     if (hunspellEngine) {
       for (const key of czechPending) {
         if (performance.now() > stop) break;
-        computeCzech(key);
+        // Often cached by now: a later paragraph of the pass that queued the
+        // word had budget for it. It still counts as work done here, because
+        // the paragraph that queued it is waiting for the new pass below.
+        if (!czechCache.has(key)) computeCzech(key);
+        czechPending.delete(key);
       }
     } else {
       czechPending.clear();
@@ -250,12 +260,12 @@ function scheduleIdleFill() {
       for (const word of englishPending) {
         if (performance.now() > stop) break;
         englishPending.delete(word);
-        await askEnglish(word);
+        if (!englishCache.has(word)) await askEnglish(word);
       }
       for (const word of englishFixPending) {
         if (performance.now() > stop) break;
         englishFixPending.delete(word);
-        await computeEnglishFixes(word);
+        if (!englishSuggestions.has(word)) await computeEnglishFixes(word);
       }
     } else {
       englishPending.clear();
