@@ -142,23 +142,23 @@ The text in the note keeps the normal emoji characters.
 ![Devices with their own keys syncing through a blind relay server, with colored spaces and a paper recovery key](docs/diagrams/spaces-and-sync.jpg)
 
 - The server is small: an ASP.NET Core API with one SQLite file, acting as a blind relay. A Docker image is ready (see [server/README.md](server/README.md)).
-- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. **New notes** (Settings › Sync) sends every new note of a device to one space, or keeps it local. A device with no disk, such as a phone, explains that a space keeps a copy of its notes, but it never picks one for you. A note that does not sync sits in no space and stays on its device.
+- You choose per note what syncs, from the note's menu. Settings can turn sync on for every open note at once. **New notes** (Settings › Spaces) sends every new note of a device to one space, or keeps it local. A device with no disk, such as a phone, explains that a space keeps a copy of its notes, but it never picks one for you. A note that does not sync sits in no space and stays on its device.
 - A synced note lives in one **space**. Think of a space as a colored notebook (`personal`, `work`, `ideas`) whose cover lists the devices that can open it: one note belongs to one space, while a device can belong to many spaces, one, or none. **Settings › Devices** shows a grid of devices and spaces; tick a box to add a device, untick it to remove one. A dev machine in `work` never gets a note of `personal`, not even a title.
 - **Move to <space>** in a note's menu moves one note to another space and re-encrypts it for that space's members. A device that loses a note (a move away, or its removal from a space) keeps its copy in Trash for 30 days.
 - Each row shows its space as a thin colored bar. Each device takes a space as tabs, or as titles only under **From server** (a click fetches the note).
 - Every push is a revision. **History** lists them, and any revision opens as a copy next to the current text.
 - When two devices edit the same note, the newer server version wins, and your local text stays as a separate note. Nothing prompts and nothing is lost.
 - When the server says a note was deleted, each device moves its own copy to Trash for 30 days. The trash can at the bottom of the sidebar opens Trash, and **Restore to <space>** or **Restore as local** brings the note back. A wrong or forged delete from the server cannot wipe a note.
-- **Back up to a folder** (Settings › Sync) writes each note of a space into a folder, as plain text or as `.age` files.
+- **Back up to a folder** (Settings › Spaces) writes each note of a space into a folder, as plain text or as `.age` files.
 
 ![The history of a synced note with three revisions](docs/screenshots/history.png)
 
 ### Encryption
 
 - Each synced note is encrypted for the devices of its space and for your recovery key. The format is standard [age](https://age-encryption.org), through [typage](https://github.com/FiloSottile/typage). The server refuses plain text and holds no readable title.
-- Each device has its own key, and the key never leaves the device. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Devices) is for a notebook that can get stolen.
+- Each device has its own key, and the key never leaves the device. By default the device keeps it in the browser, where no script can copy it, and asks nothing at start. **Ask for a passphrase at start** (Settings › Security) is for a notebook that can get stolen.
 - The first device shows a recovery key one time. Keep it offline, on paper or in a password manager. It opens every note if all devices are lost.
-- A new device joins with an invite: **Invite a device** on a device you use shows it, and the new device pastes it in Settings › Sync. The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The URL and the code also work typed by hand. An invite can give no space: the device then joins the server only, and any device adds it to spaces later in Settings › Devices. The server cannot add a reader: the member list of a space is a log of entries that your devices sign, and your devices find each other through introductions that they sign. [The trust model](https://urza.github.io/editor/docs/trust-model.html) explains the signatures.
+- A new device joins with an invite: **invite a device** (Settings › Devices) on a device you use shows it, and the new device pastes it into the one field of **connect** (Settings › Sync). The invite holds the server URL, a one-time code, the spaces, and whether each space opens its notes as tabs or as titles only. The same dialog shows the URL and the code on lines of their own, and the field also takes the code typed by hand. The new device then selects its name and where its new notes go (Local only at first), and one dialog shows the wait until the old device lets it in. Keep the old device open and unlocked for that moment. Each device says when the join is complete. An invite can give no space: the device then joins the server only, and a device that is already a member of a space adds it to that space later, in the Space access grid of Settings › Devices. The server cannot add a reader: the member list of a space is a log of entries that your devices sign, and your devices find each other through introductions that they sign. [The trust model](https://urza.github.io/editor/docs/trust-model.html) explains the signatures.
 - A file on disk can become `name.md.age` (or `name.age`), and the `age` command line tool can decrypt it. A synced note saved to disk always saves as `.age`. The app is never the only way to read your notes.
 - **Lock with PIN** in a note's menu keeps a note off the screen until the 4-digit PIN of the device. It is a guard for the screen, not encryption.
 
@@ -178,7 +178,7 @@ note goes to the drawer of its space), and a tap there opens it again. Start the
 swipe on the row and not at the screen
 edge, because Android takes a swipe from the edge as Back. On Android, Back closes the top open part (a menu, the
 round buttons, the settings, or the list). A phone shows no status bar.
-**Settings › Update** shows the build and looks for a newer one.
+**Settings › App** shows the build and looks for a newer one.
 
 The notes are the same as on the desktop once sync is on. Phones cannot open
 folders, so sync is also the backup there.
@@ -230,9 +230,9 @@ docker run -d --name vrtti --restart unless-stopped \
 ```
 
 Put a reverse proxy with HTTPS in front of it. On your first device, use
-**Settings › Sync › Sync with a server**, choose "First device", and type the
-URL and the token. Every other device pastes an invite from **Invite a device**
-on the first one. [server/README.md](server/README.md) lists the API and all
+**Settings › Sync › Sync with a server**, choose "This is the first device of
+a server", and type the URL and the token. Every other device pastes an invite
+from **invite a device** on the first one. [server/README.md](server/README.md) lists the API and all
 options.
 
 **Upgrade from a version before spaces as groups of devices.** Old and new

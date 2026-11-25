@@ -3429,6 +3429,43 @@ open, the member syncs every 3 seconds, so the join ends while the user
 watches. The invite holds the code, so it is a secret for the code's ten
 minutes. The URL and the code still work typed by hand.
 
+**One story for a new device (2026-11-25).** The steps were spread over
+five places in Settings and two different choosers. Now:
+
+- *One way in.* "connect" (Settings › Sync) and "set up" (Settings ›
+  Security) open one dialog (`askConnect`): one field for the invite or the
+  code, a server field that shows only while the text is a code, and an
+  option for the first device. A join that the server refuses comes back to
+  this dialog with the reason and the typed values. `device.join` is gone.
+- *The Join dialog* (`joinWith`) asks for the name, the modes and "New
+  notes". "New notes" starts as Local only, also when the member uses a
+  space: only the person points new notes at a space. The choice waits in
+  `sync.joining` and `checkJoinReply` writes it, for a space the reply gave.
+- *The wait is a dialog* (`waitForJoin`, `showProgress`) that reads
+  `joinState()`. The join record has the time of the join, and while it
+  waits the leader syncs every 3 seconds (`JOIN_POLL`) for 11 minutes, so
+  both ends answer in seconds. The result goes to `sync.joined`. Closing
+  the dialog does not end the wait.
+- *The invite keeps its end.* A finished invite stays in `sync.invites`
+  without its code, with the name the new device chose and the spaces it
+  got (`inviteState()`), so the invite dialog can say "Phone joined" in
+  any window. A locked member still asks `GET /api/joins` and marks the
+  invite `used`: the dialog then asks for an unlock and does not say that
+  the invite expired. The invite also carries `f`, the name of the member,
+  for "Waiting for Desktop". An invite without it works.
+- *Notices.* `announce()` raises a "notice" event in each window for what
+  another device did: a device joined, this device's join ended, a member
+  added this device to a space (`adopt`), this device lost a space
+  (`lose`, not when the person left it here). `main.js` writes the
+  sentence into the status bar. A tick in the grid shows a line below the
+  grid, because the result is on the other device.
+- *A typed code* gives each space the mode Titles only, as an invite and
+  `adopt` do. Before, such a join had no modes, and the default of
+  `modeOf()` opened every note as a tab.
+- The user decided against a link and a QR code for the invite: an app on
+  the Home Screen of an iPhone has its own storage, so a link from the
+  camera would join Safari and not the app.
+
 **No space, and a later add (2026-11-21).** An invite may tick no space:
 the device joins the server only. Both ends vouch for the other in the
 device directory (below): the member after the proof check, the new device
@@ -3470,7 +3507,7 @@ invites, the end of a switch, then the send. An introduction gives no space: a
 known device gets the notes of a space only when a member adds it there.
 A stolen device stays in the directory; the user removes it from each
 space. A server with no `/api/introductions` (an older build) works as
-before, and Settings › Sync asks for an update of the server.
+before, and Settings › Devices asks for an update of the server.
 
 "New notes" (`sync.newNotes`, `{space: string | null}`) is one setting for
 each device: Local only (`null`) or one of its spaces. With nothing stored,
@@ -3482,7 +3519,7 @@ before keeps what it had: the space that "Sync new notes" sent new notes
 to, else Local only. The "Sync to" items of a note's menu list the New
 notes space first. "Sync every open note" with Local only asks for a space
 in a dialog. On a device with no disk (a phone, a browser with no File
-System Access API), Settings › Sync explains under New notes, while it is
+System Access API), Settings › Spaces explains under New notes, while it is
 Local only, that a local note lives only in this browser. The first note
 that the user makes there with `buffer.new` shows the same text once, in a
 dialog with "Open Settings" and "OK".
