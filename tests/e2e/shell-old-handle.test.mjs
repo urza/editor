@@ -387,6 +387,7 @@ describe("desktop shell with old browser handles", { skip: !chromePath && "no Ch
         settingsChildren: document.getElementById("settings-panel").childElementCount,
         needsReconnect: window.vrtti.store.needsReconnect(window.vrtti.store.get(${JSON.stringify(seeded.fileId)})),
         marker: Boolean(document.querySelector(${JSON.stringify(fileRow + " .buffer-warn")})),
+        markerTitle: document.querySelector(${JSON.stringify(fileRow + " .buffer-warn")})?.title ?? "",
         activeId: window.vrtti.activeId,
         editorText: document.querySelector("#editor-host .cm-content")?.innerText ?? "",
       }))()`,
@@ -399,6 +400,8 @@ describe("desktop shell with old browser handles", { skip: !chromePath && "no Ch
     assert.ok(state.settingsChildren > 0, "Settings must be built (#settings-panel has children)");
     assert.equal(state.needsReconnect, true, "the old file's note must need a reconnect");
     assert.equal(state.marker, true, "the old file's row must carry the reconnect marker (.buffer-warn)");
+    // The shell grants nothing: the marker must ask for a fresh pick.
+    assert.match(state.markerTitle, /pick it again/, "the marker must say what the click does in the shell");
     assert.equal(state.activeId, seeded.fileId, "the shell must start on the old file's tab");
     assert.match(state.editorText, /File not available: old\.txt/, "the old file's tab must say the file is not available");
 
