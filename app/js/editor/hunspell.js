@@ -16,7 +16,9 @@ import { twins } from "./diacritics.js";
 // here, so `import.meta.url` is the stable anchor. The wasm binary itself
 // needs no URL: the vendored glue finds `hunspell.wasm` next to itself.
 const AFF_URL = new URL("../../vendor/dictionary-cs/index.aff", import.meta.url);
-const DIC_URL = new URL("../../vendor/dictionary-cs/index.dic", import.meta.url);
+// Keep the .txt suffix: GitHub Pages serves .dic as text/x-c without gzip
+// (3.65 MB uncompressed), while .txt serves as text/plain (~0.85 MB gzipped).
+const DIC_URL = new URL("../../vendor/dictionary-cs/index.dic.txt", import.meta.url);
 
 // One lint pass may meet hundreds of unknown words (a fresh paste), and 55 ms
 // each would freeze the editor for seconds. Past this budget the remaining

@@ -27,7 +27,9 @@ const HARPER_WASM_URL = new URL(
   import.meta.url
 ).href;
 const AFF_URL = new URL("../../vendor/dictionary-cs/index.aff", import.meta.url).href;
-const DIC_URL = new URL("../../vendor/dictionary-cs/index.dic", import.meta.url).href;
+// Keep the .txt suffix: GitHub Pages serves .dic as text/x-c without gzip
+// (3.65 MB uncompressed), while .txt serves as text/plain (~0.85 MB gzipped).
+const DIC_URL = new URL("../../vendor/dictionary-cs/index.dic.txt", import.meta.url).href;
 
 const MAX_ACTIONS = 5;
 const SUGGEST_BUDGET_MS = 60;

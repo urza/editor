@@ -222,11 +222,14 @@ file per package and these need a module tree plus raw data files.
 | File | Upstream path | Bytes |
 |---|---|---|
 | `index.aff` | `index.aff` | 112,714 |
-| `index.dic` | `index.dic` | 3,648,134 |
+| `index.dic.txt` | `index.dic` | 3,648,134 |
 | `license` | `license` | 48,038 |
 
 **10 files, 4,738,741 bytes (4.52 MiB).** Byte-identical to the published
-packages; nothing was minified, renamed or rewritten.
+packages; nothing was minified or rewritten. Only `index.dic` carries a `.txt`
+suffix because GitHub Pages serves `.dic` as `text/x-c` without gzip
+(3.65 MB on the wire), while `.txt` serves as `text/plain` with gzip
+(~0.85 MB on the wire).
 
 - `hunspell-wasm` keeps its `dist/` and `wasm/` split because `dist/Hunspell.js`
   imports `../wasm/hunspell.js` by that relative path, and the Emscripten glue
