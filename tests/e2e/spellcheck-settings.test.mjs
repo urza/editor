@@ -21,7 +21,16 @@
 //  - the device switch "Mark Czech without diacritics" hides the blue mark
 //    and leaves real typos red;
 //  - a change in one tab shows in another tab without a reload, and after a
-//    reload.
+//    reload;
+//  - the focus stays on the page when its control goes away: the × of a word,
+//    "Reset to defaults", "N changed", a switch in the "changed" filter; Tab
+//    from there stays on the page, and the panel does not scroll;
+//  - a copy of the settings from another window merges with the copy of this
+//    window, and loses nothing of it;
+//  - a rule switched off and on again before the worker answers is on;
+//  - on a phone, the strip of section buttons hides while the page is open,
+//    and the headings of the page stick under the head;
+//  - "My words" takes "constructor" and "__proto__", also after a reload.
 //
 // The English checker is Harper, a 15 MB wasm that loads on the first pass,
 // so the first marks can take many seconds. Every wait polls with a deadline.
@@ -145,6 +154,7 @@ const KEYS = {
   Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
   Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
   Period: { key: ".", code: "Period", windowsVirtualKeyCode: 190, text: "." },
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
 };
 const CTRL = 2;
 
@@ -606,17 +616,33 @@ async function openSpellPage(cdp) {
   await cdp.waitFor(`/^\\d+ rules/.test(${RULE_COUNT})`, FIRST_MARKS_MS, "the rule count line");
 }
 
+const RULE_SEARCH = 'document.querySelector("#settings-panel input.spell-search[type=search]")';
+
+/**
+ * A click into the rule search. The heading "Rules" sticks under the head,
+ * and the field comes right below the heading. When the panel is scrolled,
+ * a scroll to the nearest edge puts the field under the heading, and the
+ * click lands on the heading. So the field goes to the middle first.
+ * @param {CdpClient} cdp
+ */
+async function clickRuleSearch(cdp) {
+  await cdp.eval(`${RULE_SEARCH}.scrollIntoView({ block: "center" })`);
+  await cdp.clickEl(RULE_SEARCH, "the rule search");
+  await cdp.waitFor(`document.activeElement === ${RULE_SEARCH}`, 3000, "the focus in the rule search");
+}
+
 /** @param {CdpClient} cdp @param {string} text */
 async function searchRules(cdp, text) {
-  await cdp.click('#settings-panel input.spell-search[type="search"]');
+  await clickRuleSearch(cdp);
   await cdp.type(text);
 }
 
 /** Empty the rule search with Backspace, as a user does. @param {CdpClient} cdp */
 async function clearRuleSearch(cdp) {
-  const length = await cdp.eval('document.querySelector("#settings-panel input.spell-search[type=search]").value.length');
-  await cdp.click('#settings-panel input.spell-search[type="search"]');
+  const length = await cdp.eval(`${RULE_SEARCH}.value.length`);
+  await clickRuleSearch(cdp);
   for (let i = 0; i < length; i++) await cdp.pressKey("Backspace");
+  await cdp.waitFor(`${RULE_SEARCH}.value === ""`, 3000, "an empty rule search");
 }
 
 const LONG_TOGGLE = '#settings-panel .settings-row[data-rule="LongSentences"] .settings-toggle';
@@ -667,6 +693,118 @@ const menuItem = (label) =>
   `[...document.querySelectorAll("div.menu .menu-item")].find((b) => (b.querySelector(".menu-label") ?? b).textContent.trim() === ${JSON.stringify(
     label
   )}) ?? null`;
+
+/**
+ * The focused element as one short string, so that a failed assertion shows
+ * where the focus went: "body", "editor", "section:<heading>" for a section
+ * of the Spellcheck page, else "<tag>:<aria-label or text>".
+ */
+const FOCUSED = `(() => {
+  const a = document.activeElement;
+  if (!a || a === document.body) return "body";
+  if (a.closest(".cm-content")) return "editor";
+  if (a.matches(".spell-page .settings-section")) return "section:" + a.querySelector(":scope > h3").textContent;
+  return a.tagName.toLowerCase() + ":" + (a.getAttribute("aria-label") || a.textContent.trim());
+})()`;
+const IN_PANEL = 'Boolean(document.activeElement?.closest("#settings-panel"))';
+const SCROLL_TOP = 'document.getElementById("settings-panel").scrollTop';
+
+/**
+ * Put the focus on a control, then press a key, as a keyboard user does
+ * after some Tab steps. el.focus() stands in for those steps.
+ * @param {CdpClient} cdp @param {string} elementExpr @param {keyof typeof KEYS} key @param {string} what
+ */
+async function pressOn(cdp, elementExpr, key, what) {
+  const focused = await cdp.eval(`(() => {
+    const el = ${elementExpr};
+    if (!el) return false;
+    el.focus();
+    return document.activeElement === el;
+  })()`);
+  assert.ok(focused, `cannot focus: ${what}`);
+  await cdp.pressKey(key);
+}
+
+/**
+ * JS for the section of the Spellcheck page under the heading `heading`. In
+ * parentheses, so that a ".x" after it applies to the section.
+ */
+const sectionOf = (/** @type {string} */ heading) =>
+  `([...document.querySelectorAll("#settings-panel .spell-page .settings-section")].find(
+    (s) => s.querySelector(":scope > h3")?.textContent === ${JSON.stringify(heading)}
+  ) ?? null)`;
+
+const WORD_COUNT = `${sectionOf("My words")}?.querySelector(".spell-bar .spell-count")?.textContent ?? ""`;
+
+/**
+ * Open groups of rules until the part "Rules" is at least `screens` times
+ * as tall as the panel, so that the panel scrolls inside that part.
+ * @param {CdpClient} cdp @param {number} screens @param {{ phone?: boolean }} [opts]
+ */
+async function makeRulesTall(cdp, screens, { phone = false } = {}) {
+  const tallEnough = `(() => {
+    const panel = document.getElementById("settings-panel");
+    return ${sectionOf("Rules")}.getBoundingClientRect().height > ${screens} * panel.clientHeight;
+  })()`;
+  for (let i = 0; i < 15 && !(await cdp.eval(tallEnough)); i++) {
+    const head = `document.querySelectorAll("#settings-panel .spell-group")[${i}]`;
+    if (phone) await cdp.tapEl(head, `group ${i}`);
+    else await cdp.clickEl(head, `group ${i}`);
+    await cdp.waitFor(`${head}.getAttribute("aria-expanded") === "true"`, 3000, `group ${i} open`);
+  }
+  assert.ok(await cdp.eval(tallEnough), `the part "Rules" is not ${screens} screens tall`);
+}
+
+/**
+ * Post a copy of the settings record as another window does (model/docs.js,
+ * postBuffer; model/channel.js for the message). A second BroadcastChannel
+ * object stands in for that window: the channel delivers to every other
+ * object of the same name, also in the same page. A third object tells when
+ * the message arrived. The channel queues the deliveries in the order in
+ * which the objects were made, so the app's object, made at the start, gets
+ * the message first, and its handler takes the copy without an await.
+ * @param {CdpClient} cdp @param {object} record
+ */
+function postFromOtherWindow(cdp, record) {
+  return cdp.eval(`new Promise((resolve) => {
+    const sender = new BroadcastChannel("vrtti");
+    const probe = new BroadcastChannel("vrtti");
+    probe.onmessage = () => {
+      probe.close();
+      sender.close();
+      setTimeout(resolve, 50);
+    };
+    sender.postMessage({ type: "buffer", payload: { record: ${JSON.stringify(record)} }, from: "test-other-window" });
+  })`);
+}
+
+/**
+ * Wait until the marks stop changing: the same marks for `quietMs`, with the
+ * red mark of "vrtti" in the English paragraph among them. A pass that is
+ * out of date answers with no marks at all (spellSource, `res.stale`), so an
+ * empty list in the middle is no end state. The red mark has nothing to do
+ * with the rule under test, so it is in the end state on the old and the new
+ * code.
+ * @param {CdpClient} cdp @param {number} [quietMs]
+ */
+async function settledMarks(cdp, quietMs = 1500) {
+  const deadline = Date.now() + MARKS_MS;
+  let last = "";
+  let since = Date.now();
+  let list = [];
+  while (Date.now() < deadline) {
+    list = await marks(cdp);
+    const now = JSON.stringify(list);
+    if (now !== last) {
+      last = now;
+      since = Date.now();
+    } else if (has(list, "red", EN_LINE, "vrtti") && Date.now() - since >= quietMs) {
+      return list;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.fail(`The marks did not settle\nmarks now: ${last}`);
+}
 
 function printProblems(label) {
   const mine = problems.filter((p) => p.startsWith(`[${label}`));
@@ -902,6 +1040,170 @@ describe("spellcheck settings on a PC", { skip: !chromePath && "no Chromium bina
     await cdp.waitFor(`document.querySelector('${toggle}').getAttribute("aria-pressed") === "true"`);
     await waitMarks(cdp, (l) => has(l, "blue", CS_LINE, "dekuji"), "the blue mark on dekuji back");
   });
+
+  // Tests 12 to 15: a click or a key on a control that the repaint removes
+  // or disables. Focus on <body> is the defect: from there, Tab goes to the
+  // editor behind the panel, and the next keys change a note that the user
+  // cannot see.
+
+  test("12. focus: × of a word goes to the × of a neighbour; × of the only word to 'My words'; Tab goes to the word field", async () => {
+    await openSpellPage(cdp);
+    await addWordOnPage(cdp, "Harper");
+    await addWordOnPage(cdp, "keyring");
+
+    // By keyboard: Enter on the × of "Harper". The × of "keyring" takes its place.
+    await pressOn(cdp, 'document.querySelector(\'#settings-panel button[aria-label="Remove Harper"]\')', "Enter", "× of Harper");
+    await cdp.waitFor(`!${WORDS}.includes("Harper")`, 5000, '"Harper" out of the list');
+    assert.equal(await cdp.eval(FOCUSED), "button:Remove keyring", "the focus goes to the × of the neighbour word");
+
+    // By mouse: the × of the only word. Some content stays below the panel's
+    // view, so the shorter list cannot move the scroll position by itself.
+    await cdp.eval(`(() => {
+      const panel = document.getElementById("settings-panel");
+      panel.scrollTop = Math.max(0, panel.scrollHeight - panel.clientHeight - 100);
+    })()`);
+    const box = await cdp.centerOf('document.querySelector(\'#settings-panel button[aria-label="Remove keyring"]\')');
+    assert.ok(box && box.w > 0, "the × of keyring is visible");
+    const scrollBefore = await cdp.eval(SCROLL_TOP);
+    await cdp.clickAt(box.x, box.y);
+    await cdp.waitFor(`${WORDS}.length === 0`, 5000, "an empty list");
+    const afterRemove = await cdp.eval(FOCUSED);
+    const scrollAfter = await cdp.eval(SCROLL_TOP);
+    await cdp.pressKey("Tab");
+    const afterTab = await cdp.eval(FOCUSED);
+    assert.notEqual(afterTab, "editor", `Tab after the × of the only word went into the editor (focus after the ×: ${afterRemove})`);
+    assert.equal(afterRemove, "section:My words", `the focus after the × of the only word (then Tab went to ${afterTab})`);
+    assert.equal(scrollAfter, scrollBefore, "the panel does not scroll when the section takes the focus");
+    assert.equal(afterTab, "input:Filter or add a word", "Tab from the section goes to the word field");
+  });
+
+  test("13. focus: 'Reset to defaults' leaves the focus on 'Rules', with no scroll; Tab goes to the rule search", async () => {
+    await openSpellPage(cdp);
+    await switchLongSentences(cdp);
+    await makeRulesTall(cdp, 2);
+    // The top of the part "Rules" goes up under the head, and the button
+    // stays in view under the sticky heading. A focus that scrolls the
+    // section into view would move the panel back down from here.
+    await cdp.eval(`(() => {
+      const panel = document.getElementById("settings-panel");
+      const head = panel.querySelector(".settings-head").getBoundingClientRect();
+      const h3 = ${sectionOf("Rules")}.querySelector(":scope > h3").getBoundingClientRect();
+      const reset = (${buttonByText("Reset to defaults")}).getBoundingClientRect();
+      panel.scrollTop += reset.top - (head.bottom + h3.height + 12);
+    })()`);
+    assert.ok(
+      await cdp.eval(`${sectionOf("Rules")}.getBoundingClientRect().top < document.querySelector("#settings-panel .settings-head").getBoundingClientRect().bottom`),
+      "the top of 'Rules' is above the view"
+    );
+    const reset = await cdp.eval(`(() => { const r = (${buttonByText("Reset to defaults")}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    const scrollBefore = await cdp.eval(SCROLL_TOP);
+    await cdp.clickAt(reset.x, reset.y);
+    await cdp.waitFor('!document.querySelector("#settings-panel .spell-changed-filter")', 5000, "'N changed' gone");
+    const afterReset = await cdp.eval(FOCUSED);
+    const scrollAfter = await cdp.eval(SCROLL_TOP);
+    await cdp.pressKey("Tab");
+    const afterTab = await cdp.eval(FOCUSED);
+    assert.notEqual(afterTab, "editor", `Tab after 'Reset to defaults' went into the editor (focus after the reset: ${afterReset})`);
+    assert.equal(afterReset, "section:Rules", `the focus after 'Reset to defaults' (then Tab went to ${afterTab})`);
+    assert.equal(scrollAfter, scrollBefore, "the panel does not scroll when the section takes the focus");
+    assert.equal(afterTab, "input:Search the rules", "Tab from the section goes to the rule search");
+  });
+
+  test("14. focus: 'N changed' keeps the focus after a click and after Enter", async () => {
+    await openSpellPage(cdp);
+    await switchLongSentences(cdp);
+    const FILTER = '#settings-panel .spell-changed-filter';
+    const onFilter = `document.activeElement === document.querySelector(${JSON.stringify(FILTER)})`;
+
+    await cdp.click(FILTER);
+    await cdp.waitFor(`document.querySelector(${JSON.stringify(FILTER)})?.getAttribute("aria-pressed") === "true"`);
+    assert.equal(await cdp.eval(onFilter), true, `the new 'N changed' has the focus after a click, not ${await cdp.eval(FOCUSED)}`);
+
+    // The focus is on the button already: Enter goes to it.
+    await cdp.pressKey("Enter");
+    await cdp.waitFor(`document.querySelector(${JSON.stringify(FILTER)})?.getAttribute("aria-pressed") === "false"`);
+    assert.equal(await cdp.eval(onFilter), true, `the new 'N changed' has the focus after Enter, not ${await cdp.eval(FOCUSED)}`);
+  });
+
+  test("15. focus: a switch that leaves the 'changed' filter gives the focus to the next switch, then stays in 'Rules'", async () => {
+    // Two rules off, written through the store like resetShared. The second
+    // rule finds nothing in the note, so its switch changes no mark.
+    await cdp.eval(`window.vrtti.store.writeSharedSettings({ v: 1, words: {}, rules: {
+      LongSentences: { on: false, at: Date.now() },
+      RepeatedWords: { on: false, at: Date.now() },
+    } })`);
+    await openSpellPage(cdp);
+    await cdp.click("#settings-panel .spell-changed-filter");
+    const shownRules = '[...document.querySelectorAll("#settings-panel [data-rule]")].map((r) => r.dataset.rule)';
+    await cdp.waitFor(`${shownRules}.length === 2`, 3000, "the two changed rules");
+    const [first, second] = await cdp.eval(shownRules);
+    assert.deepEqual([first, second].sort(), ["LongSentences", "RepeatedWords"]);
+    const toggleOf = (/** @type {string} */ rule) =>
+      `document.querySelector('#settings-panel .settings-row[data-rule="${rule}"] .settings-toggle')`;
+    const label = (/** @type {string} */ rule) => cdp.eval(`${toggleOf(rule)}.getAttribute("aria-label")`);
+    const secondLabel = await label(second);
+
+    // Space on the first switch: its rule goes back to its default, and its
+    // row leaves the list. The switch of the other rule takes its place.
+    await pressOn(cdp, toggleOf(first), "Space", `switch of ${first}`);
+    await cdp.waitFor(`${shownRules}.join() === ${JSON.stringify(second)}`, 5000, `only ${second} in the filter`);
+    assert.equal(await cdp.eval(FOCUSED), `button:${secondLabel}`, "the focus goes to the switch that took the place");
+
+    // The last changed rule: the filter ends, and the list shows the groups.
+    await cdp.pressKey("Space");
+    await cdp.waitFor('!document.querySelector("#settings-panel .spell-changed-filter")', 5000, "'N changed' gone");
+    const afterLast = await cdp.eval(FOCUSED);
+    const inRules = await cdp.eval(`${sectionOf("Rules")}.contains(document.activeElement)`);
+    await cdp.pressKey("Tab");
+    const afterTab = await cdp.eval(FOCUSED);
+    assert.notEqual(afterTab, "editor", `Tab after the last switch went into the editor (focus after the switch: ${afterLast})`);
+    assert.ok(inRules, `the focus stays in 'Rules' after the last switch, not ${afterLast}`);
+    assert.equal(await cdp.eval(IN_PANEL), true, `Tab stays in the panel, not ${afterTab}`);
+  });
+
+  test("16. a copy of the settings from another window merges: an older copy loses no word, a copy with another word adds it", async () => {
+    await openSpellPage(cdp);
+    const older = Date.now() - 60000;
+    await addWordOnPage(cdp, "vrtti");
+
+    // The record as another window had it before the add: no word in it.
+    await postFromOtherWindow(cdp, {
+      id: "shared-settings",
+      kind: "shared-settings",
+      content: JSON.stringify({ v: 1, rules: {}, words: {} }),
+      createdAt: older,
+      updatedAt: older,
+    });
+    assert.deepEqual(await cdp.eval(WORDS), ["vrtti"], "the word of this window stays after an older copy came");
+
+    // A copy with a word of its own: both words show.
+    const now = Date.now();
+    await postFromOtherWindow(cdp, {
+      id: "shared-settings",
+      kind: "shared-settings",
+      content: JSON.stringify({ v: 1, rules: {}, words: { harper: { word: "Harper", at: now } } }),
+      createdAt: older,
+      updatedAt: now,
+    });
+    await cdp.waitFor(`${WORDS}.includes("Harper")`, 3000, '"Harper" from the other window');
+    assert.deepEqual(await cdp.eval(WORDS), ["Harper", "vrtti"], "both words show");
+    assert.equal(await cdp.eval(WORD_COUNT), "2 words");
+  });
+
+  test("17. a rule switched off and on again before the worker answers stays on", async () => {
+    // beforeEach waited for the blue mark of the long sentence, so the worker
+    // has Harper and the current settings. Two calls with no await between
+    // them: the second pass starts while the settings of the first are on
+    // their way to the worker. The module URL is the one main.js imports, so
+    // this is the same module instance as the app's.
+    await cdp.eval(`(async () => {
+      const m = await import("/js/editor/spellcheck.js");
+      m.setShared({ v: 1, rules: { LongSentences: { on: false, at: 1 } }, words: {} });
+      m.setShared({ v: 1, rules: {}, words: {} });
+    })()`);
+    const list = await settledMarks(cdp);
+    assert.ok(has(list, "blue", LONG_LINE, LONG_START), "the rule is on, so the long sentence has its blue mark: " + JSON.stringify(list));
+  });
 });
 
 // ---- Phone -----------------------------------------------------------------------
@@ -969,6 +1271,77 @@ describe("spellcheck quick buttons on a phone", { skip: !chromePath && "no Chrom
     assert.equal(dekuji.at(-1), "Add to my words", JSON.stringify(dekuji));
     assert.ok(!dekuji.some((t) => t.startsWith("Turn off")), "no Turn off: " + JSON.stringify(dekuji));
   });
+
+  /**
+   * The strip of section buttons, as "visible" or "hidden". Hidden means no
+   * layout box: its buttons would scroll rows that the page hides.
+   */
+  const STRIP = `(() => {
+    const nav = document.querySelector("#settings-panel nav.settings-jump");
+    if (!nav) return "missing";
+    const r = nav.getBoundingClientRect();
+    return getComputedStyle(nav).display !== "none" && r.width > 0 && r.height > 0 ? "visible" : "hidden";
+  })()`;
+
+  /**
+   * Settings, then the Spellcheck page, with taps. The phone layout hides
+   * #bar-settings, so the command opens the panel.
+   * @param {CdpClient} cdp
+   */
+  async function openSpellPageByTap(cdp) {
+    if (await cdp.eval('document.getElementById("settings-panel").hidden')) {
+      await cdp.eval('window.vrtti.run("settings.open")');
+      await cdp.waitFor('!document.getElementById("settings-panel").hidden');
+    }
+    if ((await cdp.eval(TITLE)) !== "Spellcheck") {
+      await cdp.tapEl(
+        'document.querySelector(\'#settings-panel .settings-row[data-key="spell-page"] .settings-button\')',
+        "the row Spellcheck rules and words"
+      );
+      await cdp.waitFor(`${TITLE} === "Spellcheck"`);
+    }
+    await cdp.waitFor(`/^\\d+ rules/.test(${RULE_COUNT})`, FIRST_MARKS_MS, "the rule count line");
+  }
+
+  test("18. phone: the strip of section buttons shows on the rows, hides on the Spellcheck page, and shows after '← Settings'", async () => {
+    const { cdp } = browser.page;
+    await cdp.eval('window.vrtti.run("settings.open")');
+    await cdp.waitFor('!document.getElementById("settings-panel").hidden');
+    await cdp.waitFor(`${TITLE} === "Settings"`);
+    assert.equal(await cdp.eval(STRIP), "visible", "the strip shows on the rows of Settings");
+
+    await openSpellPageByTap(cdp);
+    assert.equal(await cdp.eval(STRIP), "hidden", "the strip hides while the Spellcheck page is open");
+
+    await cdp.tapEl('document.getElementById("settings-back")', "← Settings");
+    await cdp.waitFor(`${TITLE} === "Settings"`);
+    assert.equal(await cdp.eval(STRIP), "visible", "the strip shows again on the rows");
+  });
+
+  test("19. phone: the heading 'Rules' sticks under the head while its part scrolls", async () => {
+    const { cdp } = browser.page;
+    await openSpellPageByTap(cdp);
+    const h3 = `${sectionOf("Rules")}.querySelector(":scope > h3")`;
+    // "auto" means the rule "top: calc(... var(--settings-jump-h))" is void.
+    const top = await cdp.eval(`getComputedStyle(${h3}).top`);
+    assert.notEqual(top, "auto", "the sticky heading has a top");
+    assert.match(top, /^-?[\d.]+px$/, "the top is a length");
+
+    await makeRulesTall(cdp, 2, { phone: true });
+    // The scroll position is set, not dragged: the test is about where the
+    // layout puts the heading, not about touch scrolling.
+    const at = await cdp.eval(`(() => {
+      const panel = document.getElementById("settings-panel");
+      const section = ${sectionOf("Rules")};
+      panel.scrollTop += section.getBoundingClientRect().top - panel.getBoundingClientRect().top + 400;
+      const head = panel.querySelector(".settings-head").getBoundingClientRect();
+      const s = section.getBoundingClientRect();
+      const h = ${h3}.getBoundingClientRect();
+      return { headBottom: head.bottom, sectionTop: s.top, sectionBottom: s.bottom, h3Top: h.top, h3Bottom: h.bottom };
+    })()`);
+    assert.ok(at.sectionTop < at.headBottom && at.sectionBottom > at.h3Bottom, "the part 'Rules' is in view and its top above: " + JSON.stringify(at));
+    assert.ok(Math.abs(at.h3Top - at.headBottom) <= 1, "'Rules' sits right under the head: " + JSON.stringify(at));
+  });
 });
 
 // ---- Two tabs and a reload -------------------------------------------------------
@@ -1035,5 +1408,34 @@ describe("spellcheck settings across tabs and reloads", { skip: !chromePath && "
     await searchRules(cdp, "sentence");
     await cdp.waitFor(`Boolean(document.querySelector(${JSON.stringify(LONG_TOGGLE)}))`);
     assert.equal(await cdp.eval(`document.querySelector(${JSON.stringify(LONG_TOGGLE)}).getAttribute("aria-pressed")`), "false");
+  });
+
+  test("20. My words takes 'constructor' and '__proto__', keeps them after a reload, and × removes one", async () => {
+    // Every object has the properties "constructor" and "__proto__". The
+    // list must treat them as words like any other.
+    const { cdp } = tabA;
+    await resetShared(cdp);
+    await openSpellPage(cdp);
+    await cdp.waitFor(`${WORDS}.length === 0`, 5000, "an empty list");
+    for (const word of ["constructor", "__proto__"]) {
+      await cdp.click(WORD_FIELD);
+      await cdp.type(word);
+      await cdp.waitFor(`Boolean(${buttonByText(`Add “${word}”`)})`, 3000, `the button Add “${word}”`);
+      await cdp.clickEl(buttonByText(`Add “${word}”`), `Add “${word}”`);
+      await cdp.waitFor(`${WORDS}.includes(${JSON.stringify(word)})`, 5000, `"${word}" in My words`);
+    }
+    assert.deepEqual((await cdp.eval(WORDS)).sort(), ["__proto__", "constructor"]);
+    assert.equal(await cdp.eval(WORD_COUNT), "2 words");
+
+    await tabA.reload();
+    await openSpellPage(cdp);
+    await cdp.waitFor(`${WORDS}.length === 2`, 5000, "two words after the reload");
+    assert.deepEqual((await cdp.eval(WORDS)).sort(), ["__proto__", "constructor"]);
+    assert.equal(await cdp.eval(WORD_COUNT), "2 words");
+
+    await cdp.click('#settings-panel button[aria-label="Remove constructor"]');
+    await cdp.waitFor(`!${WORDS}.includes("constructor")`, 5000, '"constructor" out of the list');
+    assert.deepEqual(await cdp.eval(WORDS), ["__proto__"]);
+    assert.equal(await cdp.eval(WORD_COUNT), "1 word");
   });
 });

@@ -31,11 +31,18 @@
 //      and the entries it could not read.
 //  12. A joining device that changes a word before its join is answered
 //      pushes nothing then, and its word reaches every device afterwards.
+//  13. An unlocked device that is in no join and holds a revision that none
+//      of its keys opens (two devices that the server token registered, and
+//      that do not know each other) pushes a change of its user on top, as
+//      one revision. With no change of a user, neither device answers the
+//      revision of the other.
 //
 // Across the run, no revision may be a push-back: a device that only
 // received the settings must not send them again (the list of readers rides
 // inside the encrypted text, model/docs.js pushPayload). And no revision may
 // drop an entry of the revision before it: an entry only ever gets newer.
+// Scenario 13 runs on a second server: there each device can read only its
+// own revisions, so a revision does drop the entries of the other device.
 //
 // Zero npm dependencies: plain Node 22 + local Chromium via CDP + local dotnet.
 // Skips cleanly when Chromium or dotnet is not installed on the host. The
@@ -731,6 +738,15 @@ function pageWords(cdp) {
   return cdp.eval(`[...document.querySelectorAll("#settings-panel .spell-word > span:first-child")].map((s) => s.textContent)`);
 }
 
+/** Add a word in the open Spellcheck page like a user, and wait until the list shows it. */
+async function addWordInPage(cdp, word) {
+  await typeInto(cdp, WORD_FIELD, word);
+  await pressEnter(cdp);
+  await cdp.waitFor(
+    `[...document.querySelectorAll("#settings-panel .spell-word > span:first-child")].some((s) => s.textContent === ${JSON.stringify(word)})`
+  );
+}
+
 // -----------------------------------------------------------------------------
 
 const chromePath = findChromium();
@@ -753,6 +769,11 @@ describe(
     let oldSrv;
     let proxy;
     let devE;
+    // Scenario 13: a server of its own, and two devices that do not know
+    // each other.
+    let strangerSrv;
+    let devG;
+    let devH;
     /** Server revision of "shared-settings" after each scenario. */
     const revs = {};
     const rev = async () => (await serverSettings(syncSrv.url, tokenA))?.rev ?? 0;
@@ -782,8 +803,9 @@ describe(
       } catch (err) {
         fullTable = "not read: " + err;
       }
-      for (const dev of [devF, devE, devC, devB, devA]) if (dev) await dev.close();
+      for (const dev of [devH, devG, devF, devE, devC, devB, devA]) if (dev) await dev.close();
       if (proxy) await proxy.close();
+      if (strangerSrv) await strangerSrv.close();
       if (oldSrv) await oldSrv.close();
       if (syncSrv) await syncSrv.close();
       if (staticSrv) await closeHttp(staticSrv.server);
@@ -1226,6 +1248,109 @@ describe(
       assertNoDrop(all);
       assertNoPushBack(all);
       revs["12"] = settled;
+    });
+
+    test("13. An unlocked device pushes its change on top of a revision it cannot read; nobody answers a revision alone", async (t) => {
+      // A server of its own: the first revision there is for G alone, and the
+      // devices of scenarios 1 to 12 do not read or write it.
+      strangerSrv = await startSyncServer(dll, staticSrv.origin);
+      [devG, devH] = await Promise.all([launchDevice(chromePath, "G"), launchDevice(chromePath, "H")]);
+      await Promise.all([devG.goto(staticSrv.url), devH.goto(staticSrv.url)]);
+      const net0 = networkLines.length;
+      await setupFirstDevice(devG.cdp, { name: "Work", serverUrl: strangerSrv.url, serverToken: strangerSrv.token });
+      const tokenG = await deviceToken(devG.cdp);
+      const revS = async () => (await serverSettings(strangerSrv.url, tokenG))?.rev ?? 0;
+      const tableS = () => revisionTable(strangerSrv.url, devG, [devG, devH]);
+      const stateOf = (dev) =>
+        dev.cdp.eval(`({
+          unlocked: window.vrtti.keyring.isUnlocked,
+          joining: window.vrtti.sync.isJoining,
+          known: window.vrtti.sync.knownRecipients().length,
+        })`);
+
+      await openSpellPage(devG.cdp);
+      await addWordInPage(devG.cdp, "kappa");
+      await rounds(devG);
+      assert.equal(await revS(), 1, "G's word is revision 1");
+
+      // H is registered with the server token too: the path "First device on
+      // this server" of Settings > Sync (main.js), which the server allows any
+      // number of times. No join, so no device vouches for the other: G
+      // encrypts for G alone, H for H alone, and no wait opens the revision
+      // of the other.
+      await setupFirstDevice(devH.cdp, { name: "Stranger", serverUrl: strangerSrv.url, serverToken: strangerSrv.token });
+      await rounds(devH, devG, devH);
+      assert.deepEqual(await stateOf(devH), { unlocked: true, joining: false, known: 1 }, "H is unlocked, in no join, and knows only itself");
+      assert.deepEqual(await stateOf(devG), { unlocked: true, joining: false, known: 1 }, "G knows only itself");
+      const kept = await settingsOf(devH.cdp);
+      assert.equal(kept.hasUnread, true, "H keeps G's revision, which no key of H opens");
+      assert.equal(kept.sync.rev, 1);
+      assert.equal(kept.sync.dirty, false, "H has nothing to push yet");
+      assert.deepEqual(kept.words, []);
+      assert.equal((await tableS())[0].canRead, "G", "revision 1 opens for G only");
+      assert.equal(await revS(), 1, "a revision that H cannot read alone makes H push nothing");
+
+      // A change of H's user. Before the fix it stayed dirty for ever.
+      await openSpellPage(devH.cdp);
+      await addWordInPage(devH.cdp, "lambda");
+      await rounds(devH, devH);
+      const pushed = await settingsOf(devH.cdp);
+      // One value, so that a failure shows all three: the server's revision,
+      // and whether H still keeps the revision and still waits to push.
+      assert.deepEqual(
+        { serverRev: await revS(), unread: pushed.hasUnread, dirty: pushed.sync.dirty, rev: pushed.sync.rev },
+        { serverRev: 2, unread: false, dirty: false, rev: 2 },
+        "H pushes its word on top of the revision it cannot read, as one revision, and the push drops the kept revision"
+      );
+      assert.deepEqual(pushed.words, ["lambda"]);
+
+      // No change of a user now. Each device holds the other's revision
+      // unread, and neither answers it: else the two would push without end.
+      for (let i = 0; i < 3; i++) await rounds(devG, devH);
+      assert.equal(await revS(), 2, "no device answers a revision it cannot read");
+      const quietG = await settingsOf(devG.cdp);
+      assert.equal(quietG.hasUnread, true, "G keeps H's revision, which no key of G opens");
+      assert.equal(quietG.sync.rev, 2);
+      assert.equal(quietG.sync.dirty, false);
+      assert.deepEqual(quietG.words, ["kappa"], "G keeps its own word");
+      assert.deepEqual(await pageWords(devG.cdp), ["kappa"], "G's page still lists its word");
+      assert.equal((await settingsOf(devH.cdp)).hasUnread, false, "H pulls only its own revision");
+
+      // G's user adds a word: G pushes on top too, with all of its own words.
+      await addWordInPage(devG.cdp, "mu");
+      await rounds(devG, devH);
+      assert.equal(await revS(), 3, "G pushes its change on top of H's revision, as one revision");
+      for (let i = 0; i < 3; i++) await rounds(devH, devG);
+      assert.equal(await revS(), 3, "still no answer to a revision alone");
+
+      const [endG, endH] = await Promise.all([devG, devH].map((d) => settingsOf(d.cdp)));
+      assert.deepEqual(endG.words, ["kappa", "mu"]);
+      assert.equal(endG.hasUnread, false);
+      assert.equal(endG.sync.dirty, false);
+      assert.deepEqual(endH.words, ["lambda"], "H keeps its own word");
+      assert.equal(endH.hasUnread, true, "H keeps G's new revision");
+      assert.equal(endH.sync.dirty, false);
+      assert.deepEqual(await pageWords(devH.cdp), ["lambda"]);
+
+      const rows = await tableS();
+      t.diagnostic("revisions on the second server rev:author[can open]r<readers>e<entries>: " + tableText(rows));
+      assert.deepEqual(
+        rows.map((r) => `${r.author}:${r.canRead}`),
+        ["G:G", "H:H", "G:G"],
+        "each revision opens for its writer only"
+      );
+      assert.deepEqual(Object.keys(JSON.parse(rows[2].settings).words).sort(), ["kappa", "mu"], "G's second revision has both of G's words");
+      // No assertNoDrop here: H's revision cannot have G's word, which H never
+      // read. That is the limit of two devices that do not know each other.
+      assertNoPushBack(rows);
+      assert.deepEqual(conflictsSince(net0), [], "no 409 was needed");
+      await closeSettings(devG.cdp);
+      await closeSettings(devH.cdp);
+      assert.deepEqual(
+        problems.filter((p) => /^[GH] /.test(p)),
+        [],
+        "no console error and no failed round on G or H"
+      );
     });
   }
 );
