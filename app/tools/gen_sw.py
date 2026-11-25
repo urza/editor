@@ -27,7 +27,7 @@ from jsscan import mask_comments
 APP = Path(__file__).resolve().parent.parent
 
 # Spellcheck assets live in their own content-addressed cache (`vrtti-spell-<hash>`)
-# so app-only deploys transfer ~1 MB instead of re-downloading 12.1 MB of WASM
+# so app-only deploys transfer ~1 MB instead of re-downloading 8.9 MB of WASM
 # and Czech dictionary data on every release (C4).
 SPELL_PREFIXES = ("vendor/harper/", "vendor/hunspell/", "vendor/dictionary-cs/")
 
