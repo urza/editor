@@ -3243,3 +3243,28 @@ html.phone .settings-row[data-key="sidebar-new"] { display: none; }
 }
 
 .dialog-ok { color: #99C794; }
+/* The server field of "Sync with a server" (dialog.js askConnect) shows only
+   while the text is a code. The rule above gives .dialog-field a display,
+   which beats the hidden attribute without this line. */
+.dialog-field[hidden] { display: none; }
+/* The invite for typing (dialog.js showInvite): a name and its value, one per
+   line. The value can be selected, as the invite above it. */
+.dialog-fact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: var(--ui-sm);
+  color: var(--st-gutter-fg);
+}
+.dialog-fact-value { color: var(--st-foreground); overflow-wrap: anywhere; user-select: text; }
+/* The join code: large and spaced, because a person reads it off one screen
+   and types it on another. */
+.dialog-code { font-size: var(--ui-lg); letter-spacing: 0.1em; color: var(--st-caret); }
+/* One step of a wait (dialog.js showProgress): a mark and its sentence. */
+.dialog-step { display: flex; gap: 8px; margin: 0; color: var(--st-sidebar-label); }
+.dialog-step-ok > :first-child { color: #99C794; }
+/* The line below the grid of Settings › Devices: what the last tick does. */
+.settings-grid-note { color: #99C794; }
+
