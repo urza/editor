@@ -3871,9 +3871,19 @@ the worker ahead of each request whose answer depends on them
 words, and the device switch for Czech without diacritics. It sends them on
 demand and awaits the answer, so the worker never lints a text with the
 settings of a moment ago, and the worker thread does not start at each app
-start. The worker applies the rules to Harper, keeps the words and the
-switch for `judge()`, and drops its cached paragraphs. The fallback path on
-the main thread does the same steps in place.
+start. It notes what it sent before the answer comes: a second pass that
+starts in between (a switch clicked twice) compares with what the worker is
+about to have. The worker applies the rules to Harper, keeps the words and
+the switch for `judge()`, and drops its cached paragraphs. When the rules
+changed it also drops the cached fixes of single words, because they come
+from a Harper lint and follow the rules. The fallback path on the main
+thread does the same steps in place.
+
+A pass of the worker cannot overlap a `config` message. Each wait of a pass
+is a call into Harper, and Harper answers without leaving the task, so the
+pass ends before the worker reads its next message. A pass that learns to
+give way in the middle (to drop a stale request sooner) must then check the
+settings again before it caches a paragraph.
 
 - **Rules.** Harper's `setLintConfig` replaces its whole map on each call and
   runs a missing rule at its default. So the call always gets the complete

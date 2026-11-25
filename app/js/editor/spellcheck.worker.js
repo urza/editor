@@ -634,10 +634,17 @@ self.addEventListener("message", async (event) => {
         result = await lintDocument(msg.text, msg.langs, msg.reqId);
       }
     } else if (op === "config") {
+      const rulesChanged = JSON.stringify(msg.rules ?? {}) !== JSON.stringify(config.rules);
       config = { rules: msg.rules ?? {}, words: new Set(msg.words ?? []), plain: msg.plain !== false };
       if (harperEngine) await harperEngine.setLintConfig(config.rules);
-      // Every cached paragraph was linted with the old settings.
+      // Every cached paragraph was linted with the old settings. No pass is
+      // in the middle of a paragraph here: a pass waits for Harper alone, and
+      // those waits end before the next message is read.
       paraCache.clear();
+      // The fixes of a word come from a Harper lint of that word alone
+      // (computeEnglishFixes), so they follow the rules: with SpellCheck off
+      // the list is empty, and it must not stay empty when the rule is back.
+      if (rulesChanged) englishSuggestions.clear();
       result = true;
     } else if (op === "catalog") {
       const h = await loadHarper();

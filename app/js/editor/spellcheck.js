@@ -300,6 +300,9 @@ export function setShared(settings) {
   // of its text (sendWorkerConfig). Without an engine yet, loadHarper applies
   // the rules when it arrives.
   if (useWorker() || !rulesChanged || !engine) return relintAll();
+  // The cached fixes of a word come from a Harper lint of that word, so they
+  // follow the rules (the worker does the same at op "config").
+  englishSuggestions.clear();
   engine.setLintConfig(lintConfig(shared)).then(relintAll, (/** @type {unknown} */ err) => {
     console.error("[vrtti] Harper refused the rule settings", err);
   });
@@ -319,8 +322,18 @@ async function sendWorkerConfig() {
   const config = { rules: lintConfig(shared), words: [...myWords].sort(), plain: plainOn };
   const text = JSON.stringify(config);
   if (text === workerConfigSent) return;
-  await callWorker({ op: "config", ...config });
+  // Noted before the await, not after it. A second pass can start while the
+  // message is on its way (a switch clicked twice): it must compare with what
+  // the worker is about to have. Compared with what the worker had before,
+  // "off, then on again" looked like no change, and the worker kept "off".
   workerConfigSent = text;
+  try {
+    await callWorker({ op: "config", ...config });
+  } catch (err) {
+    // Not delivered: the next pass sends the settings again.
+    workerConfigSent = "";
+    throw err;
+  }
 }
 
 /** @typedef {import("./spellrules.js").CatalogGroup} CatalogGroup */
