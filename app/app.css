@@ -1742,6 +1742,45 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   min-width: 0;
 }
 
+.settings-label-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+
+/* Subtle inline (i) button for optional longer explanations. Keeps default
+   rows to 1-2 lines on phones while leaving nuance one tap away. */
+.settings-info-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(18px * var(--ui-scale));
+  height: calc(18px * var(--ui-scale));
+  padding: 0;
+  border: 1px solid var(--st-selection-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--st-gutter-fg);
+  font: inherit;
+  font-size: calc(11px * var(--ui-scale));
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-info-btn:hover {
+  border-color: var(--st-sidebar-label);
+  color: var(--st-sidebar-heading);
+}
+.settings-info-btn[aria-expanded="true"] {
+  border-color: var(--st-caret);
+  color: var(--st-caret);
+  background: rgba(249, 174, 88, 0.12);
+}
+
 .settings-hint,
 .settings-note {
   margin: 3px 0 0;
@@ -1750,6 +1789,20 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   line-height: 1.5;
   color: var(--st-gutter-fg);
 }
+
+/* Optional longer explanation revealed by .settings-info-btn. */
+.settings-more {
+  margin: 6px 0 0;
+  padding: 7px 10px;
+  max-width: 66ch;
+  border-left: 2px solid var(--st-selection-border);
+  border-radius: 2px;
+  background: var(--st-sidebar-bg);
+  font-size: var(--ui-sm);
+  line-height: 1.5;
+  color: var(--st-sidebar-label);
+}
+.settings-more[hidden] { display: none; }
 
 /* min-width for the same reason as the label above. overflow-wrap alone is
    not enough: iOS Safari still sizes this flex item to the unbroken key and
@@ -2824,6 +2877,16 @@ html.phone #settings-panel .settings-jump-pill {
 html.phone #settings-panel .settings-swatch-button {
   width: calc(36px * var(--thumb-scale));
   height: calc(36px * var(--thumb-scale));
+}
+/* Expand the tap target around the small (i) circle without inflating row height. */
+html.phone #settings-panel .settings-info-btn {
+  width: calc(20px * var(--thumb-scale));
+  height: calc(20px * var(--thumb-scale));
+}
+html.phone #settings-panel .settings-info-btn::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
 }
 
 /* ---- The thumb button and its round buttons ----------------------------- */
