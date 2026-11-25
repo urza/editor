@@ -70,6 +70,9 @@ const INVITES_KEY = "sync.invites";
 const INTRODUCTIONS_KEY = "sync.introductions";
 // The join this device made with a typed code and waits to hear back on.
 const JOINING_KEY = "sync.joining";
+// The last join of this device that ended: the spaces it gave and the member
+// that answered. The dialog that waits for the join reads it, in any window.
+const JOINED_KEY = "sync.joined";
 // A change of the passphrase switch that has not ended (§27): the new keys
 // and token, stored before the server registers them, and the old entry key
 // that leaves the spaces at the end. The server takes one successor per
@@ -79,6 +82,12 @@ const SUCCESSOR_KEY = "sync.successor";
 // How long an invite is kept: the code lives ten minutes on the server, but a
 // used one waits for this device's next sync, which can be days on a phone.
 const INVITE_KEEP = 7 * 24 * 60 * 60 * 1000;
+// While this device waits for a member to answer its join, it asks again
+// this often, for as long as a code lives plus a minute. The slow poll
+// (POLL) would leave a person watching "Waiting…" for up to a minute after
+// the other device answered.
+const JOIN_POLL = 3000;
+const JOIN_POLL_FOR = 11 * 60 * 1000;
 const PAGE = 200;
 // Slow poll. The responsive triggers are visibility, online, and the edit
 // debounce; this only covers a window that sits open and untouched.
@@ -143,7 +152,25 @@ function newToken() {
  */
 
 /** @typedef {{creator: string, log: string[]}} SpaceLog */
-/** @typedef {{slot: string, code: string, spaces: string[], at: number}} Invite */
+/**
+ * @typedef {Object} Invite  A join code this device showed.
+ * @property {string} slot
+ * @property {string} [code]  Gone once the join ended: nothing needs it then.
+ * @property {string[]} spaces
+ * @property {number} at
+ * @property {boolean} [used]  A device used the code and waits for this one.
+ * @property {{name: string, spaces: string[]}} [joined]  The join ended: the
+ *   device and the spaces it got. Kept (INVITE_KEEP) so that the invite
+ *   dialog can say so, also in a window that does not run the schedule.
+ */
+/**
+ * @typedef {{kind: "joined", name: string, spaces: string[]}
+ *   | {kind: "join-done", member: string, spaces: string[], newNotes: string | null}
+ *   | {kind: "added", space: string, by: string}
+ *   | {kind: "lost", space: string}} SyncNotice
+ *   Something another device did that the person should hear about (the
+ *   "notice" event). main.js writes the sentence.
+ */
 
 /** An error the user can read, with the server's status when there is one. */
 class SyncError extends Error {
@@ -192,8 +219,18 @@ export function createSyncClient({ store, keyring }) {
    * read "sync failed" for a server that is merely older.
    */
   let settingsRefused = false;
-  /** @type {{slot: string, code: string, modes?: Record<string, "tab" | "list">} | null} */
+  /**
+   * `from` is the name of the member that made the invite, `newNotes` the
+   * space the person picked for "New notes" in the Join dialog, `at` the time
+   * of the join (the fast poll stops some minutes after it).
+   * @type {{slot: string, code: string, modes?: Record<string, "tab" | "list">,
+   *         from?: string, newNotes?: string | null, at?: number} | null}
+   */
   let joining = null;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let joinTimer;
+  /** Spaces this device removed itself from: their loss needs no notice. */
+  const leaving = new Set();
   /** @type {SyncStatus} */
   let status = { state: "off" };
   let lastSyncAt = /** @type {number | undefined} */ (undefined);
@@ -226,6 +263,21 @@ export function createSyncClient({ store, keyring }) {
     // The leader's status is everyone's status (architecture.md §14.3).
     if (started) post("sync-status", { status });
   }
+
+  /**
+   * Tell the person what another device did. From the window that runs the
+   * schedule to every window: the person looks at one of them, and it need
+   * not be the leader.
+   * @param {SyncNotice} notice
+   */
+  function announce(notice) {
+    events.dispatchEvent(new CustomEvent("notice", { detail: notice }));
+    post("sync-notice", { notice });
+  }
+
+  on("sync-notice", (payload) => {
+    events.dispatchEvent(new CustomEvent("notice", { detail: payload.notice }));
+  });
 
   on("sync-status", (payload) => {
     if (started) return;
@@ -438,10 +490,10 @@ export function createSyncClient({ store, keyring }) {
     if (!state.members.includes(me)) return false;
     const trusted = knownSet();
     // Only the replayed part: there each signature is checked.
-    const vouched = log.slice(0, state.seq).some((text) => {
-      const e = JSON.parse(text);
-      return e.op === "add" && e.device === me && trusted.has(e.by);
-    });
+    const vouched = log
+      .slice(0, state.seq)
+      .map((text) => JSON.parse(text))
+      .find((e) => e.op === "add" && e.device === me && trusted.has(e.by));
     if (!vouched) {
       console.log("[vrtti] the space", space, "was refused: no device this one knows added it");
       return false;
@@ -455,6 +507,7 @@ export function createSyncClient({ store, keyring }) {
     await putSetting(SPACES_KEY, { ...modes });
     post("setting", { key: SPACES_KEY });
     console.log("[vrtti] this device was added to the space", space);
+    announce({ kind: "added", space, by: parseEntryKey(vouched.by)?.name ?? "" });
     return true;
   }
 
@@ -465,6 +518,9 @@ export function createSyncClient({ store, keyring }) {
    */
   async function lose(space) {
     console.log("[vrtti] this device left the space", space);
+    // Not for a space the person just left on this device: the question
+    // before it said what happens.
+    if (!leaving.delete(space)) announce({ kind: "lost", space });
     // New notes stay local from here, also when the device comes back to
     // the space later: only the user points "New notes" at a space.
     if (newNotes === space) await setNewNotes(null);
@@ -560,6 +616,7 @@ export function createSyncClient({ store, keyring }) {
   /** @param {string} space @param {string} deviceKey */
   async function removeDevice(space, deviceKey) {
     await append(space, { op: "remove", device: deviceKey });
+    if (deviceKey === keyring.ownKey()) leaving.add(space);
     // A device that removed itself lost the space; the next pull says so.
     void syncNow();
   }
@@ -784,11 +841,7 @@ export function createSyncClient({ store, keyring }) {
       // The slot serves another join: draw another code.
       if (res.status === 409) continue;
       if (!res.ok) throw httpError(res);
-      invites = [...invites.filter((i) => Date.now() - i.at < INVITE_KEEP), { slot, code, spaces, at: Date.now() }];
-      await putSetting(INVITES_KEY, invites);
-      // The leader answers the join, and it may be another window: it has to
-      // re-read the invites, or it never knows this code.
-      post("setting", { key: INVITES_KEY });
+      await saveInvites([...invites, { slot, code, spaces, at: Date.now() }]);
       return formatCode(code);
     }
     throw new SyncError("no free code, try again");
@@ -801,10 +854,35 @@ export function createSyncClient({ store, keyring }) {
    * @param {string} formatted The code as invite() returned it.
    */
   async function inviteOpen(formatted) {
+    return ["open", "used"].includes((await inviteState(formatted)).state);
+  }
+
+  /**
+   * Where a code from invite() stands, for the dialog that shows it:
+   * "open" (no device used it yet), "used" (a device used it and waits for
+   * this device, which is locked or has not synced yet), "joined" with the
+   * name the new device chose and the spaces it got, or "gone" (refused, or
+   * forgotten). Read from the stored setting, as inviteOpen() is.
+   * @param {string} formatted The code as invite() returned it.
+   * @returns {Promise<{state: "open" | "used" | "gone"} | {state: "joined", name: string, spaces: string[]}>}
+   */
+  async function inviteState(formatted) {
     const slot = slotOf(normalizeCode(formatted));
-    /** @type {{slot: string}[]} */
+    /** @type {Invite[]} */
     const stored = (await getSetting(INVITES_KEY)) ?? [];
-    return stored.some((i) => i.slot === slot);
+    const found = stored.find((i) => i.slot === slot);
+    if (!found) return { state: "gone" };
+    if (found.joined) return { state: "joined", name: found.joined.name, spaces: found.joined.spaces };
+    return { state: found.used ? "used" : "open" };
+  }
+
+  /** @param {Invite[]} next */
+  async function saveInvites(next) {
+    invites = next.filter((i) => Date.now() - i.at < INVITE_KEEP);
+    await putSetting(INVITES_KEY, invites);
+    // Every window reads the invites: the leader answers a join, and the
+    // dialog that shows the code can be in another window.
+    post("setting", { key: INVITES_KEY });
   }
 
   /**
@@ -812,21 +890,28 @@ export function createSyncClient({ store, keyring }) {
    * Check its proof, add it to the spaces, and send the reply (§27).
    */
   async function completeJoins() {
-    if (!invites.length || !keyring.signer) return;
+    if (!invites.some((i) => i.code)) return;
     const res = await request("/api/joins");
     if (!res.ok) throw httpError(res);
     /** @type {{slot: string, spaces: string[], deviceId: string, entry: string, proof: string}[]} */
     const pending = await res.json();
+    if (!keyring.signer) {
+      // Locked: no signature for the adds. The question above still went
+      // out, so that the invite dialog and the status can say that a device
+      // waits for an unlock, and not that the invite expired.
+      const waiting = invites.filter((i) => i.code && !i.used && pending.some((join) => join.slot === i.slot));
+      if (waiting.length) await saveInvites(invites.map((i) => (waiting.includes(i) ? { ...i, used: true } : i)));
+      return;
+    }
     for (const join of pending) {
-      const invite = invites.find((i) => i.slot === join.slot);
-      if (!invite) continue;
+      const invite = invites.find((i) => i.code && i.slot === join.slot);
+      if (!invite?.code) continue;
       const parsed = parseEntryKey(join.entry);
       // The proof binds the device entry to the code: without it the server
       // could swap the new device's keys for its own.
       if (!parsed || parsed.id !== join.deviceId || !sameHex(join.proof, await joinProof(invite.code, join.entry))) {
         console.log("[vrtti] a join with a wrong proof was refused", join.slot);
-        invites = invites.filter((i) => i !== invite);
-        await putSetting(INVITES_KEY, invites);
+        await saveInvites(invites.filter((i) => i !== invite));
         continue;
       }
       // Before the adds: the new device stays known also when the invite
@@ -845,9 +930,11 @@ export function createSyncClient({ store, keyring }) {
         body: { reply, mac: await joinReplyMac(invite.code, reply) },
       });
       if (!answered.ok && answered.status !== 404) throw httpError(answered);
-      invites = invites.filter((i) => i !== invite);
-      await putSetting(INVITES_KEY, invites);
-      console.log("[vrtti] added", parsed.name, "to", Object.keys(creators).join(", ") || "no space");
+      // The invite stays, without its code, as the record of how it ended.
+      const joined = { name: parsed.name, spaces: Object.keys(creators) };
+      await saveInvites(invites.map((i) => (i === invite ? { slot: i.slot, spaces: i.spaces, at: i.at, joined } : i)));
+      console.log("[vrtti] added", parsed.name, "to", joined.spaces.join(", ") || "no space");
+      announce({ kind: "joined", ...joined });
     }
   }
 
@@ -856,10 +943,13 @@ export function createSyncClient({ store, keyring }) {
    * registers with its own token; its memberships arrive with the reply.
    * `spaceModes` comes from an invite: the mode each space opens in here. It
    * waits in the joining record, because a mode needs the membership first.
+   * So do the two wishes: `from`, the name of the member that made the
+   * invite, and `newNotes`, the space for "New notes" from the Join dialog.
    * @param {string} url @param {string} typed
    * @param {Record<string, "tab" | "list">} [spaceModes]
+   * @param {{from?: string, newNotes?: string | null}} [wishes]
    */
-  async function redeem(url, typed, spaceModes = {}) {
+  async function redeem(url, typed, spaceModes = {}, wishes = {}) {
     const code = normalizeCode(typed);
     if (!code) throw new SyncError("that is not a code: ten letters and digits");
     const entry = keyring.ownKey();
@@ -888,10 +978,29 @@ export function createSyncClient({ store, keyring }) {
     if (res.status === 404) throw new SyncError("the code is unknown or expired", 404);
     if (res.status === 409) throw new SyncError("this device is registered already", 409);
     if (!res.ok) throw httpError(res);
-    joining = { slot: slotOf(code), code, modes: spaceModes };
+    joining = { slot: slotOf(code), code, modes: spaceModes, from: wishes.from, newNotes: wishes.newNotes, at: Date.now() };
     await putSetting(JOINING_KEY, joining);
+    // The result of an earlier join must not answer for this one.
+    await deleteSetting(JOINED_KEY);
     await saveConfig({ url: base, token, v: 2 });
     void syncNow();
+  }
+
+  /**
+   * Where the join of this device stands, for the dialog that waits for it:
+   * "waiting" (with the name of the member, when the invite gave one, and
+   * whether this device is locked), "joined" with what the join gave, or
+   * "none". Read from the stored settings: the window that runs the
+   * schedule ends the join, and the dialog can be in another one.
+   * @returns {Promise<{state: "waiting", from: string, locked: boolean}
+   *   | {state: "joined", member: string, spaces: string[], newNotes: string | null}
+   *   | {state: "none"}>}
+   */
+  async function joinState() {
+    const waiting = await getSetting(JOINING_KEY);
+    if (waiting) return { state: "waiting", from: waiting.from ?? "", locked: !keyring.signer };
+    const done = await getSetting(JOINED_KEY);
+    return done ? { state: "joined", member: done.member, spaces: done.spaces, newNotes: done.newNotes } : { state: "none" };
   }
 
   /** The new device waits for its member's reply; true once it arrived. */
@@ -921,21 +1030,40 @@ export function createSyncClient({ store, keyring }) {
     }
     await putSetting(CURSORS_KEY, { ...cursors });
     // The invite's modes, before the first pull of these spaces: a space set
-    // to Titles only must never open its notes as tabs first.
+    // to Titles only must never open its notes as tabs first. A join with a
+    // typed code has no modes: Titles only too, as adopt() does. Without
+    // this the default of modeOf() opened every note of every space.
     const suggested = joining.modes ?? {};
-    const given = Object.keys(parsed.creators ?? {}).filter((space) => isValidSpace(space) && Object.hasOwn(suggested, space));
+    const given = Object.keys(parsed.creators ?? {}).filter(isValidSpace);
     if (given.length) {
-      for (const space of given) modes[space] = suggested[space];
+      for (const space of given) modes[space] = Object.hasOwn(suggested, space) ? suggested[space] : "list";
       await putSetting(SPACES_KEY, { ...modes });
       post("setting", { key: SPACES_KEY });
+    }
+    // "New notes" from the Join dialog, only for a space the member gave.
+    // Written here and not with setNewNotes(): that one asks isMine(), and
+    // the membership arrives with the logs later in this round. Until then
+    // defaultSpace() keeps the notes local, because it asks isMine() too.
+    const wished = joining.newNotes && given.includes(joining.newNotes) ? joining.newNotes : null;
+    if (wished) {
+      newNotes = wished;
+      const stored = (await getSetting(NEW_NOTES_KEY)) ?? {};
+      await putSetting(NEW_NOTES_KEY, { ...stored, space: wished });
+      post("setting", { key: NEW_NOTES_KEY });
     }
     // The member that answered: a known device from now on, also when the
     // join gave no space (adopt(), grid()). The MAC above checked it.
     if (typeof parsed.member === "string") await introduce([parsed.member]);
     await keyring.addRecovery(Array.isArray(parsed.recovery) ? parsed.recovery : []);
+    const member = (typeof parsed.member === "string" ? parseEntryKey(parsed.member)?.name : "") || joining.from || "";
+    const result = { member, spaces: given, newNotes: wished };
+    await putSetting(JOINED_KEY, result);
     joining = null;
     await deleteSetting(JOINING_KEY);
+    // The other windows hold the join in memory too (isJoining).
+    post("setting", { key: JOINING_KEY });
     await saveLogs();
+    announce({ kind: "join-done", ...result });
     return true;
   }
 
@@ -1417,9 +1545,11 @@ export function createSyncClient({ store, keyring }) {
           directoryMissing,
           settingsRefused,
           message: joined
-            ? undefined
+            ? invites.some((i) => i.used && !i.joined)
+              ? "a new device waits: unlock this device to let it in"
+              : undefined
             : keyring.signer
-              ? "waiting for the device that showed the code"
+              ? "waiting for " + (joining?.from || "the device that showed the code")
               : "unlock this device to end the join",
         });
       } while (queued);
@@ -1449,6 +1579,9 @@ export function createSyncClient({ store, keyring }) {
       console.log("[vrtti] sync failed", err);
     } finally {
       running = false;
+      // A join that waits for its member asks again soon (JOIN_POLL).
+      clearTimeout(joinTimer);
+      if (joining && Date.now() - (joining.at ?? 0) < JOIN_POLL_FOR) joinTimer = setTimeout(() => syncNow(), JOIN_POLL);
     }
   }
 
@@ -1755,7 +1888,7 @@ export function createSyncClient({ store, keyring }) {
   // picks up a new server, default, mode or log without a reload, and a window
   // that does not run the schedule still answers modeOf() and defaultSpace().
   on("setting", ({ key }) => {
-    if (![CONFIG_KEY, SPACES_KEY, NEW_NOTES_KEY, LOGS_KEY, INVITES_KEY, INTRODUCTIONS_KEY].includes(key)) return;
+    if (![CONFIG_KEY, SPACES_KEY, NEW_NOTES_KEY, LOGS_KEY, INVITES_KEY, INTRODUCTIONS_KEY, JOINING_KEY].includes(key)) return;
     reloadSettings().catch((err) => console.log("[vrtti] sync settings reload failed", err));
   });
 
@@ -1829,7 +1962,9 @@ export function createSyncClient({ store, keyring }) {
     // Joins and registration (§27).
     invite,
     inviteOpen,
+    inviteState,
     redeem,
+    joinState,
     registerFirst,
     changePassphraseSwitch,
     disconnect,
