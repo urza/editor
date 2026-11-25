@@ -11,7 +11,7 @@
 
 import { titleOf } from "../model/docs.js";
 import { previewOf, shortTime } from "../model/preview.js";
-import { hasDisk } from "../model/capabilities.js";
+import { hasDisk, isDesktop } from "../model/capabilities.js";
 import { daysLeft, RECENT_KEEP, spaceBadge, TRASH_KEEP } from "../model/lifecycle.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
@@ -869,9 +869,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
       warn.textContent = "⚠";
       // Two causes share the marker and the click (architecture.md §23): a
       // lost permission or file, and a write that failed and holds the text.
+      // The shell has its own words for the first cause: a reconnect there is
+      // a fresh pick, never a grant (architecture.md §17). "Needs permission"
+      // sent a user to look for a permission that does not exist.
       warn.title = record.file?.unwritten
         ? "The last write to this file failed. Click to try again."
-        : "This file needs permission again. Click to reconnect.";
+        : isDesktop
+          ? "vrtti cannot reach this file. Click to pick it again."
+          : "This file needs permission again. Click to reconnect.";
       warn.addEventListener("click", (event) => {
         // The click itself is the user gesture requestPermission needs; a
         // background retry can never get the grant.
@@ -1514,7 +1519,11 @@ export function mountSidebar(store, folders, sync, workspaces) {
       warn.className = "buffer-warn";
       warn.type = "button";
       warn.textContent = "⚠";
-      warn.title = "This folder needs permission again. Click to reconnect.";
+      // The shell picks the folder again and grants nothing (see the file
+      // marker above for the reason of the two texts).
+      warn.title = isDesktop
+        ? "vrtti cannot reach this folder. Click to pick it again."
+        : "This folder needs permission again. Click to reconnect.";
       // The click itself is the user gesture requestPermission needs.
       warn.addEventListener("click", () => run("folder.reconnect", folder.id));
       head.appendChild(warn);
