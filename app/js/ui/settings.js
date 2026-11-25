@@ -1767,6 +1767,10 @@ export function mountSettings(deps = {}) {
     subPage = page;
     sub.replaceChildren(page.element);
     body.hidden = true;
+    // The strip of section buttons (narrow panes, phones) belongs to the
+    // rows. It stands in the head, outside the body, so it is hidden on its
+    // own: over a page, its buttons would scroll rows that are not there.
+    jumpBar.hidden = true;
     sub.hidden = false;
     backButton.hidden = false;
     title.textContent = page.title;
@@ -1784,6 +1788,7 @@ export function mountSettings(deps = {}) {
     stopSubBack = () => {};
     sub.hidden = true;
     body.hidden = false;
+    jumpBar.hidden = false;
     backButton.hidden = true;
     title.textContent = "Settings";
     page.hidden?.();

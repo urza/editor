@@ -3788,7 +3788,14 @@ devices.
 - **Settings › Editor › Spellcheck rules and words** opens the Spellcheck
   page, a second view inside the Settings panel (`ui/settings.js` `openSub`,
   `ui/spellpage.js`). "← Settings", Escape and Back on a phone go back to the
-  rows first.
+  rows first. The strip of section buttons of a narrow panel is hidden while
+  the page is open: it belongs to the rows.
+- **The focus stays on the page.** A switch, a × or "Reset to defaults" can
+  remove the control that has the focus. The page then gives the focus to
+  the control that took its place, or to the section of that part
+  (`holdFocus()`). From `<body>`, Tab would go to the editor behind the
+  panel. The section and not its text field: a field that gets the focus
+  after a tap opens the keyboard of a phone.
 - **Rules**: a search over names and descriptions, Harper's 15 groups, a
   switch for each of the 823 rules, "823 rules · N changed" (a click shows
   only the changed rules) and "Reset to defaults" (the rules only). The

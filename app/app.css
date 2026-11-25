@@ -2161,19 +2161,36 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 
 /* ---- The Spellcheck page (ui/spellpage.js): a second view in the panel ---- */
 
-/* display:flex on the body would beat the browser's own [hidden] rule, and
-   the panel hides the body while the page is open (ui/settings.js, openSub). */
+/* display:flex on the body and on the jump strip would beat the browser's
+   own [hidden] rule, and the panel hides both while the page is open
+   (ui/settings.js, openSub). */
 .settings-body[hidden],
+.settings-jump[hidden],
 .settings-sub[hidden] { display: none; }
 
 /* One column of the same width as the rows of Settings, so a rule row reads
-   like a settings row. No rail: the page has two sections. */
+   like a settings row. No rail: the page has two sections.
+   --settings-jump-h is the height of the jump strip, and the strip is hidden
+   here. The value must still be set: the sticky headings and the scroll
+   margins of the rows compute with it (.settings-section > h3), and with no
+   value those rules are void, so the headings would not stay in view. */
 .settings-sub {
+  --settings-jump-h: 0px;
   max-width: calc(820px * var(--ui-scale));
 }
 .spell-page {
   max-width: calc(600px * var(--ui-scale));
   padding-left: 14px;
+}
+/* A section takes the focus only to keep it on the page when a control goes
+   away (holdFocus in ui/spellpage.js), as the panel does on open. */
+.spell-page .settings-section { outline: none; }
+/* The headings of the page stick like those of the rows. A control that
+   takes the focus must clear the pinned heading here too, and the fields,
+   the bars and the words of the page stand in no .settings-row (see the
+   rule ".settings-row *" for the sum). */
+.spell-page .settings-section * {
+  scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 9px);
 }
 
 /* The base rule sizes .settings-input for the right column of a row. Here it

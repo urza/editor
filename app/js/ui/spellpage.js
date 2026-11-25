@@ -52,6 +52,38 @@ function makeButton(className, text) {
 }
 
 /**
+ * A repaint builds the controls of `box` again, so the focus is put back by
+ * key (`data-focus-key`): a switch must stay under the finger and under the
+ * Tab key. Call this before the repaint, and call the result after it.
+ *
+ * When the control is gone or disabled (a removed word, a rule that left the
+ * "changed" filter, "Reset to defaults" after its click), the control that
+ * took its place gets the focus, or else `fallback`. The focus must never
+ * fall to <body>: from there, Tab goes to the editor behind the panel, and
+ * the next keys change a note that the user cannot see.
+ *
+ * `fallback` is the section of the part, never its text field: a field that
+ * gets the focus after a tap opens the keyboard of a phone. From the
+ * section, Tab goes to that field. No scroll: the user is at the place
+ * already, and a section is taller than the screen.
+ * @param {HTMLElement} box @param {HTMLElement} fallback
+ * @returns {() => void}
+ */
+function holdFocus(box, fallback) {
+  const keyed = () =>
+    /** @type {HTMLElement[]} */ ([...box.querySelectorAll("[data-focus-key]:not(:disabled)")]);
+  const before = keyed();
+  const index = before.findIndex((el) => el === document.activeElement);
+  if (index < 0) return () => {};
+  const key = before[index].dataset.focusKey;
+  return () => {
+    const after = keyed();
+    const next = after.find((el) => el.dataset.focusKey === key) ?? after[Math.min(index, after.length - 1)];
+    (next ?? fallback).focus({ preventScroll: true });
+  };
+}
+
+/**
  * @param {{ store: ReturnType<import("../model/docs.js").createDocStore>,
  *           sync: ReturnType<import("../sync/client.js").createSyncClient> | null }} deps
  * @returns {{ title: string, element: HTMLElement, shown: () => void, hidden: () => void, escape: () => boolean }}
@@ -74,6 +106,8 @@ export function buildSpellPage({ store, sync }) {
 
   // ---- Rules ---------------------------------------------------------------
   const rulesSection = make("section", "settings-section");
+  // Takes the focus when a control of this part goes away (holdFocus).
+  rulesSection.tabIndex = -1;
   rulesSection.appendChild(make("h3", "", "Rules"));
   const search = /** @type {HTMLInputElement} */ (make("input", "settings-input spell-search"));
   search.type = "search";
@@ -100,10 +134,8 @@ export function buildSpellPage({ store, sync }) {
     store.writeSharedSettings(next).catch((err) => console.error("[vrtti] spellcheck settings not saved", err));
 
   function paintRules() {
-    // A repaint builds the rows again, so the focus is put back by key: a
-    // switch must stay under the finger and under the Tab key.
-    const active = /** @type {HTMLElement | null} */ (document.activeElement);
-    const focusKey = active && groupsBox.contains(active) ? active.dataset.focusKey : undefined;
+    // The bar and the rows are built again below.
+    const refocus = [holdFocus(bar, rulesSection), holdFocus(groupsBox, rulesSection)];
 
     if (catalog === undefined) {
       bar.replaceChildren();
@@ -129,6 +161,7 @@ export function buildSpellPage({ store, sync }) {
     if (changed > 0) {
       count.append(" · ");
       const filter = makeButton("spell-changed-filter", `${changed} changed`);
+      filter.dataset.focusKey = "filter";
       filter.setAttribute("aria-pressed", String(onlyChanged));
       filter.title = onlyChanged ? "Show all rules" : "Show only the changed rules";
       filter.addEventListener("click", () => {
@@ -138,6 +171,7 @@ export function buildSpellPage({ store, sync }) {
       count.appendChild(filter);
     }
     const reset = makeButton("settings-button", "Reset to defaults");
+    reset.dataset.focusKey = "reset";
     reset.disabled = changed === 0;
     reset.addEventListener("click", () => write(resetRules(store.sharedSettings(), Date.now())));
     bar.replaceChildren(count, reset);
@@ -210,12 +244,7 @@ export function buildSpellPage({ store, sync }) {
       rows.push(make("p", "spell-note", query ? `No rule matches “${search.value.trim()}”.` : "No rule is changed."));
     }
     groupsBox.replaceChildren(...rows);
-
-    if (focusKey) {
-      for (const el of groupsBox.querySelectorAll("[data-focus-key]")) {
-        if (/** @type {HTMLElement} */ (el).dataset.focusKey === focusKey) /** @type {HTMLElement} */ (el).focus();
-      }
-    }
+    for (const put of refocus) put();
   }
 
   search.addEventListener("input", paintRules);
@@ -225,6 +254,7 @@ export function buildSpellPage({ store, sync }) {
   // and adds to it, the words stand in columns, and "Edit as text" takes a
   // paste of many words at once.
   const wordsSection = make("section", "settings-section");
+  wordsSection.tabIndex = -1;
   wordsSection.appendChild(make("h3", "", "My words"));
   wordsSection.appendChild(
     make("p", "spell-note", "A word of this list gets no mark, in English and in Czech text. Capital letters make no difference.")
@@ -273,8 +303,7 @@ export function buildSpellPage({ store, sync }) {
     // another device must not replace what they typed; Save merges by word.
     if (editing) return;
 
-    const active = /** @type {HTMLElement | null} */ (document.activeElement);
-    const focusKey = active && wordsBox.contains(active) ? active.dataset.focusKey : undefined;
+    const refocus = holdFocus(wordsBox, wordsSection);
 
     const all = wordList(store.sharedSettings());
     const query = wordKey(field.value);
@@ -300,11 +329,7 @@ export function buildSpellPage({ store, sync }) {
         return item;
       })
     );
-    if (focusKey) {
-      for (const el of wordsBox.querySelectorAll("[data-focus-key]")) {
-        if (/** @type {HTMLElement} */ (el).dataset.focusKey === focusKey) /** @type {HTMLElement} */ (el).focus();
-      }
-    }
+    refocus();
   }
 
   function addTyped() {
