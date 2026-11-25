@@ -2063,8 +2063,9 @@ user's Windows run, and macOS when a Mac is at hand.
   BroadcastChannel structured-clone it into that descriptor by themselves;
   the two read boundaries (`idb.js` handle reads, the `handle` channel
   message in `folders.js`) pass values through one `reviveHandle()` that
-  turns a descriptor back into a live adapter. A real FSA handle passes
-  through untouched.
+  turns a descriptor back into a live adapter. In a browser a real FSA
+  handle passes through untouched; in the shell it leaves as a stand-in
+  (see "Mixed handles" below).
 - **Roots live on the Rust side.** The page never sends a path it did not
   get from Rust: a root is a folder or file the user picked, registered
   under an id in `roots.json` in the app config dir, written with the
@@ -2101,6 +2102,16 @@ user's Windows run, and macOS when a Mac is at hand.
   same record id, so the workspace and the buffers that point at it stay
   intact. `isSameEntry` across the two families is `false` without a
   call, through one `sameEntry(a, b)` helper in `fsa.js`.
+- **The shell never calls a real WebView2 handle.** `reviveHandle()` hands
+  out a stand-in for it (`OldBrowserHandle` in `native.js`): permission
+  `"prompt"`, and `NotAllowedError` for every disk call, which is what a
+  restored handle should answer. The row gets its reconnect marker, and
+  the click above replaces the record. The reason is an incident of
+  2026-11-25 (shell 26.11.3, WebView2 158): `queryPermission()` and
+  `getFile()` on one such handle never settled, both stores await
+  `queryPermission()` in `load()`, and the app started with no list, no
+  editor and no error while every note was intact in IndexedDB. A stored
+  record keeps its real handle until the reconnect writes the picked one.
 - **No file watching.** The mtime poll on focus and every 30 s stays
   (§2); `getFile()` on a native handle is one stat, so the poll is cheap.
   Directory trees still refresh on focus through the listing cache.
