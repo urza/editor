@@ -179,7 +179,8 @@
 
 // The only import in this file: a stored native handle comes back as plain
 // data and has to become an adapter again before anyone calls a method on it
-// (architecture.md §17). reviveHandle passes a real FSA handle through.
+// (architecture.md §17). In a browser reviveHandle passes a real FSA handle
+// through; in the shell it hands out a stand-in that never calls the WebView.
 import { reviveHandle } from "./native.js";
 
 const DB_NAME = "vrtti";
@@ -593,6 +594,8 @@ export async function deleteWorkspace(id) {
 // data and drops the prototype: reviveHandle() on the way out is what makes it
 // a working handle again (architecture.md §17). This is one of the two revive
 // boundaries; the other is the "handle" channel message in model/folders.js.
+// Every read of this store must pass through it: in the shell a real FSA
+// handle that skipped it can stall whoever calls it (OldBrowserHandle).
 
 /** @param {HandleRecord} record */
 export async function putHandle(record) {

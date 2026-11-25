@@ -265,6 +265,81 @@ class NativeFileHandle extends NativeHandle {
   }
 }
 
+/**
+ * What a browser answers for a handle whose grant is gone. model/docs.js and
+ * model/folders.js already turn this name into the reconnect marker.
+ */
+function noGrant() {
+  return new DOMException("old browser handle: reconnect picks it again", "NotAllowedError");
+}
+
+/**
+ * The stand-in for a real browser handle met inside the shell: a record from
+ * before this backend (architecture.md §17, "Mixed handles"). The real handle
+ * has no use here. Its grant is gone after a restart, and it cannot tell Rust
+ * which file it points at. Its one way forward is the reconnect click, which
+ * picks the file or folder again under the same record id.
+ *
+ * The stand-in exists because the real handle must not be called at all. In
+ * WebView2 158 (shell 26.11.3, 2026-11-25) queryPermission() and getFile() on
+ * such a handle never settled. Both stores await queryPermission() in load(),
+ * so the app started with no list, no editor and no error, while every note
+ * sat intact in IndexedDB. The stand-in answers what a restored handle
+ * should: "prompt", and NotAllowedError for every disk call.
+ *
+ * Own fields are data only, like a native handle, so a structured clone is
+ * the descriptor { oldBrowser, kind, name }, and reviveHandle() makes a
+ * stand-in of that too.
+ */
+class OldBrowserHandle {
+  /** @param {{kind: 'file'|'directory', name: string}} handle The real handle, or a cloned stand-in. */
+  constructor(handle) {
+    this.oldBrowser = true;
+    this.kind = handle.kind;
+    this.name = handle.name;
+  }
+
+  /** @returns {Promise<'prompt'>} */
+  async queryPermission() {
+    return "prompt";
+  }
+
+  /** @returns {Promise<'prompt'>} A reconnect in the shell is a fresh pick, never a grant. */
+  async requestPermission() {
+    return "prompt";
+  }
+
+  async isSameEntry() {
+    return false;
+  }
+
+  async getFile() {
+    throw noGrant();
+  }
+
+  async createWritable() {
+    throw noGrant();
+  }
+
+  async move() {
+    throw noGrant();
+  }
+
+  async getFileHandle() {
+    throw noGrant();
+  }
+
+  async getDirectoryHandle() {
+    throw noGrant();
+  }
+
+  // No yield on purpose: the listing fails at its first step, the way a
+  // directory handle without a grant fails in a browser.
+  async *values() {
+    throw noGrant();
+  }
+}
+
 /** @param {any} value Is this a native handle, live or as a cloned descriptor? */
 export function isNativeHandle(value) {
   return Boolean(value && value.native === true);
@@ -272,15 +347,22 @@ export function isNativeHandle(value) {
 
 /**
  * The read boundary: IndexedDB and the BroadcastChannel return descriptors,
- * this returns handles. A real FSA handle passes through untouched, which is
- * what lets a Windows shell hold both families at once.
+ * this returns handles. In a browser a real FSA handle passes through
+ * untouched. In the shell it leaves as its stand-in, and no caller ever holds
+ * the real one (see OldBrowserHandle for the reason).
  * @param {any} value
  */
 export function reviveHandle(value) {
-  if (!isNativeHandle(value)) return value;
-  return value.kind === "directory"
-    ? new NativeDirectoryHandle(value)
-    : new NativeFileHandle(value);
+  if (isNativeHandle(value)) {
+    return value.kind === "directory"
+      ? new NativeDirectoryHandle(value)
+      : new NativeFileHandle(value);
+  }
+  // Read off `window` at call time, like invoke(): this module loads without
+  // a shell, and model/capabilities.js is not imported here.
+  const inShell = Boolean(/** @type {any} */ (window).vrttiDesktop);
+  if (inShell && value) return new OldBrowserHandle(value);
+  return value;
 }
 
 /**
