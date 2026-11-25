@@ -52,6 +52,7 @@ import { activeLangs, switchLang } from "./editor/mixed.js";
 import { addDiacritics } from "./editor/adddiacritics.js";
 import { detectLanguage, segments } from "./editor/textlang.js";
 import {
+  askConnect,
   askInvite,
   askPassphrase,
   askText,
@@ -59,6 +60,7 @@ import {
   showBusy,
   showInvite,
   showNote,
+  showProgress,
   showSecret,
 } from "./ui/dialog.js";
 import { mountSearch } from "./ui/search.js";
@@ -544,36 +546,122 @@ async function start() {
   // runs once in a lifetime and unlock is dispatched by whatever needs a key.
 
   /**
-   * The server token or the join code, as the first device or a new one
-   * (§27). Returns false when the user walks away.
+   * One sentence for a step that failed. fetch reports a server it could not
+   * reach as a TypeError, with a text that differs per browser ("Failed to
+   * fetch"); the sync status says "no answer from the server" for the same
+   * thing (client.js syncNow).
+   * @param {unknown} err
+   */
+  const why = (err) =>
+    err instanceof TypeError ? "no answer from the server" : String(/** @type {any} */ (err)?.message ?? err);
+
+  /** "a", "a and b", "a, b and c". @param {string[]} words */
+  const listed = (words) =>
+    words.length < 2 ? words.join("") : words.slice(0, -1).join(", ") + " and " + words[words.length - 1];
+  /** @param {string[]} spaces */
+  const quoted = (spaces) => listed(spaces.map((space) => "“" + space + "”"));
+
+  /**
+   * What the inviting device says when the new device is in: in the invite
+   * dialog, and in the status bar when that dialog is closed.
+   * @param {string} name @param {string[]} spaces
+   */
+  const joinedText = (name, spaces) =>
+    (name || "The new device") +
+    " joined. " +
+    (spaces.length ? "It gets " + quoted(spaces) + "." : "It is in no space yet. Tick it in “Space access”.");
+
+  /** What the new device says when its join ended. @param {string[]} spaces */
+  const joinDoneText = (spaces) =>
+    spaces.length
+      ? "This device is in " + quoted(spaces) + ". The notes arrive now."
+      : "This device is on the server and in no space yet. A device that is in a space ticks this one in Settings › Devices.";
+
+  // What another device did to this one (client.js announce()). The person
+  // did nothing here at that moment, so nothing else on the screen says it.
+  sync.events.addEventListener("notice", (event) => {
+    /** @type {import("./sync/client.js").SyncNotice} */
+    const notice = /** @type {CustomEvent} */ (event).detail;
+    const text =
+      notice.kind === "joined"
+        ? joinedText(notice.name, notice.spaces)
+        : notice.kind === "join-done"
+          ? joinDoneText(notice.spaces)
+          : notice.kind === "added"
+            ? (notice.by || "Another device") + " added this device to “" + notice.space + "”. Its notes show as titles."
+            : "This device is out of “" + notice.space + "”. Its notes are in the trash here.";
+    statusbar.notice(text);
+  });
+
+  /**
+   * Sync for a device that has no server: one dialog for what the other
+   * device gave, an invite to paste or a code to type, with the first device
+   * of a server as its own option (§27). `setup` is the way in from Settings
+   * › Security, where the first device can also stay without a server.
+   * A join that the server refuses comes back to the dialog with the reason
+   * and with what was typed.
+   * @param {{setup?: boolean}} [opts]
+   * @returns {Promise<boolean>} false when the user walks away.
+   */
+  async function connectDevice({ setup = false } = {}) {
+    /** @param {string} text */
+    const isInvite = (text) => text.includes("vrtti-invite:");
+    let message = "";
+    let text = "";
+    let url = sync.config.url;
+    // A device that stopped syncing comes back with one click. A join would
+    // fail there: the server knows this device (client.js STOPPED_KEY).
+    const stopped = await sync.stoppedServer();
+    for (;;) {
+      const answer = await askConnect({
+        title: setup ? "Set up this device" : "Sync with a server",
+        label: "Invite or code",
+        placeholder: "vrtti-invite:… or K7MQ2-XWD4P",
+        hint:
+          "On a device of yours that syncs, use “invite a device” in Settings › Devices. " +
+          "Paste its invite here, or type its code.",
+        message,
+        value: text,
+        url,
+        again: stopped
+          ? {
+              label: "Sync again with " + stopped,
+              hint: "This device synced with this server before. It needs no invite.",
+            }
+          : undefined,
+        first: setup
+          ? { label: "This is my first device", hint: "It gets a name, keys and a recovery key. A server is optional." }
+          : {
+              label: "This is the first device of a server",
+              hint: "Type the server URL and the VRTTI_TOKEN of the server. Your other devices then join with an invite.",
+            },
+        // A code does not say where the server is; an invite does.
+        isCode: (typed) => typed.trim() !== "" && !isInvite(typed),
+        check: (typed, server) => {
+          if (!typed) return "Paste an invite or type a code.";
+          if (isInvite(typed)) return decodeInvite(typed) ? "" : "That invite is not complete. Copy it again.";
+          if (!normalizeCode(typed)) return "That is not an invite and not a code. A code has ten letters and digits.";
+          return /^https?:\/\/\S+$/.test(server) ? "" : "Type the server URL. The other device shows it next to the code.";
+        },
+      });
+      if (!answer) return false;
+      if (answer.kind === "again") return sync.resume();
+      if (answer.kind === "first") return setup ? setUpFirstDevice() : connectFirstDevice();
+      const invite = decodeInvite(answer.text) ?? { url: answer.url, code: normalizeCode(answer.text), name: "", spaces: {} };
+      const result = await joinWith(invite, isInvite(answer.text));
+      if (typeof result === "boolean") return result;
+      ({ text, url } = answer);
+      message = result;
+    }
+  }
+
+  /**
+   * The first device of a server: keys when it has none, then the server URL
+   * and the server token (§27).
    * @returns {Promise<boolean>}
    */
-  async function connectDevice() {
-    const how = await choose({
-      title: "Sync with a server",
-      options: [
-        {
-          id: "invite",
-          label: "Join with an invite",
-          hint: "Another device of yours already syncs. In Settings › Devices there, use “Invite a device” and paste its invite here.",
-        },
-        {
-          id: "join",
-          label: "Join with a code",
-          hint: "The same, typed by hand: the server URL and the code that “Invite a device” shows.",
-        },
-        {
-          id: "first",
-          label: "First device on this server",
-          hint: "Type the server URL and the VRTTI_TOKEN of the server. Your other devices then join with a code.",
-        },
-      ],
-    });
-    if (!how) return false;
-    if (how === "invite") return joinWithInvite();
-    // From Settings › Sync a device can come here before it has keys: it
-    // gets them now, and the answer above already says first or join.
-    if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: how === "first" }))) return false;
+  async function connectFirstDevice() {
+    if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: true }))) return false;
     const url = await askText({
       title: "Server",
       label: "Server URL",
@@ -581,7 +669,6 @@ async function start() {
       placeholder: "https://sync.example.com",
     });
     if (url === null) return false;
-    if (how === "join") return run("device.join", url);
     const token = await askPassphrase({ title: "Server token", label: "VRTTI_TOKEN" });
     if (token === null) return false;
     const busy = showBusy("Registering this device…");
@@ -589,11 +676,29 @@ async function start() {
       await sync.registerFirst(url, token);
     } catch (err) {
       busy.close();
-      await showNote({ title: "Not registered", text: String(/** @type {any} */ (err)?.message ?? err) });
+      await showNote({ title: "Not registered", text: why(err) + "." });
       return false;
     }
     busy.close();
     await takeOverOldSpaces();
+    return true;
+  }
+
+  /**
+   * The first device from Settings › Security: its keys, and a server only
+   * when the person wants one now. Keys alone are enough to encrypt a file.
+   * @returns {Promise<boolean>}
+   */
+  async function setUpFirstDevice() {
+    if (!(await setUpDevice({ firstDevice: true }))) return false;
+    const server = await choose({
+      title: "Sync",
+      options: [
+        { id: "now", label: "Connect a server now", hint: "The server URL and the VRTTI_TOKEN." },
+        { id: "later", label: "Later", hint: "Settings › Sync has it. Your notes stay on this device until then." },
+      ],
+    });
+    if (server === "now") await connectFirstDevice();
     return true;
   }
 
@@ -711,138 +816,116 @@ async function start() {
   }
 
   /**
-   * The new device's half of an invite (§27): paste it, check the name and
-   * the modes, get keys if needed, and redeem the code in it. The server URL,
-   * the code and the spaces come from the invite, so nothing is typed.
-   * @returns {Promise<boolean>}
+   * The new device's half of a join (§27): check the name, the modes and
+   * "New notes", get keys if needed, use the code, and wait for the member.
+   * An invite brings the server, the code and the spaces; a typed code
+   * brings the first two, and its spaces arrive with the member's answer.
+   * @param {import("./crypto/spaces.js").Invite} invite
+   * @param {boolean} pasted  false: the person typed a code.
+   * @returns {Promise<boolean | string>} true: joined. false: the person
+   *   walked away. A string: the server refused, and why.
    */
-  async function joinWithInvite() {
-    let message = "";
-    /** @type {import("./crypto/spaces.js").Invite | null} */
-    let invite = null;
-    while (!invite) {
-      const text = await askText({
-        title: "Join with an invite",
-        label: "Invite",
-        placeholder: "vrtti-invite:…",
-        hint:
-          (message ? message + " " : "") +
-          "On a device of yours that syncs, use “Invite a device” in Settings › Devices, and paste its invite here.",
-      });
-      if (text === null) return false;
-      invite = decodeInvite(text);
-      if (!invite) message = "That is not an invite.";
-    }
+  async function joinWith(invite, pasted) {
     const spaces = Object.entries(invite.spaces).map(([id, mode]) => ({ id, mode }));
     const answer = await askInvite({
-      title: "Join with an invite",
+      title: "Join",
       confirm: "Join",
       facts: [{ label: "Server", value: invite.url }],
       name: keyring.isSetUp
         ? null
-        : { value: invite.name || defaultDeviceName(), hint: "Your other devices show this name. It cannot change later." },
+        : {
+            label: "Name of this device",
+            value: invite.name || defaultDeviceName(),
+            hint: "Your other devices show this name. It cannot change later.",
+          },
       spaces,
       hint: spaces.length
-        ? "Titles only lists the notes of a space under From server in the sidebar. Open as tabs opens every note."
-        : "The invite gives no space. Your other device adds this one to spaces in Settings › Devices.",
+        ? "Titles only lists the notes of a space in its drawer. Open as tabs opens every note."
+        : pasted
+          ? "The invite gives no space. Your other device adds this one to spaces in Settings › Devices."
+          : "A code does not say which spaces this device gets. Their notes show as titles at first.",
+      newNotes: { hint: "Where the notes that you make on this device go. Local only keeps them on this device." },
     });
     if (!answer) return false;
+    // The keys before the code: the join sends this device's public keys.
     if (!keyring.isSetUp && !(await setUpDevice({ firstDevice: false, deviceName: answer.name || defaultDeviceName() }))) {
       return false;
     }
     const busy = showBusy("Joining…");
     try {
-      await sync.redeem(invite.url, invite.code, answer.spaces);
+      await sync.redeem(invite.url, invite.code, answer.spaces, { from: invite.from, newNotes: answer.newNotes });
     } catch (err) {
+      const status = /** @type {any} */ (err)?.status;
+      if (status === 403) return "Wrong code. Read it again on the other device.";
+      // The server URL too: another vrtti server gives the same answer.
+      if (status === 404) {
+        return "The server does not know this code. A code works once, for ten minutes. Check the server URL, or make a new invite.";
+      }
+      const text = why(err);
+      return text.charAt(0).toUpperCase() + text.slice(1) + ".";
+    } finally {
       busy.close();
-      await showNote({ title: "Not joined", text: String(/** @type {any} */ (err)?.message ?? err) + "." });
-      return false;
     }
-    busy.close();
-    await showNote({
-      title: "Joined",
-      text: spaces.length
-        ? "This device joined the server. Your other device adds it to the spaces in a few seconds " +
-          "while its invite is open, or else at its next sync."
-        : "This device joined the server. Your other device shows it in Settings › Devices at its next sync, " +
-          "and adds it to spaces there.",
-    });
+    await waitForJoin(invite.from ?? "");
     return true;
+  }
+
+  /**
+   * The wait of the new device for the member that made its invite, as a
+   * dialog that says each state (§27). The member must sync once, unlocked,
+   * and that can be seconds or days: closing the dialog does not end the
+   * wait, and the status bar says when the join ended.
+   * @param {string} from  The name of that member, "" when a code was typed.
+   */
+  async function waitForJoin(from) {
+    const other = from || "your other device";
+    const startedAt = Date.now();
+    let polls = 0;
+    await showProgress({
+      title: "Joining",
+      every: 1500,
+      poll: async () => {
+        // The window that runs the schedule asks the server by itself while
+        // a join waits (client.js JOIN_POLL). This asks too, every 3 seconds:
+        // in another window the first request can come before that window
+        // read the new server.
+        if (polls++ % 2 === 0) void sync.syncNow();
+        const state = await sync.joinState();
+        const onServer = { ok: true, text: "This device is on the server." };
+        if (state.state === "waiting") {
+          return {
+            lines: [onServer, { ok: false, text: "Waiting for " + other + " to let it in." }],
+            hint: state.locked
+              ? "Unlock this device to end the join."
+              : Date.now() - startedAt > 30 * 1000
+                ? "No answer yet. Open vrtti on " + other + " and unlock it. This device waits, also after you close this."
+                : "Keep vrtti open and unlocked on " + other + ".",
+          };
+        }
+        const spaces = state.state === "joined" ? state.spaces : [];
+        const member = (state.state === "joined" && state.member) || other;
+        const newNotes = state.state === "joined" ? state.newNotes : null;
+        return {
+          title: "Joined",
+          done: true,
+          lines: [onServer, { ok: true, text: member.charAt(0).toUpperCase() + member.slice(1) + " let it in." }],
+          result: joinDoneText(spaces),
+          hint: !spaces.length
+            ? ""
+            : newNotes
+              ? "New notes of this device go to “" + newNotes + "”."
+              : "New notes stay on this device. Settings › Spaces changes that.",
+        };
+      },
+    });
   }
 
   register({
     id: "device.setup",
     title: "Set up this device",
-    run: async () => {
-      if (keyring.isSetUp) return connectDevice();
-      const how = await choose({
-        title: "Other devices",
-        options: [
-          { id: "first", label: "This is my first device", hint: "It makes your recovery key." },
-          {
-            id: "invite",
-            label: "Join with an invite",
-            hint: "Another device of mine syncs already. I paste the invite it made.",
-          },
-          { id: "join", label: "Join with a code", hint: "Another device of mine syncs already. I type its code." },
-        ],
-      });
-      if (!how) return false;
-      if (how === "invite") return joinWithInvite();
-      if (!(await setUpDevice({ firstDevice: how === "first" }))) return false;
-      if (how === "join") {
-        const url = await askText({ title: "Server", label: "Server URL", placeholder: "https://sync.example.com" });
-        if (url === null) return true;
-        await run("device.join", url);
-        return true;
-      }
-      const server = await choose({
-        title: "Sync",
-        options: [
-          { id: "now", label: "Connect a server now", hint: "The server URL and the VRTTI_TOKEN." },
-          { id: "later", label: "Later", hint: "Settings › Sync has it. Your notes stay on this device until then." },
-        ],
-      });
-      if (server === "now") await connectDevice();
-      return true;
-    },
-  });
-  register({
-    id: "device.join",
-    title: "Join with a code",
-    run: async (url) => {
-      if (!keyring.isSetUp) return run("device.setup");
-      let message = "";
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const code = await askText({
-          title: "Join with a code",
-          label: "Code",
-          placeholder: "K7MQ2-XWD4P",
-          hint:
-            (message ? message + " " : "") +
-            "In Settings › Devices on a device of yours, use “Invite a device” and tick the spaces this device gets. The code works once, for ten minutes.",
-        });
-        if (code === null) return false;
-        const busy = showBusy("Joining…");
-        try {
-          await sync.redeem(url ?? sync.config.url, code);
-          busy.close();
-          await showNote({
-            title: "Waiting for your other device",
-            text: "This device joined the server. Your other device adds it to the spaces at its next sync; keep it open or open it now.",
-          });
-          return true;
-        } catch (err) {
-          busy.close();
-          message = String(/** @type {any} */ (err)?.message ?? err) + ".";
-          if (/** @type {any} */ (err)?.status !== 403) {
-            await showNote({ title: "Not joined", text: message });
-            return false;
-          }
-        }
-      }
-      return false;
-    },
+    // One dialog for both ways in (Settings › Sync and Settings › Security).
+    // Without keys the first device can also stay without a server.
+    run: () => connectDevice({ setup: !keyring.isSetUp }),
   });
   register({
     id: "device.connect",
@@ -862,17 +945,18 @@ async function start() {
         title: "Invite a device",
         confirm: "Make invite",
         name: {
+          label: "Name of the new device",
           value: "",
           placeholder: "Phone",
-          hint: "The new device starts with this name and can change it before it joins.",
+          hint: "The new device starts with this name. It can change the name before it joins, and not later.",
         },
         tickable: true,
         spaces: spaces.map((id) => ({ id, mode: "list", checked: true })),
         hint:
           (spaces.length
-            ? "The new device gets the spaces you tick. Titles only lists their notes under From server " +
-              "in its sidebar; Open as tabs opens every note. The new device can change the modes. "
-            : "") + "With no space ticked, the device joins the server only. Add it to spaces later in the grid.",
+            ? "The new device gets the spaces you tick. Titles only lists their notes in the drawer of the space; " +
+              "Open as tabs opens every note. The new device can change the modes. "
+            : "") + "With no space ticked, the device joins the server only. Add it to spaces later in “Space access”.",
       });
       if (!answer) return false;
       const busy = showBusy("Making an invite…");
@@ -880,29 +964,50 @@ async function start() {
       try {
         code = await sync.invite(Object.keys(answer.spaces));
       } catch (err) {
+        // Before the note: the busy panel has no way out of its own.
         busy.close();
-        await showNote({ title: "No invite", text: String(/** @type {any} */ (err)?.message ?? err) });
+        await showNote({ title: "No invite", text: why(err) + "." });
         return false;
       } finally {
         busy.close();
       }
+      const made = code;
       const url = sync.config.url;
       await showInvite({
         title: answer.name ? "Invite for " + answer.name : "Invite",
-        text: encodeInvite({ url, code: normalizeCode(code), name: answer.name, spaces: answer.spaces }),
+        text: encodeInvite({
+          url,
+          code: normalizeCode(made),
+          name: answer.name,
+          spaces: answer.spaces,
+          // The new device says "Waiting for <this name>".
+          from: keyring.deviceName ?? "",
+        }),
         note:
-          "Paste it on the new device, in Settings › Sync. Anyone with this text can join your spaces, " +
-          "so send it only to yourself. To type it by hand: the server URL " + url + " and the code " + code + ".",
+          "Paste it on the new device: Settings › Sync, “connect”. " +
+          "Each person who has this text can join your spaces, so send it only to yourself.",
+        typed: {
+          label: "To type it by hand on the new device:",
+          facts: [
+            { label: "Server", value: url },
+            { label: "Code", value: made, code: true },
+          ],
+        },
         // The server's lifetime of a code (DeviceApi.cs, JoinLifetime); this
         // device cannot ask it.
         expiresAt: Date.now() + 10 * 60 * 1000,
-        // A sync round is what answers the join. The setting tells when it
-        // happened, also when the leader is another window.
+        // A sync round is what answers the join. The stored invite tells how
+        // it ended, also when the leader is another window.
         check: async () => {
           await sync.syncNow();
-          return !(await sync.inviteOpen(code));
+          const state = await sync.inviteState(made);
+          // The name is the one the new device chose, which can differ from
+          // the name typed above.
+          if (state.state === "joined") return { done: true, ok: true, text: joinedText(state.name, state.spaces) };
+          if (state.state === "used") return { text: "The new device used the invite. Unlock this device to let it in." };
+          if (state.state === "gone") return { done: true, text: "This invite is not valid now. Make a new one." };
+          return {};
         },
-        joined: (answer.name || "The new device") + " joined.",
       });
       void sync.syncNow();
       return true;
@@ -922,7 +1027,7 @@ async function start() {
         await sync.createSpace(name.trim());
         return true;
       } catch (err) {
-        await showNote({ title: "No new space", text: String(/** @type {any} */ (err)?.message ?? err) });
+        await showNote({ title: "No new space", text: why(err) + "." });
         return false;
       }
     },
@@ -933,7 +1038,7 @@ async function start() {
       await work();
       return true;
     } catch (err) {
-      await showNote({ title, text: String(/** @type {any} */ (err)?.message ?? err) });
+      await showNote({ title, text: why(err) + "." });
       return false;
     }
   }
@@ -1188,7 +1293,9 @@ async function start() {
           {
             id: "yes",
             label: "Stop",
-            hint: "This device forgets its server. Your notes stay here. To sync again it joins with a code.",
+            // Not "joins again": the server keeps this device, and a second
+            // join of a known device fails. "connect" brings the sync back.
+            hint: "This device stops syncing. Your notes stay here. “connect” in Settings › Sync starts it again.",
           },
         ],
       });

@@ -379,12 +379,15 @@ const SPACE_MODES = [
  *
  * @param {{title: string, hint?: string, confirm: string,
  *          facts?: {label: string, value: string}[],
- *          name?: {value: string, placeholder?: string, hint?: string} | null,
+ *          name?: {label: string, value: string, placeholder?: string, hint?: string} | null,
  *          tickable?: boolean,
+ *          newNotes?: {hint: string},
  *          spaces: {id: string, mode: "tab" | "list", checked?: boolean}[]}} opts
  *   `facts` are read-only lines above the form (the server). `name` null
  *   hides the name field: a device that is set up has its name already.
- * @returns {Promise<{name: string, spaces: Record<string, "tab" | "list">} | null>}
+ *   `newNotes` adds the "New notes" choice of the new device: Local only,
+ *   which is its start value, or one of the spaces.
+ * @returns {Promise<{name: string, spaces: Record<string, "tab" | "list">, newNotes: string | null} | null>}
  */
 export function askInvite(opts) {
   const { dialog, form, body, actions } = shell(opts.title);
@@ -397,7 +400,7 @@ export function askInvite(opts) {
   /** @type {HTMLInputElement | null} */
   let nameInput = null;
   if (opts.name) {
-    nameInput = field(body, "Name of the new device", "text", opts.name.value);
+    nameInput = field(body, opts.name.label, "text", opts.name.value);
     if (opts.name.placeholder) nameInput.placeholder = opts.name.placeholder;
     if (opts.name.hint) {
       const hint = document.createElement("p");
@@ -449,6 +452,30 @@ export function askInvite(opts) {
     hint.textContent = opts.hint;
     body.appendChild(hint);
   }
+  /** @type {HTMLSelectElement | null} */
+  let newNotes = null;
+  if (opts.newNotes && opts.spaces.length) {
+    const row = document.createElement("label");
+    row.className = "dialog-space";
+    const text = document.createElement("span");
+    text.className = "dialog-check";
+    text.textContent = "New notes";
+    newNotes = document.createElement("select");
+    newNotes.className = "settings-select";
+    // Local only first, and so the start value: only the person points new
+    // notes at a space (client.js defaultSpace()), also at a join.
+    for (const [value, label] of [["", "Local only"], ...opts.spaces.map((s) => [s.id, s.id])]) {
+      const el = document.createElement("option");
+      el.value = value;
+      el.textContent = label;
+      newNotes.appendChild(el);
+    }
+    row.append(text, newNotes);
+    const hint = document.createElement("p");
+    hint.className = "settings-hint";
+    hint.textContent = opts.newNotes.hint;
+    body.append(row, hint);
+  }
   actions.append(cancelButton(dialog), button(opts.confirm, "ok", true));
   // No tick is a valid answer: an invite for no space joins the device to
   // the server, and the grid in Settings › Devices adds it to spaces later.
@@ -456,20 +483,26 @@ export function askInvite(opts) {
   const read = () => ({
     name: nameInput ? nameInput.value.trim() : "",
     spaces: Object.fromEntries(picked().map((r) => [r.id, /** @type {"tab" | "list"} */ (r.select.value)])),
+    newNotes: newNotes?.value || null,
   });
   return openModal(dialog, (value) => (value === "ok" ? read() : null));
 }
 
 /**
- * The invite for a new device, with Copy, its time left, and a live line that
- * says when the new device joined. While the dialog is open it calls `check`
- * every few seconds: the inviting device finishes the join at a sync, and the
- * user waits here for exactly that. Escape closes it; the invite stays valid,
- * and the next regular sync still finishes the join.
+ * The invite for a new device, with Copy and Share, the server and the code
+ * for typing, its time left, and a live line that says where the join
+ * stands. While the dialog is open it calls `check` every few seconds: the
+ * inviting device finishes the join at a sync, and the user waits here for
+ * exactly that. Escape closes it; the invite stays valid, and the next
+ * regular sync still finishes the join.
  *
  * @param {{title: string, text: string, note?: string, expiresAt: number,
- *          check: () => Promise<boolean>, joined: string}} opts
- *   `check` resolves true once the new device is in.
+ *          typed?: {label: string, facts: {label: string, value: string, code?: boolean}[]},
+ *          check: () => Promise<{text?: string, done?: boolean, ok?: boolean}>}} opts
+ *   `typed` is the same invite for a person who cannot paste: the lines to
+ *   type on the new device. `check` says where the join stands: `text`
+ *   replaces the line with the time left, `done` ends the wait (`ok`: the
+ *   new device is in).
  * @returns {Promise<void>}
  */
 export function showInvite(opts) {
@@ -485,8 +518,25 @@ export function showInvite(opts) {
     note.textContent = opts.note;
     body.appendChild(note);
   }
+  if (opts.typed) {
+    const label = document.createElement("p");
+    label.className = "settings-hint";
+    label.textContent = opts.typed.label;
+    body.appendChild(label);
+    for (const fact of opts.typed.facts) {
+      const line = document.createElement("p");
+      line.className = "dialog-fact";
+      const name = document.createElement("span");
+      name.textContent = fact.label;
+      const value = document.createElement("span");
+      value.className = fact.code ? "dialog-fact-value dialog-code" : "dialog-fact-value";
+      value.textContent = fact.value;
+      line.append(name, value);
+      body.appendChild(line);
+    }
+  }
   const status = document.createElement("p");
-  status.className = "settings-hint";
+  status.className = "settings-hint dialog-live";
   status.setAttribute("aria-live", "polite");
   body.appendChild(status);
 
@@ -502,16 +552,39 @@ export function showInvite(opts) {
       copy.textContent = "Select and copy";
     }
   });
-  actions.append(copy, button("Done", "ok", true));
+  actions.append(copy);
+  // The share sheet of the system, where there is one (a phone): the person
+  // sends the invite to the new device with the app they use for that.
+  if (typeof navigator.share === "function") {
+    const share = document.createElement("button");
+    share.type = "button"; // as Copy
+    share.className = "settings-button";
+    share.textContent = "Share";
+    share.addEventListener("click", () => {
+      // A closed share sheet rejects (AbortError). Nothing to report: the
+      // invite is still on the screen.
+      navigator.share({ text: opts.text }).catch(() => {});
+    });
+    actions.append(share);
+  }
+  actions.append(button("Done", "ok", true));
 
   let done = false;
   let checking = false;
+  /** The line from the last check, in the place of the time left. */
+  let override = "";
   const tick = () => {
     if (done) return;
     const left = Math.max(0, Math.round((opts.expiresAt - Date.now()) / 1000));
-    status.textContent = left
-      ? "Waiting for the new device. Works once, for " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") + " more."
-      : "The invite expired. Make a new one.";
+    status.textContent =
+      override ||
+      (left
+        ? "Waiting for the new device. Keep vrtti open on this device. Works once, for " +
+          Math.floor(left / 60) +
+          ":" +
+          String(left % 60).padStart(2, "0") +
+          " more."
+        : "The invite expired. Make a new one.");
   };
   const poll = async () => {
     // A minute past the code's end the regular sync takes over: a join that
@@ -521,10 +594,12 @@ export function showInvite(opts) {
     if (done || checking) return;
     checking = true;
     try {
-      if (await opts.check()) {
+      const state = await opts.check();
+      override = state.text ?? "";
+      tick();
+      if (state.done) {
         done = true;
-        status.textContent = opts.joined;
-        status.classList.add("dialog-ok");
+        status.classList.toggle("dialog-ok", Boolean(state.ok));
       }
     } catch (err) {
       console.log("[vrtti] invite check failed", err);
@@ -539,5 +614,158 @@ export function showInvite(opts) {
     clearInterval(clock);
     clearInterval(poller);
   });
+  return openModal(dialog, () => undefined);
+}
+
+/**
+ * The first step on a device that wants to sync: one field for what the
+ * other device gave (an invite, or a code typed by hand), and one option for
+ * the device that has no other device. A code alone does not say where the
+ * server is, so the server field shows while the text is a code.
+ *
+ * The dialog knows nothing about invites and codes: `isCode` and `check`
+ * come from the caller, so the rules stay next to the join (main.js).
+ *
+ * @param {{title: string, label: string, placeholder?: string, hint: string,
+ *          message?: string, value?: string, url?: string,
+ *          again?: {label: string, hint: string},
+ *          first: {label: string, hint: string},
+ *          isCode: (text: string) => boolean,
+ *          check: (text: string, url: string) => string}} opts
+ *   `message` is why the last try failed; `value` and `url` are what the
+ *   person typed then. `check` returns what is wrong with the two values,
+ *   or "" when they can go on. `again` is an option above the field, for a
+ *   device that synced before and needs nothing from another device.
+ * @returns {Promise<{kind: "first"} | {kind: "again"} | {kind: "text", text: string, url: string} | null>}
+ */
+export function askConnect(opts) {
+  const { dialog, form, body, actions } = shell(opts.title);
+  // Not submit buttons: Enter in the field must mean "Next", and Enter
+  // picks the first submit button of the form (see cancelButton).
+  /** @param {{label: string, hint: string}} option @param {string} value */
+  const option = (option, value) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "dialog-option";
+    const label = document.createElement("span");
+    label.textContent = option.label;
+    const hint = document.createElement("span");
+    hint.className = "settings-hint";
+    hint.textContent = option.hint;
+    el.append(label, hint);
+    el.addEventListener("click", () => dialog.close(value));
+    body.appendChild(el);
+  };
+  if (opts.again) option(opts.again, "again");
+  const input = field(body, opts.label, "text", opts.value ?? "");
+  if (opts.placeholder) input.placeholder = opts.placeholder;
+  // A phone must not turn a code into a word with a capital letter.
+  input.autocapitalize = "off";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  // type "text" and not "url": the browser checks a url field itself, also
+  // while the field is hidden, and then refuses the submit with no message.
+  // opts.check says what is wrong with the address instead.
+  const urlInput = field(body, "Server URL", "text", opts.url ?? "");
+  urlInput.inputMode = "url";
+  urlInput.autocapitalize = "off";
+  urlInput.spellcheck = false;
+  urlInput.placeholder = "https://sync.example.com";
+  const urlField = /** @type {HTMLElement} */ (urlInput.parentElement);
+  const hint = document.createElement("p");
+  hint.className = "settings-hint";
+  hint.textContent = opts.hint;
+  body.appendChild(hint);
+  const error = errorLine(body);
+  if (opts.message) {
+    error.textContent = opts.message;
+    error.hidden = false;
+  }
+  const follow = () => (urlField.hidden = !opts.isCode(input.value));
+  input.addEventListener("input", follow);
+  follow();
+
+  option(opts.first, "first");
+
+  actions.append(cancelButton(dialog), button("Next", "ok", true));
+  form.addEventListener("submit", (event) => {
+    const problem = opts.check(input.value.trim(), urlInput.value.trim());
+    if (!problem) return;
+    event.preventDefault();
+    error.textContent = problem;
+    error.hidden = false;
+  });
+
+  const read = () => ({ kind: /** @type {"text"} */ ("text"), text: input.value.trim(), url: urlInput.value.trim() });
+  return openModal(dialog, (value) =>
+    value === "ok" ? read() : value === "first" || value === "again" ? { kind: value } : null
+  );
+}
+
+/**
+ * A wait that ends on another device, shown step by step: a line for each
+ * step, with a tick once it is done. `poll` runs at the start and then every
+ * `every` milliseconds and returns the whole view. The person can close the
+ * dialog at any time: the wait goes on without it, so closing is "Close"
+ * and not "Cancel".
+ *
+ * @param {{title: string, every: number,
+ *          poll: () => Promise<{title?: string, lines: {text: string, ok: boolean}[],
+ *                               result?: string, hint?: string, done?: boolean}>}} opts
+ *   `result` is the green line of the end, `hint` the small line below.
+ * @returns {Promise<void>}
+ */
+export function showProgress(opts) {
+  const { dialog, form, body, actions } = shell(opts.title);
+  const heading = /** @type {HTMLElement} */ (form.querySelector(".dialog-title"));
+  body.setAttribute("aria-live", "polite");
+  const close = button("Close", "ok");
+  actions.append(close);
+
+  let done = false;
+  let polling = false;
+  const poll = async () => {
+    if (done || polling) return;
+    polling = true;
+    try {
+      const view = await opts.poll();
+      heading.textContent = view.title ?? opts.title;
+      /** @type {HTMLElement[]} */
+      const lines = view.lines.map((step) => {
+        const line = document.createElement("p");
+        line.className = step.ok ? "dialog-step dialog-step-ok" : "dialog-step";
+        const mark = document.createElement("span");
+        mark.textContent = step.ok ? "✓" : "…";
+        const text = document.createElement("span");
+        text.textContent = step.text;
+        line.append(mark, text);
+        return line;
+      });
+      for (const [value, className] of [
+        [view.result, "dialog-busy dialog-ok"],
+        [view.hint, "settings-hint"],
+      ]) {
+        if (!value) continue;
+        const line = document.createElement("p");
+        line.className = className;
+        line.textContent = value;
+        lines.push(line);
+      }
+      body.replaceChildren(...lines);
+      if (view.done) {
+        done = true;
+        close.textContent = "OK";
+        close.classList.add("dialog-primary");
+        clearInterval(timer);
+      }
+    } catch (err) {
+      console.log("[vrtti] progress check failed", err);
+    } finally {
+      polling = false;
+    }
+  };
+  void poll();
+  const timer = setInterval(poll, opts.every);
+  dialog.addEventListener("close", () => clearInterval(timer));
   return openModal(dialog, () => undefined);
 }

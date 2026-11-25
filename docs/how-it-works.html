@@ -222,8 +222,8 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
     </figure>
 
     <ul>
-      <li><b>Invite a device in one paste.</b> Open <b>Settings › Devices › Invite a device</b> on an existing device, pick the spaces for the new device (or none), and copy the <code>vrtti-invite:…</code> line. Paste it into <b>Settings › Sync</b> on the new device. The invite bundles the server URL, a one-time 10-character code (valid for 10 minutes), the chosen spaces, and whether each space opens as tabs or titles only. Typing the URL and code by hand also works.</li>
-      <li><b>Devices find each other.</b> Each device signs an introduction for the devices it meets. Your other devices follow these signed introductions, so a device invited with no space still shows in <b>Settings › Devices</b> on every device, and any member can tick it into a space. <a href="trust-model.html">How vrtti trusts devices</a> explains the signatures.</li>
+      <li><b>Invite a device in one paste.</b> Open <b>Settings › Devices › invite a device</b> on an existing device, pick the spaces for the new device (or none), and copy the <code>vrtti-invite:…</code> line, or send it with <b>Share</b>. On the new device, <b>Settings › Sync › connect</b> has one field: paste the invite there. The invite bundles the server URL, a one-time 10-character code (valid for 10 minutes), the chosen spaces, and whether each space opens as tabs or titles only. The invite dialog also shows the URL and the code on lines of their own, and the same field takes the code typed by hand. The new device picks its name and where its new notes go, and one dialog shows the wait until the existing device lets it in. Each device says when the join is complete.</li>
+      <li><b>Devices find each other.</b> Each device signs an introduction for the devices it meets. Your other devices follow these signed introductions, so a device invited with no space still shows in <b>Settings › Devices</b> on every device, and any member of a space can tick it into that space. Each of the two devices then says what changed. <a href="trust-model.html">How vrtti trusts devices</a> explains the signatures.</li>
       <li><b>Move a note between spaces.</b> <b>Move to &lt;space&gt;</b> in a note's <code>⋯</code> menu re-encrypts that note for the target space's members.</li>
       <li><b>Conflict copies without prompts.</b> When two devices edit the same note offline, the newer server revision becomes current and your local edits stay right beside it as a separate note.</li>
       <li><b>30-day Trash on each device.</b> When a note is deleted on the server, moved to a space this device is not in, or when this device is removed from a space, the local copy moves to <b>Trash</b> for 30 days. The trash can at the bottom of the sidebar opens it. <b>Restore to &lt;space&gt;</b> syncs the note again, and <b>Restore as local</b> keeps a copy on this device only. <a href="note-lifecycle.html">Where a note goes</a> shows each case.</li>
@@ -278,7 +278,7 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
         </tr>
         <tr>
           <td><b>Ask for a passphrase at start</b></td>
-          <td>Optional per-device switch in <b>Settings › Devices</b></td>
+          <td>Optional per-device switch in <b>Settings › Security</b></td>
           <td>Wraps device keys with an <code>age</code> passphrase for a laptop that might be stolen while unlocked.</td>
         </tr>
         <tr>
@@ -288,7 +288,7 @@ figcaption { font-size: 0.88rem; color: var(--muted); max-width: 80ch; }
         </tr>
         <tr>
           <td><b>Back up to a folder</b></td>
-          <td><b>Settings › Sync</b> (desktop)</td>
+          <td><b>Settings › Spaces</b> (desktop)</td>
           <td>Exports every note of a space to a folder on disk, either as readable <code>.md</code> files or as <code>.md.age</code> files.</td>
         </tr>
       </tbody>

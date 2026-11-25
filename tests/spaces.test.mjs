@@ -217,6 +217,12 @@ test("an invite survives the round trip, and a bad one is null", () => {
   assert.equal(spaces.decodeInvite("vrtti-invite:!!!"), null);
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, url: "javascript:alert(1)" })), null);
   assert.equal(spaces.decodeInvite(spaces.encodeInvite({ ...invite, code: "short" })), null);
+  // The name of the device that made the invite is optional: an invite of an
+  // older build has none, and the new device then says "your other device".
+  assert.equal(spaces.decodeInvite(text)?.from, undefined);
+  const named = spaces.decodeInvite(spaces.encodeInvite({ ...invite, from: "Desk\ntop" }));
+  assert.equal(named?.from, "Desk top");
+  assert.deepEqual({ ...named, from: undefined }, { ...invite, from: undefined });
 });
 
 // ---- The device directory (introductions) ---------------------------------

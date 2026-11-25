@@ -319,9 +319,11 @@ export function normalizeCode(typed) {
 const INVITE_PREFIX = "vrtti-invite:";
 
 /**
- * @typedef {{url: string, code: string, name: string, spaces: Record<string, "tab" | "list">}} Invite
+ * @typedef {{url: string, code: string, name: string, spaces: Record<string, "tab" | "list">, from?: string}} Invite
  *   One paste for a new device (§27): the server, the join code, the name the
- *   new device starts with, and the mode each space opens in there.
+ *   new device starts with, and the mode each space opens in there. `from` is
+ *   the name of the device that made the invite, so that the new device can
+ *   say whom it waits for. An invite from an older build has none.
  */
 
 /**
@@ -331,7 +333,14 @@ const INVITE_PREFIX = "vrtti-invite:";
  * @param {Invite} invite
  */
 export function encodeInvite(invite) {
-  const json = JSON.stringify({ v: 1, u: invite.url, c: invite.code, n: invite.name, s: invite.spaces });
+  const json = JSON.stringify({
+    v: 1,
+    u: invite.url,
+    c: invite.code,
+    n: invite.name,
+    s: invite.spaces,
+    ...(invite.from ? { f: invite.from } : {}),
+  });
   const bytes = encoder.encode(json);
   const b64 = btoa(String.fromCharCode(...bytes));
   return INVITE_PREFIX + b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -366,8 +375,10 @@ export function decodeInvite(text) {
     if (mode === "tab" || mode === "list") spaces[space] = mode;
   }
   // One line: the name becomes a line of the device's entry key (keyring.js).
-  const name = typeof data.n === "string" ? data.n.replace(/\s+/g, " ").trim().slice(0, 64) : "";
-  return { url: data.u, code, name, spaces };
+  /** @param {unknown} value */
+  const oneLine = (value) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 64) : "");
+  const from = oneLine(data.f);
+  return { url: data.u, code, name: oneLine(data.n), spaces, ...(from ? { from } : {}) };
 }
 
 /** The public part. @param {string} code */
