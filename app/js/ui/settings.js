@@ -120,12 +120,13 @@ function spellSummary() {
  * @property {boolean} [compact]                         note: tight credit line with no divider.
  * @property {{ key?: string, button: string, act: () => any }} [headerAction]
  *                             list: optional button beside the list's label (e.g. "+ new space").
- * @property {string} [empty]                            list: shown when `rows()` is empty.
+ * @property {string | (() => string)} [empty]           list: shown when `rows()` is empty.
  * @property {(repaint: () => void) => ListRow[]} [rows] list: the rows, read
  *                             on every paint. A list whose source is fetched
  *                             calls `repaint` when the answer lands.
  * @property {{ text: string, href: string }[]} [links]  note: external links.
  * @property {() => Grid} [grid]  grid: the table, read on every paint.
+ * @property {() => string} [gridNote]  grid: a line below the table, "" for none.
  * @property {() => DetailBlock[]} [blocks]              details: blocks inside the disclosure.
  */
 
@@ -260,9 +261,26 @@ const GUIDANCE_LOCAL =
  * @param {ReturnType<typeof import("../sync/client.js").createSyncClient> | null | undefined} client
  */
 export function newNotesGuidance(client) {
-  if (hasDisk || !client?.isConfigured || client.defaultSpace()) return "";
+  // Not while a join waits: its spaces are on their way, and "make a space"
+  // would be the wrong advice.
+  if (hasDisk || !client?.isConfigured || client.isJoining || client.defaultSpace()) return "";
   return client.mySpaces().length ? GUIDANCE_LOCAL : GUIDANCE_NO_SPACE;
 }
+
+// The answer to the last click in the grid of Settings › Devices. A tick in
+// an empty cell changes nothing that this device can show: the other device
+// gets the space at its own next sync. This line says so. It lasts until the
+// next click or until the panel closes.
+let gridNote = "";
+
+/**
+ * The text of a device that waits for the member that made its invite (§27).
+ * It stands where an empty list would tell the person to make a space: the
+ * spaces of this device are on their way.
+ */
+const JOIN_WAITS =
+  "This device waits for your other device to let it in. Keep vrtti open and unlocked there. " +
+  "The spaces show here after that.";
 
 /**
  * The grid of Settings › Devices (§27): this device's spaces as columns, the
@@ -290,13 +308,22 @@ function deviceGrid() {
         return {
           checked: member,
           label: (member ? "Remove " : "Add ") + device.name + (member ? " from " : " to ") + space.name,
-          act: () =>
-            run(member ? "space.remove" : "space.add", {
+          act: async () => {
+            gridNote = "";
+            const done = await run(member ? "space.remove" : "space.add", {
               space: space.name,
               key: device.key,
               name: device.name,
               me: device.me,
-            }),
+            });
+            // Not for this device: its own column goes away, which says it.
+            if (done && !device.me) {
+              gridNote = member
+                ? device.name + " gets no more notes of “" + space.name + "”."
+                : device.name + " gets “" + space.name + "” at its next sync.";
+            }
+            return done;
+          },
         };
       }),
     })),
@@ -478,10 +505,10 @@ const SECTIONS = [
         type: "action",
         key: "sync-connect",
         label: "Sync with a server",
-        hint: "Use a server token or an invite.",
+        hint: "Use an invite, or a server token.",
         more:
-          "The first device enters the server URL and VRTTI_TOKEN. Every other device pastes an invite " +
-          "from “Invite a device” in Settings › Devices on a synced device.",
+          "A new device pastes the invite, or types the code, that “invite a device” in Settings › Devices " +
+          "shows on a device that syncs. Only the first device of a server types the server URL and the VRTTI_TOKEN.",
         button: "connect",
         // Shown before device setup too: a new device looks for sync here, not
         // in Settings › Security. The connect flow makes the keys when the
@@ -552,7 +579,7 @@ const SECTIONS = [
           button: "+ new space",
           act: () => run("space.create"),
         },
-        empty: "No spaces yet. Create one to sync notes.",
+        empty: () => (sync?.isJoining ? JOIN_WAITS : "No spaces yet. Create one to sync notes."),
         visible: () => Boolean(sync?.isConfigured),
         rows: spaceRows,
       },
@@ -616,7 +643,9 @@ const SECTIONS = [
         key: "device-name",
         label: "This device",
         hint: "Name shown on other devices.",
-        more: "Invite another device to add it to this server and share spaces with it.",
+        more:
+          "“invite a device” makes an invite for a new device: a text to paste there, and a code to type. " +
+          "The new device joins this server and gets the spaces you tick.",
         visible: () => Boolean(sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
         actions: [
@@ -645,12 +674,20 @@ const SECTIONS = [
         more: "Untick a device to remove it, or untick this device to leave a space. Click a space name to change its color.",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         grid: deviceGrid,
+        gridNote: () => gridNote,
       },
+      // Two rows, one for each text, because a note row paints its text once.
       {
         type: "note",
         key: "device-no-spaces",
         text: "Create a space in Spaces above to share notes.",
-        visible: () => Boolean(sync?.isConfigured && !sync.mySpaces().length),
+        visible: () => Boolean(sync?.isConfigured && !sync.mySpaces().length && !sync.isJoining),
+      },
+      {
+        type: "note",
+        key: "device-joining",
+        text: JOIN_WAITS,
+        visible: () => Boolean(sync?.isConfigured && !sync.mySpaces().length && sync.isJoining),
       },
     ],
   },
@@ -1163,7 +1200,7 @@ function makeRow(item, refresh) {
       if (rows.length === 0 && item.empty) {
         const empty = document.createElement("p");
         empty.className = "settings-hint settings-list-empty";
-        empty.textContent = item.empty;
+        empty.textContent = typeof item.empty === "function" ? item.empty() : item.empty;
         list.replaceChildren(empty);
         return;
       }
@@ -1317,7 +1354,13 @@ function makeRow(item, refresh) {
           td.appendChild(button);
         }
       }
-      wrap.replaceChildren(table);
+      // What the last tick does on the other device (deviceGrid()).
+      const note = document.createElement("p");
+      note.className = "settings-hint settings-grid-note";
+      note.setAttribute("aria-live", "polite");
+      note.textContent = item.gridNote ? item.gridNote() : "";
+      note.hidden = !note.textContent;
+      wrap.replaceChildren(table, note);
     };
     /** @param {HTMLButtonElement} button @param {(() => any) | undefined} run */
     const act = async (button, run) => {
@@ -1832,6 +1875,7 @@ export function mountSettings(deps = {}) {
 
   function close() {
     if (panel.hidden) return;
+    gridNote = "";
     // The panel opens on its rows the next time, never on a page of last week.
     // No refocus: the lines below decide where the focus goes.
     closeSub(false);
