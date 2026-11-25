@@ -175,7 +175,12 @@ function compute(key) {
       ? engine.getSpellingSuggestions(word).slice(0, MAX_SUGGESTIONS)
       : twins(word, (w) => engine.testSpelling(w)) ?? [];
   cache.set(key, list);
-  pending.delete(key);
+  // No `pending.delete(key)` here, on purpose. A part of a pass that ran out
+  // of budget queues the word and shows no mark for it; a later part of the
+  // same pass can have budget for the same word and lands here. If that took
+  // the word out of the queue, fillIdle would find nothing to do and would
+  // never call back, and the first mark would stay away until the next edit.
+  // Only fillIdle empties the queue.
   return list;
 }
 
@@ -197,7 +202,9 @@ export function fillIdle(done) {
     const stop = performance.now() + SUGGEST_BUDGET_MS;
     for (const key of pending) {
       if (performance.now() > stop) break;
-      compute(key);
+      // Often cached by now (see compute); the caller's repaint is still owed.
+      if (!cache.has(key)) compute(key);
+      pending.delete(key);
     }
     if (pending.size > 0) {
       later(slice);
