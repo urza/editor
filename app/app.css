@@ -2443,6 +2443,19 @@ html.phone {
    above the thumb button. */
 html.phone #statusbar { display: none; }
 
+/* A marked word has its own box in phone mode (editor/spellcheck.js, "The
+   phone box"). A tap also sends the mouse events of a PC, so CodeMirror's
+   lint hover tooltip opened 300 ms later next to that box, with the same
+   message and the same buttons, and pushed the box down from the word. The
+   lint package has no switch for its hover, and its tooltipFilter can only
+   empty the tooltip, not stop it, so the tooltip is hidden here. Not in the
+   editor theme: a theme rule cannot see html.phone.
+   CodeMirror puts every hover tooltip of one position into ONE box, each as
+   a section. This rule hides that whole box when a lint section is in it.
+   Lint is the only hover source of the app today; a second one that can
+   open on a marked word needs a narrower rule here, or it disappears too. */
+html.phone .cm-tooltip-hover:has(.cm-tooltip-lint) { display: none; }
+
 /* The containing block of the list, so the list covers the editor pane. */
 html.phone #app { position: relative; }
 
