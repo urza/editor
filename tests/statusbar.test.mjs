@@ -82,3 +82,20 @@ test("deviceLabel: sync name when sync is active, otherwise machine hostname", (
     { text: "", title: "" }
   );
 });
+
+test("stateSign: a save that stays open says so (architecture.md §30)", () => {
+  const base = { save: "…", syncs: false, waiting: false, client: /** @type {const} */ ("off") };
+  // A save in progress, as before.
+  assert.deepEqual(stateSign(base), { text: "…", problem: false, title: "Saving on this device." });
+  assert.equal(stateSign({ ...base, slow: false }).text, "…");
+  // The same status for longer than a healthy save takes: a problem, in words.
+  const slow = stateSign({ ...base, slow: true });
+  assert.equal(slow.text, "not saved yet");
+  assert.equal(slow.problem, true);
+  assert.match(slow.title, /Keep this window open/);
+  // It wins over the server states: the text is not on this device yet.
+  assert.equal(stateSign({ ...base, slow: true, syncs: true, waiting: true, client: "error" }).text, "not saved yet");
+  // `slow` means something only while the save is open.
+  assert.equal(stateSign({ ...base, save: "saved", slow: true }).text, "✓");
+  assert.equal(stateSign({ ...base, save: "disk write failed", slow: true }).text, "disk write failed");
+});

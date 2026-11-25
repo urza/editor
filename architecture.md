@@ -4028,3 +4028,143 @@ document there.
 A button that ignores one single mark (Harper's `ignoreLint`), a choice of
 the English dialect (Harper stays American), the words of the list as fixes
 for a typo, and the sync of any other setting.
+
+## 30. No answer: time limits and the start watch (2026-11-25)
+
+On 2026-11-25 the Windows shell showed an empty window after a restart. One
+stored file handle was a real WebView2 handle from before §17, and
+`queryPermission()` on it gave no answer and no error. `store.load()` awaited
+that call, so `start()` never reached the mounts. No note was lost. §17 has
+the repair for that handle (the shell gets a stand-in). This section is about
+the class of the defect.
+
+**The class.** A promise that never settles runs no `catch` and no `finally`.
+The code has many guards of the form "one at a time": `running` in
+`sync/client.js`, `watching` in `model/docs.js`, `refreshing` in
+`model/folders.js`. Each clears its flag in a `finally`. So behind a call
+with no answer the flag stays set, the function stops until a reload, and
+nothing says so. The error paths were good already: a failed read shows
+"File not available", a failed sync shows an error and the next poll asks
+again. Only "no answer" went past them.
+
+**The rule so far.** Two kinds of call that leave the page have a time
+limit. `model/timelimit.js` holds the limits in `LIMITS` and two tools:
+`withTimeLimit(promise, ms, what)` for a call that nothing can stop, and
+`limitSignal(ms)` for `fetch`. Both end in a `TimeoutError`.
+
+- **A request to the sync server:** `request()` in `sync/client.js`, 60 s,
+  and 5 minutes for a paragraph to the model. The signal stops the request
+  and also covers the read of the body. The round ends as "no answer from the
+  server", its flag clears, and the next poll asks again. A connection that
+  drops mid-request took the same path before.
+- **`queryPermission()` on a browser handle:** `queryState()` in
+  `storage/fsa.js`, 3 s. It is short because the start asks every stored
+  handle in turn. No answer counts as "prompt": the row gets the reconnect
+  mark, as for a grant that the browser took back. `ensurePermission()` does
+  not go on to `requestPermission()` for such a handle: a request waits for
+  the user and can have no limit, and on a handle that does not answer it
+  would hold the save that asked. `false` sends that save to `failWrite()`,
+  which keeps the text in the row (`file.unwritten`, §23).
+- **A read on a handle that gave no answer to its query** is refused with
+  `NotAllowedError` (`refuseSilent()` in `storage/fsa.js`), the way a browser
+  refuses a read on a handle with no grant. `getFile()` on such a handle
+  gives no answer either: without the refusal the app started, the tab of
+  that file stayed empty with no message, and the external-change pass
+  waited behind the read for ever. The tab now says "File not available
+  (permission needed)".
+- **A handle that gave no answer is not asked again for 5 s**
+  (`LIMITS.silentFor`), counted from the last refused read. This memo is
+  what makes the refusal safe. `adoptRemote()` takes a stat that failed to
+  mean "the write fails the same way" (see the next part). The memo holds
+  that up: `ensurePermission()` in front of the write gets "silent" from the
+  memo and sends no write. After the memo the handle is asked again, and a
+  handle that answers is read as before.
+
+The limits are an object, so an e2e test shortens `LIMITS.request` on the
+page's own module instance, and no caller has a test hook.
+
+**A disk read or write has no limit, on purpose.** The first draft of this
+work gave `disk_stat`, `disk_read`, `disk_list` and the browser `getFile()`
+a limit of 30 s, on the idea that a late answer to a read changes nothing. A
+trace of the callers showed that the idea is wrong where a read guards a
+write:
+
+- `adoptRemote()` and `applyRemote()` take a stat that failed to mean "the
+  write fails the same way", and then write with no check of the file time.
+  A stat that only ran out of time breaks that: the write can land and
+  replace an edit that another program made.
+- The reconnect in the shell reads the picked file after it drops
+  `file.mtime`. A read that runs out of time there leaves a record that
+  writes over the picked file at the next keystroke.
+- A browser handle stats the file after each write. When that stat runs out
+  of time, the write counts as failed, and the next save takes the app's own
+  write for a change from another program and makes a conflict copy.
+  `encrypt()` and `decrypt()` have the same stat after their write.
+
+A write has the mirror problem: it can land after its limit, and the retry
+then finds a newer file time than the record holds. So the guards behind a
+disk call (`watching`, `refreshing`, a sync round with a pull that writes a
+file) still stay set when the disk gives no answer. The status bar says so
+for a save (below). A limit for disk calls needs a rule at each of those
+callers first; "Not built" has it.
+
+**The start watch.** An inline script at the top of `index.html` starts a
+timer of 10 s. `main.js` calls `vrttiBoot.done()` after `store.start()`, and
+`vrttiBoot.failed()` when `start()` rejects. When neither comes in time, the
+page shows "vrtti did not start", says that the notes are on this device and
+that an uninstall is the wrong step, and offers "Load the newest build". The
+button does what Debug > "Force update" does in the shell (§15): it
+unregisters the service worker, deletes the caches, and loads the page again
+with `?fresh=`. It keeps the other parameters, so a Space Window stays that
+window. The message goes away by itself when a slow start completes.
+
+- The script is inline, first in the head, and imports nothing. A missing
+  file in a deploy stops `main.js` before its first line, and a watch inside
+  the module graph would stop with it. It uses system colors for the same
+  reason: no rule of `app.css` may be needed.
+- It covers every cause, also one that nobody knows yet. Two known ones have
+  no limit of their own and rely on it: an `openDb()` that an old window
+  blocks (§14.1), and `navigator.locks.query()` in `redirectIfDuplicate()`.
+- The phone has no Debug menu. The button is its only repair path.
+
+**The save sign.** The status bar showed "…" for a save that never ended,
+the same as for a save in progress. Now `stateSign()` turns it into "not
+saved yet", as a problem, when the status stays "…" for 5 s after the last
+keystroke. The count starts again at every keystroke: the debounce saves
+nothing until a pause, so a count from the first "…" would warn a fast
+typist in the middle of a sentence. `persistNow()` counts its open saves in
+`saving`, and `activate()` reads the count, so a switch to another tab and
+back does not turn the sign into "✓" while the save is still out. The sign
+is in the status bar only, and phone mode hides that bar.
+
+**Database deletes.** `deleteBuffer`, `deleteWorkspace` and `deleteHandle`
+had no `onabort`. A transaction that aborts with no request error fired
+neither of their handlers. Every put had the line already.
+
+### Not built
+
+- **Time limits for disk calls.** The callers above must first tell "no
+  answer" from "failed". A stat with no answer before a write means "do not
+  write". A stat with no answer after a write means "the write may be on
+  disk". After that, reads can get a limit. A native read with a limit must
+  also not go out again while the old call is out: each disk command holds
+  one thread of the shell's blocking pool until its system call returns, and
+  the callers retry on a timer.
+- **A safety copy for a write that waits.** The text of a file note is in
+  memory only while its file write is out (§23 keeps one body). The likely
+  design: after some seconds with no answer, keep the text in the row as
+  `file.unwritten` does, and clear it when the write lands.
+- **A flush before a close.** No `pagehide` or `beforeunload` handler
+  flushes, and the shell does not ask the page to flush before a close, a
+  reload, "Force update" or the exit for an update. The last 300 ms of typing
+  and every save in flight are cut.
+- **A new pick for a browser handle that gives no answer.** The reconnect
+  click asks the stored handle again and does nothing when no answer comes.
+  The shell picks the file again in that case (§17); the browser needs the
+  same step.
+- **The other guards.** The busy dialog (`showBusy`) has no way out, the key
+  check of the keyring stays a cached promise, and `open_paths` in the shell
+  makes disk calls on the event thread.
+- **The window lock.** A window takes `ws:<id>` late in the start (§14.2). A
+  start slower than the 5 s grace may lose its workspace record. No test
+  shows that yet.

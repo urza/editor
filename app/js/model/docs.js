@@ -306,6 +306,11 @@ export function createDocStore({
   // instead of once per keystroke.
   /** @type {Set<string>} */
   const diskFailed = new Set();
+  /**
+   * Saves that started and did not end yet: buffer id -> count (persistNow).
+   * @type {Map<string, number>}
+   */
+  const saving = new Map();
   // Buffers whose file could not be read for a re-wrap. Same reason.
   /** @type {Set<string>} */
   const readFailed = new Set();
@@ -1351,6 +1356,25 @@ export function createDocStore({
   }
 
   /**
+   * Save one buffer now. The save counts as open in `saving` until its write
+   * stage ends, and a stage that gets no answer from the disk or from
+   * IndexedDB never ends (architecture.md §30). activate() reads the count,
+   * so the status bar keeps "…" for such a note after a switch to another
+   * tab and back, and says "not saved yet" a few seconds later.
+   * @param {string} id
+   */
+  async function persistNow(id) {
+    saving.set(id, (saving.get(id) ?? 0) + 1);
+    try {
+      return await writeStage(id);
+    } finally {
+      const open = (saving.get(id) ?? 1) - 1;
+      if (open > 0) saving.set(id, open);
+      else saving.delete(id);
+    }
+  }
+
+  /**
    * The one write stage (architecture.md §1, §23): encode, write the body to
    * where it lives, put the index row. For a file-backed record the body is
    * the file, and the row goes without `content` (persist strips it). Returns
@@ -1359,7 +1383,7 @@ export function createDocStore({
    * changed on disk and won.
    * @param {string} id
    */
-  async function persistNow(id) {
+  async function writeStage(id) {
     const record = buffers.get(id);
     if (!record) return false;
     materialize(id);
@@ -1662,7 +1686,9 @@ export function createDocStore({
     // The indicator belongs to the buffer on screen. Switching away from a
     // buffer that was still mid-debounce used to leave its "…" behind, because
     // the debounce only reports for the buffer that is active when it lands.
-    emit("save", { status: saveTimers.has(id) ? "…" : "saved" });
+    // `saving` too: a save of this buffer that is still open (a disk call
+    // with no answer) must not read "saved" after a switch away and back.
+    emit("save", { status: saveTimers.has(id) || saving.has(id) ? "…" : "saved" });
   }
 
   /**

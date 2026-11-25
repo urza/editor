@@ -21,6 +21,7 @@ import { on, post } from "../model/channel.js";
 import { KEYRING_ID, KEYRING_SPACE, SETTINGS_ID } from "../model/docs.js";
 import { isSystemRecord } from "../model/lifecycle.js";
 import { hasDisk } from "../model/capabilities.js";
+import { LIMITS, isNoAnswer, limitSignal } from "../model/timelimit.js";
 import { entryKey } from "../crypto/keyring.js";
 import { sha256Hex } from "../crypto/sign.js";
 import {
@@ -296,10 +297,11 @@ export function createSyncClient({ store, keyring }) {
 
   /**
    * @param {string} path
-   * @param {{method?: string, body?: any, headers?: Record<string, string>, url?: string, token?: string | null}} [opts]
+   * @param {{method?: string, body?: any, headers?: Record<string, string>, url?: string, token?: string | null, limit?: number}} [opts]
    *   `url` and `token` for a request outside the stored config: a
    *   registration or a join, before there is a device token. `token: null`
-   *   sends none.
+   *   sends none. `limit`: how long to wait for the answer, in ms;
+   *   LIMITS.request when not given.
    * @returns {Promise<Response>}
    */
   function request(path, opts = {}) {
@@ -317,6 +319,13 @@ export function createSyncClient({ store, keyring }) {
       // front of the API would be just as wrong: a cached /changes page would
       // replay the same rows for ever.
       cache: "no-store",
+      // A request with no answer held every sync of every window: syncNow()
+      // runs one round at a time, and its `running` flag clears in a
+      // `finally` that a promise that never settles does not reach. Each
+      // later call then only set `queued` (architecture.md §30). The abort is
+      // an error like a dropped connection, and the next poll asks again.
+      // The signal also ends a body read that stops halfway.
+      signal: limitSignal(opts.limit ?? LIMITS.request),
     });
   }
 
@@ -1573,8 +1582,10 @@ export function createSyncClient({ store, keyring }) {
       } else {
         // fetch reports a server it could not reach as a TypeError, with a
         // text that differs per browser; one sentence of ours says it better.
+        // A request that ran into its time limit (request()) is the same
+        // thing for the user.
         const message =
-          err instanceof TypeError
+          err instanceof TypeError || isNoAnswer(err)
             ? "no answer from the server"
             : err instanceof Error
               ? err.message
@@ -1878,7 +1889,13 @@ export function createSyncClient({ store, keyring }) {
     const headers = caller && modelState
       ?{ "X-Vrtti-Device": encodeURIComponent(caller.device), "X-Vrtti-Run": caller.run, "X-Vrtti-Part": caller.part }
       : undefined;
-    const res = await request("/api/model/diacritics", { method: "POST", body: { text }, headers });
+    // The model can think for longer than a sync request may take.
+    const res = await request("/api/model/diacritics", {
+      method: "POST",
+      body: { text },
+      headers,
+      limit: LIMITS.model,
+    });
     if (!res.ok) throw httpError(res);
     return (await res.json()).text;
   }

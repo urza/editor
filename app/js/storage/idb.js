@@ -449,6 +449,10 @@ export async function deleteBuffer(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    // onabort too, as in every put: a transaction can abort with no request
+    // error (a full disk at commit). Then neither handler above runs, and
+    // the caller would wait with no end (architecture.md §30).
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -590,6 +594,8 @@ export async function deleteWorkspace(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+    // See deleteBuffer: an abort with no request error must end the wait.
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -644,6 +650,8 @@ export async function deleteHandle(id) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve(undefined);
     tx.onerror = () => reject(tx.error);
+    // See deleteBuffer: an abort with no request error must end the wait.
+    tx.onabort = () => reject(tx.error);
   });
 }
 
