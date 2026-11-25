@@ -1026,6 +1026,12 @@ export function createSyncClient({ store, keyring }) {
         if (!states[space].members.includes(newKey)) await append(space, { op: "add", device: newKey });
       }
     }
+    // A revision of the shared settings that came while the device was
+    // locked is encrypted for the old key. This opens it while that key is
+    // still here: the old keys go as soon as the last note is encrypted
+    // again (reencryptStale below), and the round that would open the
+    // revision comes after that.
+    await store.refreshSharedSettings();
     // Every note encrypted now is encrypted for the old keys.
     await keyring.adopt(next, [...store.encryptedIds()]);
     rebuild();
@@ -1281,18 +1287,29 @@ export function createSyncClient({ store, keyring }) {
    * The records a round can push. The shared settings are left out in two
    * cases, and stay dirty for later:
    * - An older server refused them. They wait for the next start of the app.
-   * - This device holds a revision it cannot read (`unread`: it is locked,
-   *   or the sender did not know it yet). A push now would go on top of that
+   * - This device holds a revision it cannot read yet (`unread`), and that
+   *   can still change: the device is locked, or its join is not done, so
+   *   the sender did not know it. A push now would go on top of that
    *   revision without its entries, and the other devices would have to
    *   notice and push them again. The merge after the unlock sends one
    *   revision with everything (model/docs.js, refreshSharedSettings).
+   *
+   * An unlocked device after its join does push on top of a revision that it
+   * cannot read: no key of this device opens that revision, and no wait
+   * changes it. Its sender can be a lost device, or a removed device that
+   * encrypted for itself alone. Held back, the settings of this device, and
+   * of each device that joins through it, would never sync again. A sender
+   * that is alive has the entries of its revision, and merges them into the
+   * next one.
+   *
    * A record that is left out must not count as work either, or each edit
    * of any note would start a round that has nothing to send.
    */
   function pushable() {
+    const mayOpenLater = !keyring.isUnlocked || joining !== null;
     return store
       .dirtyRecords()
-      .filter((record) => !(record.id === SETTINGS_ID && (settingsRefused || record.unread)));
+      .filter((record) => !(record.id === SETTINGS_ID && (settingsRefused || (record.unread && mayOpenLater))));
   }
 
   /**

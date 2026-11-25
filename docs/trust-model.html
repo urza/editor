@@ -273,7 +273,7 @@ age1q8x…           <span class="tk-c">encryption key (public)</span>
       <li>A device that someone takes over can change the spaces it belongs to, and lock your other devices out of those spaces. It cannot read or change other spaces.</li>
       <li>A taken-over device can vouch for a fake key (unchecked in your grids) or make a space such as <code>000</code> and add your phone. Your phone opens <code>000</code> as <i>Titles only</i>, and its <b>New notes</b> target never switches spaces on its own.</li>
       <li>A device you remove from a space keeps the notes it downloaded before removal. Removal protects new revisions only.</li>
-      <li>A device you removed from every space still gets the shared spellcheck settings (the rule switches and your own words), because they belong to no space and the server cannot remove a device. It gets no note.</li>
+      <li>A device you removed from every space still gets the shared spellcheck settings (the rule switches and your own words), and it can still write them, because they belong to no space and the server cannot remove a device. A taken-over device can change your rules and your words on the other devices, or stop their sync with revisions that no other device can read. It gets no note and it can change no note.</li>
       <li>A person who controls the server during a join can guess the code offline. Each guess costs one <code>scrypt</code> run, and the code expires after ten minutes.</li>
       <li>The recovery key is for emergency decryption only. It plays no part in the trust model.</li>
     </ul>

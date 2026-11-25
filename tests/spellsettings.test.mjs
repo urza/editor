@@ -8,6 +8,7 @@ import {
   changedCount,
   displayName,
   emptySettings,
+  joinCopies,
   lintConfig,
   mergeSettings,
   parseWords,
@@ -95,6 +96,34 @@ test("the list is in the order of the alphabet, without regard to case", () => {
   assert.deepEqual(wordList(s), ["CodeMirror", "d3mnjx", "Harper", "keyring", "vrtti"]);
 });
 
+test("a word that every object inherits is a word like any other", () => {
+  // The maps are plain objects, and "constructor" is in the vocabulary of a
+  // programmer. A plain lookup found Object.prototype there and said "there
+  // already"; a plain assignment under "__proto__" stored nothing.
+  const names = ["constructor", "__proto__", "toString", "hasOwnProperty"];
+  let s = emptySettings();
+  for (const w of names) s = addWord(s, w, 1);
+  assert.deepEqual(wordList(s), ["__proto__", "constructor", "hasOwnProperty", "toString"]);
+  for (const w of names) assert.ok(wordKeys(s).has(wordKey(w)));
+  // Through the record and through a merge: the two places that build a map
+  // key by key.
+  const back = readSettings(JSON.stringify(s));
+  assert.deepEqual(wordList(back), wordList(s));
+  assert.deepEqual(wordList(mergeSettings(emptySettings(), back)), wordList(s));
+  assert.deepEqual(wordList(mergeSettings(back, emptySettings())), wordList(s));
+  // A word that was never added is not "there", so nothing is removed and
+  // no entry is written for it.
+  const none = emptySettings();
+  assert.equal(removeWord(none, "constructor", 2), none);
+  s = removeWord(s, "__proto__", 3);
+  assert.deepEqual(wordList(s), ["constructor", "hasOwnProperty", "toString"]);
+  // A rule name from another device goes the same way.
+  const rules = readSettings(JSON.stringify({ v: 1, rules: JSON.parse('{"__proto__":{"on":false,"at":1}}'), words: {} }));
+  assert.deepEqual(Object.keys(rules.rules), ["__proto__"]);
+  assert.equal(Object.getPrototypeOf(rules.rules), Object.prototype);
+  assert.deepEqual(Object.keys(resetRules(rules, 5).rules), ["__proto__"]);
+});
+
 test("a removed word leaves the list and keeps an entry for the merge", () => {
   let s = addWord(emptySettings(), "vrtti", 1);
   s = removeWord(s, "Vrtti", 2);
@@ -179,6 +208,61 @@ test("the settings survive the trip through the record, and bad entries are drop
     words: { vrtti: { word: "vrtti", at: 1 }, x: { at: 1 }, y: null },
   });
   assert.deepEqual(readSettings(dirty), { v: 1, rules: { Good: { on: false, at: 1 } }, words: { vrtti: { word: "vrtti", at: 1 } } });
+});
+
+// ---- Two windows (joinCopies) ---------------------------------------------------
+
+/** A copy of the settings record, as a window holds it. */
+function copy(settings, updatedAt, sync) {
+  return { id: "shared-settings", content: JSON.stringify(settings), updatedAt, ...(sync ? { sync } : {}) };
+}
+
+test("two windows: a switch made while the other window stored a push is kept", () => {
+  const pushed = setRule(emptySettings(), "LongSentences", false, true, 10);
+  const edited = addWord(pushed, "vrtti", 20);
+  // The window that syncs stored the answer of its push: revision 6, clean.
+  const leader = copy(pushed, 10, { rev: 6, dirty: false, readers: "age1new" });
+  // This window changed a word in the same moment, still on revision 5.
+  const mine = copy(edited, 20, { rev: 5, dirty: true, readers: "age1old" });
+
+  // This window gets the copy of the leader: the word stays, the revision
+  // moves, and the record is dirty because the server lacks the word.
+  let joined = joinCopies(mine, leader);
+  assert.deepEqual(wordList(readSettings(joined.content)), ["vrtti"]);
+  assert.deepEqual(joined.sync, { rev: 6, dirty: true, readers: "age1new" });
+  // The leader gets the copy of this window: the same settings, and the
+  // revision does not go back to 5 (a push on 5 would be refused).
+  joined = joinCopies(leader, mine);
+  assert.deepEqual(wordList(readSettings(joined.content)), ["vrtti"]);
+  assert.deepEqual(joined.sync, { rev: 6, dirty: true, readers: "age1new" });
+  // A stamp that moved tells the push in flight that the text changed.
+  assert.equal(joined.updatedAt, 20);
+});
+
+test("two windows: equal settings stay clean, whatever the order of their keys", () => {
+  let a = emptySettings();
+  a = addWord(a, "vrtti", 1);
+  a = addWord(a, "Harper", 2);
+  let b = emptySettings();
+  b = addWord(b, "Harper", 2);
+  b = addWord(b, "vrtti", 1);
+  assert.notEqual(JSON.stringify(a), JSON.stringify(b));
+  // The answer of a push reaches a window that holds the same settings: a
+  // "dirty" here would make that window push them again when it syncs.
+  const joined = joinCopies(copy(a, 2, { rev: 3, dirty: true }), copy(b, 2, { rev: 4, dirty: false }));
+  assert.deepEqual(joined.sync, { rev: 4, dirty: false });
+});
+
+test("two windows: the fields of the newer revision win, and no sync stays no sync", () => {
+  const s = addWord(emptySettings(), "vrtti", 1);
+  // A revision that this window could not read was opened in the other one.
+  const locked = { ...copy(emptySettings(), 1, { rev: 7, dirty: false }), unread: "-----BEGIN AGE ENCRYPTED FILE-----" };
+  const opened = copy(s, 5, { rev: 7, dirty: false });
+  assert.equal("unread" in joinCopies(locked, opened), false);
+  // With no sync on the device, the entries still merge.
+  const joined = joinCopies(copy(s, 1), copy(addWord(emptySettings(), "Harper", 2), 2));
+  assert.deepEqual(wordList(readSettings(joined.content)), ["Harper", "vrtti"]);
+  assert.equal("sync" in joined, false);
 });
 
 test("the settings record is no note: it never expires from Recent", () => {

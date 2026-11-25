@@ -29,6 +29,34 @@ export function emptySettings() {
   return { v: 1, rules: {}, words: {} };
 }
 
+// The two maps are keyed by text from outside: a word the user typed, a name
+// in a revision of another device. On a plain object such a key can collide
+// with what every object inherits, so each lookup and each assignment by a
+// variable key goes through the two functions below. ("{ ...map, [key]: x }"
+// is safe as it is: a spread and a computed key make own properties.)
+
+/**
+ * The entry under `key`, own entries only. A plain `map[key]` also finds
+ * `Object.prototype`: for the words "constructor" and "__proto__" it gave a
+ * function and an object, the word counted as "there already", and "My
+ * words" could not take it.
+ * @template T
+ * @param {Record<string, T>} map @param {string} key @returns {T | undefined}
+ */
+function entryOf(map, key) {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+/**
+ * Store an entry as an own property. A plain `map[key] = entry` with the key
+ * "__proto__" would change the prototype of the map and store nothing.
+ * @template T
+ * @param {Record<string, T>} map @param {string} key @param {T} entry
+ */
+function setEntry(map, key, entry) {
+  Object.defineProperty(map, key, { value: entry, enumerable: true, writable: true, configurable: true });
+}
+
 /**
  * The settings from the content of the record. Tolerant on purpose: the
  * content can come from another device, and one bad entry must not cost the
@@ -49,13 +77,13 @@ export function readSettings(content) {
   for (const [name, entry] of Object.entries(value.rules ?? {})) {
     if (!entry || typeof entry.at !== "number") continue;
     if (entry.on !== null && typeof entry.on !== "boolean") continue;
-    out.rules[name] = { on: entry.on, at: entry.at };
+    setEntry(out.rules, name, { on: entry.on, at: entry.at });
   }
   for (const entry of Object.values(value.words ?? {})) {
     if (!entry || typeof entry.word !== "string" || typeof entry.at !== "number") continue;
     const key = wordKey(entry.word);
     if (!key) continue;
-    out.words[key] = entry.gone ? { word: entry.word, at: entry.at, gone: true } : { word: entry.word, at: entry.at };
+    setEntry(out.words, key, entry.gone ? { word: entry.word, at: entry.at, gone: true } : { word: entry.word, at: entry.at });
   }
   return out;
 }
@@ -85,7 +113,7 @@ export function resetRules(settings, now) {
   /** @type {Record<string, RuleEntry>} */
   const rules = {};
   for (const [name, entry] of Object.entries(settings.rules)) {
-    rules[name] = entry.on === null ? entry : { on: null, at: now };
+    setEntry(rules, name, entry.on === null ? entry : { on: null, at: now });
   }
   return { ...settings, rules };
 }
@@ -138,7 +166,7 @@ export function wordKey(word) {
  */
 export function addWord(settings, word, now) {
   const key = wordKey(word);
-  const have = settings.words[key];
+  const have = entryOf(settings.words, key);
   if (!key || /\s/.test(key) || (have && !have.gone)) return settings;
   return { ...settings, words: { ...settings.words, [key]: { word: word.normalize("NFC").trim(), at: now } } };
 }
@@ -149,7 +177,7 @@ export function addWord(settings, word, now) {
  */
 export function removeWord(settings, word, now) {
   const key = wordKey(word);
-  const have = settings.words[key];
+  const have = entryOf(settings.words, key);
   if (!have || have.gone) return settings;
   return { ...settings, words: { ...settings.words, [key]: { word: have.word, at: now, gone: true } } };
 }
@@ -224,10 +252,47 @@ function newer(a, b) {
 export function mergeSettings(a, b) {
   const out = emptySettings();
   for (const name of [...new Set([...Object.keys(a.rules), ...Object.keys(b.rules)])].sort()) {
-    out.rules[name] = newer(a.rules[name], b.rules[name]);
+    setEntry(out.rules, name, newer(entryOf(a.rules, name), entryOf(b.rules, name)));
   }
   for (const key of [...new Set([...Object.keys(a.words), ...Object.keys(b.words)])].sort()) {
-    out.words[key] = newer(a.words[key], b.words[key]);
+    setEntry(out.words, key, newer(entryOf(a.words, key), entryOf(b.words, key)));
   }
   return out;
+}
+
+/**
+ * The part of the settings record that joinCopies() reads (the BufferRecord
+ * of storage/idb.js has more).
+ * @typedef {{ content?: string, updatedAt: number, sync?: { rev: number, dirty: boolean } }} SettingsCopy
+ */
+
+/**
+ * The copies of the settings record of two windows in one.
+ *
+ * The record has no owner window. Each window writes it (a switch on the
+ * Spellcheck page, a quick button on a mark), and the window that syncs
+ * writes it after a push and a pull. Each write reaches the other windows as
+ * a whole record. "The copy that came last wins", the rule for the keyring
+ * record, would lose here: a rule switched in one window in the moment when
+ * another window stored the answer of a push went back to its old state, on
+ * screen and then on the server.
+ *
+ * So the entries merge as they do between devices. All other fields come
+ * from the copy that knows the newer revision of the server (`theirs` when
+ * both know the same one), and the result is dirty when it holds an entry
+ * that this copy lacks.
+ * @template {SettingsCopy} R
+ * @param {R} mine    The copy of this window.
+ * @param {R} theirs  The copy that another window sent.
+ * @returns {R}
+ */
+export function joinCopies(mine, theirs) {
+  const base = (mine.sync?.rev ?? 0) > (theirs.sync?.rev ?? 0) ? mine : theirs;
+  const text = JSON.stringify(mergeSettings(readSettings(mine.content), readSettings(theirs.content)));
+  const joined = { ...base, content: text, updatedAt: Math.max(mine.updatedAt, theirs.updatedAt) };
+  // Compared after the same merge alone: a write stores the keys in the order
+  // of the changes, a merge sorts them, and the order is no difference.
+  const baseText = JSON.stringify(mergeSettings(emptySettings(), readSettings(base.content)));
+  if (base.sync) joined.sync = { ...base.sync, dirty: base.sync.dirty || text !== baseText };
+  return joined;
 }

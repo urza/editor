@@ -77,7 +77,7 @@ import { needsReencrypt } from "../crypto/spaces.js";
 import { detectFromName, isLang } from "../editor/lang.js";
 import { on, post } from "./channel.js";
 import { isRecentExpired, isSystemRecord, stubTitle, TRASH_KEEP } from "./lifecycle.js";
-import { emptySettings, mergeSettings, readSettings } from "./spellsettings.js";
+import { emptySettings, joinCopies, mergeSettings, readSettings } from "./spellsettings.js";
 
 /** @typedef {import("../storage/idb.js").BufferRecord} BufferRecord */
 /** @typedef {import("../storage/idb.js").RemoteStub} RemoteStub */
@@ -3273,8 +3273,14 @@ export function createDocStore({
    * No push for step 2 while a revision is still unreadable here: this
    * device does not know what the server holds or for whom, and a new device
    * in the middle of its join would push an empty copy that only it can read.
-   * The device that can read the revision does the repair. The sync client
-   * holds back this device's own changes too until then (pushable).
+   * The device that can read the revision does the repair. Two devices that
+   * do not know each other would else answer each revision of the other with
+   * a push of their own, without end.
+   *
+   * A change of the user on this device is another matter: it goes out on
+   * top of the unreadable revision once the device is unlocked and its join
+   * is done (sync/client.js, pushable), and that push ends the wait
+   * (sharedSettingsPushed).
    */
   async function refreshSharedSettings() {
     const record = buffers.get(SETTINGS_ID);
@@ -3297,12 +3303,20 @@ export function createDocStore({
   /**
    * A push of the settings was accepted: its readers are the readers of the
    * server's current revision now.
+   *
+   * A kept revision (`unread`) goes: it is not the server's current revision
+   * any more. An unlocked device pushed on top of it because no key of this
+   * device opens it (sync/client.js, pushable). A device that could read it
+   * has its entries, and merges them into the next revision when it pulls
+   * this one. Kept, it would stop the repair of the readers for ever
+   * (refreshSharedSettings), also for the devices that join later.
    * @param {string} readers  The value pushPayload returned.
    */
   async function sharedSettingsPushed(readers) {
     const record = buffers.get(SETTINGS_ID);
-    if (!record?.sync || record.sync.readers === readers) return;
+    if (!record?.sync || (record.sync.readers === readers && !record.unread)) return;
     record.sync.readers = readers;
+    delete record.unread;
     await persist({ ...record });
   }
 
@@ -4842,6 +4856,13 @@ export function createDocStore({
       typeof record.content !== "string" &&
       typeof previous?.content === "string";
     if (loaded) record.content = previous?.content;
+    // The settings record is the one record that every window writes, so a
+    // copy from another window can cross a write here. The entries merge;
+    // a replace would take a switch back that the user just made (see
+    // joinCopies in model/spellsettings.js). The result is not stored from
+    // here: it is dirty where it has something new, and the window that
+    // syncs stores it with the push.
+    if (id === SETTINGS_ID && previous) record = joinCopies(previous, record);
     buffers.set(id, record);
     // A language switched in another window (or pulled by the sync leader)
     // changes no text, so nothing below would repaint the marks.

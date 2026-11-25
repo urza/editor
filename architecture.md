@@ -3840,6 +3840,20 @@ existing `buffer` message. It is plain JSON on the device, like every setting.
 - Nothing is ever deleted. Without the entry of a removed word or a reset
   rule, the older copy of another device would bring it back in a merge. An
   entry is about 50 bytes.
+- The two maps are plain objects with keys from outside (a typed word, a
+  name in a revision of another device). The module reads and sets an entry
+  through `entryOf()` and `setEntry()`, which see own properties only. A
+  plain lookup found `Object.prototype` for the words "constructor" and
+  "__proto__", and "My words" could not take them.
+- **Two windows.** The record has no owner window: each window writes it,
+  and the window that syncs writes it after a push and a pull. A copy from
+  another window is not taken as it is (the rule for the keyring record):
+  `adoptFromWindow()` merges it with the copy of this window
+  (`joinCopies()`). The entries merge as between devices, the sync state
+  comes from the copy with the newer revision, and the result is dirty when
+  it holds an entry that this copy lacks. A replace took a switch back when
+  the user made it in the moment when another window stored the answer of a
+  push.
 
 `model/spellsettings.js` holds all of this as pure functions, so
 `tests/spellsettings.test.mjs` runs it in Node.
@@ -3918,11 +3932,26 @@ document there.
 - **A revision this device cannot read** (a locked device, or a device the
   sender did not know yet) is kept in `record.unread`, because the pull
   position moves past it. It merges after the unlock or at the next round.
-  While it is kept, the device pushes nothing for this record (`pushable()`
-  in `sync/client.js`): a push would go on top of a revision whose entries
-  it does not have, and a new device in the middle of its join would push an
-  empty copy that only it can read. Its own changes stay dirty and go out
-  with the merge, as one revision.
+  While the device is locked or in the middle of its join, it pushes nothing
+  for this record (`pushable()` in `sync/client.js`): a push would go on top
+  of a revision whose entries it does not have, and a new device in the
+  middle of its join would push an empty copy that only it can read. Its own
+  changes stay dirty and go out with the merge, as one revision.
+- **A revision that no wait opens.** An unlocked device after its join can
+  still hold a revision that none of its keys opens: the sender was lost
+  before it knew this device, or a removed device encrypted for itself
+  alone. Such a device pushes a change of the user on top of that revision,
+  and the accepted push drops the kept revision (`sharedSettingsPushed()`).
+  Held back, the settings of this device, and of each device that joins
+  through it, would never sync again. A sender that is alive has the
+  entries of its revision and merges them into the next one. The device
+  pushes only a change of the user, never an answer to the revision alone:
+  two devices that do not know each other would answer each other without
+  end.
+- **A change of the passphrase switch** (§27) opens a kept revision with
+  the old key before the new key takes over (`changePassphraseSwitch()`).
+  A revision that another device encrypts for the old key later waits for
+  that device, which sends it again for the new key, as a note does.
 - **An older client** drops the second document of the keyring space (its
   `applyRemote` accepts only the keyring id there). **An older server**
   answers 400 with the sentence "only the keyring document lives in keyring";
@@ -3931,9 +3960,12 @@ document there.
   the device. Without the stop, every round would fail and the status bar
   would read "sync failed". Any other 400 is an error like every other.
 - **Limits.** A device that was removed from every space still receives the
-  settings: the server cannot remove a device. It gets the rule switches and
-  the words, and no note. The server keeps every revision of the settings; a
-  revision is a few kB.
+  settings and can still write them: the server cannot remove a device. It
+  gets the rule switches and the words, and no note. Taken over, it can
+  change the rules and the words of the other devices (an entry with a
+  later time wins the merge), and it can stop their sync by a push of an
+  unreadable revision after each push of theirs. The server keeps every
+  revision of the settings; a revision is a few kB.
 
 ### Not built
 
