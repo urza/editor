@@ -1101,6 +1101,15 @@ function boxDom(view, box) {
 
 const phoneBox = [
   boxField,
+  // The box belongs to the editor on screen. When the focus leaves the editor
+  // (Settings opens, the note list, a dialog, another app), the box closes:
+  // it is a CodeMirror tooltip with a z-index above every panel of the app,
+  // so it stayed on top of the Settings panel, over the rows. A tap on a
+  // button of the box does not come here, because those buttons keep the
+  // focus in the editor (boxDom, pointerdown).
+  EditorView.focusChangeEffect.of((state, focusing) =>
+    !focusing && state.field(boxField, false) ? setBox.of(null) : null
+  ),
   EditorView.domEventHandlers({
     click(event, view) {
       // Phone mode only: a PC keeps hover and Ctrl+. (ui/shell.js sets the
