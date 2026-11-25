@@ -17,6 +17,7 @@ import { events as spellEvents, isEnabled } from "../editor/spellcheck.js";
 import { editorEvents } from "../editor/editor.js";
 import { activeLangs } from "../editor/mixed.js";
 import { countWordsInDoc, deviceLabel, positionText, readTime, stateSign } from "./statustext.js";
+import { LIMITS } from "../model/timelimit.js";
 import { ZOOM } from "./zoom.js";
 
 /**
@@ -219,6 +220,11 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
   // ---- The state sign ---------------------------------------------------------
 
   let saveStatus = "saved";
+  // The save status is "…" for longer than LIMITS.slowSave (the "save"
+  // listener below).
+  let saveSlow = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let slowTimer;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let noticeTimer;
 
@@ -227,6 +233,7 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
     const record = store.activeId ? store.get(store.activeId) : undefined;
     const sign = stateSign({
       save: saveStatus,
+      slow: saveSlow,
       syncs: Boolean(record?.sync && !record.sync.tombstone),
       waiting: Boolean(record?.sync && (record.sync.dirty || record.sync.rev === 0)),
       client: /** @type {any} */ (sync?.status.state ?? "off"),
@@ -252,6 +259,18 @@ export function mountStatusbar(store, sync, zoom, view, keyring) {
   });
   store.events.addEventListener("save", (event) => {
     saveStatus = /** @type {CustomEvent} */ (event).detail.status;
+    // Every event starts the wait again, so the time counts from the last
+    // keystroke: the debounce and a healthy write end long before the limit.
+    // A count from the first "…" would warn a fast typist in the middle of a
+    // sentence, because the debounce saves nothing until a pause.
+    clearTimeout(slowTimer);
+    saveSlow = false;
+    if (saveStatus === "…") {
+      slowTimer = setTimeout(() => {
+        saveSlow = true;
+        renderState();
+      }, LIMITS.slowSave);
+    }
     renderState();
   });
   // "change" covers a push or a pull that changed the record's sync state.

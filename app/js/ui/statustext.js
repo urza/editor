@@ -96,18 +96,28 @@ export function positionText(at) {
  * whether the server has its last change.
  *
  * @param {{ save: string, syncs: boolean, waiting: boolean,
- *           client: "off" | "idle" | "syncing" | "error" | "offline" }} s
+ *           client: "off" | "idle" | "syncing" | "error" | "offline",
+ *           slow?: boolean }} s
  *   `save` is the store's save status ("saved", "…", "locked", "disk write
  *   failed"). `syncs`: the note has a server target. `waiting`: its record
- *   has a change the server does not have (dirty, or never pushed).
+ *   has a change the server does not have (dirty, or never pushed). `slow`:
+ *   the save is open for longer than a healthy one takes (ui/statusbar.js).
  * @returns {{ text: string, problem: boolean, title: string }}
  */
-export function stateSign({ save, syncs, waiting, client }) {
+export function stateSign({ save, syncs, waiting, client, slow }) {
   if (save === "locked" || save === "disk write failed") {
     return { text: save, problem: true, title: save === "locked" ? "The note is locked." : "The file could not be written." };
   }
   const server = syncs && client !== "off";
-  if (save === "…") return { text: "…", problem: false, title: "Saving on this device." };
+  if (save === "…") {
+    // A save that waits on the disk or on IndexedDB with no answer shows
+    // "…" for ever and reports no error (architecture.md §30). The text of
+    // the note is then in memory only, so the sign must stop looking like
+    // work in progress and must say what to do.
+    return slow
+      ? { text: "not saved yet", problem: true, title: "The last change is not saved yet. Keep this window open." }
+      : { text: "…", problem: false, title: "Saving on this device." };
+  }
   if (server && (client === "offline" || client === "error")) {
     const why = client === "offline" ? "offline" : "sync error";
     return { text: "saved · " + why, problem: true, title: "Saved on this device, not on the server (" + why + ")." };

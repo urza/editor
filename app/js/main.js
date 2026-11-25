@@ -7,6 +7,7 @@
 // for "Copy the log" on a phone (model/log.js). Hoisted with the imports
 // below, and that is fine: the modules only log from start() on.
 import { installLog, logText } from "./model/log.js";
+import { isNoAnswer } from "./model/timelimit.js";
 installLog();
 import { BUILD } from "./version.js";
 
@@ -549,11 +550,14 @@ async function start() {
    * One sentence for a step that failed. fetch reports a server it could not
    * reach as a TypeError, with a text that differs per browser ("Failed to
    * fetch"); the sync status says "no answer from the server" for the same
-   * thing (client.js syncNow).
+   * thing (client.js syncNow). A request that ran into its time limit is
+   * that same thing too.
    * @param {unknown} err
    */
   const why = (err) =>
-    err instanceof TypeError ? "no answer from the server" : String(/** @type {any} */ (err)?.message ?? err);
+    err instanceof TypeError || isNoAnswer(err)
+      ? "no answer from the server"
+      : String(/** @type {any} */ (err)?.message ?? err);
 
   /** "a", "a and b", "a, b and c". @param {string[]} words */
   const listed = (words) =>
@@ -1925,6 +1929,11 @@ async function start() {
   const hadTabsBeforeStart = workspaces.current().tabs.length > 0;
 
   await store.start();
+  // The app is up: a note is on screen. This ends the start watch
+  // (index.html, architecture.md §30). Not before store.start(): it awaits
+  // IndexedDB, and a start that waits there shows an editor with no note,
+  // which looks like lost notes just as an empty window does.
+  /** @type {any} */ (window).vrttiBoot?.done();
 
   // The spellcheck settings that all devices share live in a hidden record
   // (model/docs.js, SETTINGS_ID). The editor module gets them here, now and
@@ -2056,4 +2065,9 @@ async function start() {
   };
 }
 
-start().catch((err) => console.error("[vrtti] startup failed", err));
+start().catch((err) => {
+  console.error("[vrtti] startup failed", err);
+  // The window is empty or half built now, and nothing more will come. The
+  // start watch (index.html) says so at once and does not wait for its timer.
+  /** @type {any} */ (window).vrttiBoot?.failed();
+});

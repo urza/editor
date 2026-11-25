@@ -10,6 +10,118 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="app.css">
 
+<!-- The start watch (architecture.md §30). When the app is not up after
+     START_LIMIT, it shows a plain message with a repair button. The message
+     goes away by itself when a slow start completes.
+     Why: on 2026-11-25 the start waited on a call that gave no answer. The
+     window stayed empty with no error, and the update check never ran (it
+     starts after the sidebar), so the app could not load a repaired build.
+     An empty app looks like lost notes. The next step of a user in that
+     state is an uninstall with "delete app data", and that step does destroy
+     the notes. So the message says where the notes are before all else.
+     Inline, first, and with no imports, for one reason: it must work when
+     the modules do not. A missing file in a deploy stops js/main.js before
+     its first line, and a watch inside the module graph would stop with it.
+     For the same reason it uses no class of app.css and no helper of js/.
+     js/main.js calls vrttiBoot.done() when the app is up and
+     vrttiBoot.failed() when start() rejects. -->
+<script>
+  {
+    const START_LIMIT = 10000;
+    /** @type {HTMLElement | null} */
+    let panel = null;
+
+    const hide = () => {
+      panel?.remove();
+      panel = null;
+    };
+
+    /** @param {HTMLButtonElement} button */
+    const repair = async (button) => {
+      button.disabled = true;
+      button.textContent = "Loading…";
+      // The steps of Debug > "Force update" in the shell (src-tauri/src/
+      // debug.rs). Each of them can be the call that gives no answer, so the
+      // reload waits for them for 5 seconds at most.
+      const drop = (async () => {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((reg) => reg.unregister()));
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      })().catch((err) => console.log("[vrtti] start watch: repair", err));
+      await Promise.race([drop, new Promise((resolve) => setTimeout(resolve, 5000))]);
+      // The query makes the CDN edge fetch index.html again. Every other
+      // parameter stays: `?ws=` names this window (architecture.md §14).
+      const url = new URL(location.href);
+      url.searchParams.set("fresh", String(Date.now()));
+      location.replace(url.toString());
+    };
+
+    /** @param {string} why For the log only. */
+    const show = (why) => {
+      if (panel) return;
+      // js/model/log.js keeps "[vrtti]" lines across reloads when it is
+      // loaded, so the app log dates the start that did not complete.
+      console.log("[vrtti] start watch: " + why);
+      panel = document.createElement("div");
+      panel.id = "start-watch";
+      panel.setAttribute("role", "alert");
+      panel.style.cssText =
+        "position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;" +
+        "justify-content:center;padding:16px;background:rgba(0,0,0,.45);" +
+        "font:16px/1.5 system-ui,sans-serif";
+      const box = document.createElement("div");
+      // System colors: they are readable in a light and in a dark scheme
+      // with no rule of app.css.
+      box.style.cssText =
+        "max-width:26em;padding:20px;border-radius:8px;background:Canvas;" +
+        "color:CanvasText;border:1px solid GrayText";
+      /** @param {string} tag @param {string} text @param {string} css */
+      const add = (tag, text, css) => {
+        const el = document.createElement(tag);
+        el.textContent = text;
+        el.style.cssText = css;
+        box.append(el);
+        return el;
+      };
+      add("strong", "vrtti did not start", "display:block;font-size:18px;margin-bottom:8px");
+      add(
+        "p",
+        "Your notes are on this device. Do not uninstall vrtti and do not clear its data.",
+        "margin:0 0 8px"
+      );
+      add("p", "The first button loads the newest build of vrtti. It changes no note.", "margin:0 0 16px");
+      const load = /** @type {HTMLButtonElement} */ (
+        add("button", "Load the newest build", "font:inherit;padding:6px 12px;margin:0 8px 8px 0")
+      );
+      load.type = "button";
+      load.addEventListener("click", () => repair(load));
+      // A way out for a window that is half built: its menus can still work.
+      const close = /** @type {HTMLButtonElement} */ (
+        add("button", "Close this message", "font:inherit;padding:6px 12px;margin:0 0 8px")
+      );
+      close.type = "button";
+      close.addEventListener("click", hide);
+      panel.append(box);
+      (document.body || document.documentElement).append(panel);
+    };
+
+    const timer = setTimeout(() => show("no start after " + START_LIMIT / 1000 + " s"), START_LIMIT);
+    window.vrttiBoot = {
+      /** The app is up. Also ends a message that a slow start made. */
+      done() {
+        clearTimeout(timer);
+        hide();
+      },
+      /** start() rejected: there is nothing more to wait for. */
+      failed() {
+        clearTimeout(timer);
+        show("the start failed");
+      },
+    };
+  }
+</script>
+
 <!-- Replays the stored text sizes before the first paint. js/ui/textsize.js
      owns these two keys and is the only writer; this only reads them back. It
      has to be here, inline and in the head: a module script is deferred, so
