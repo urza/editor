@@ -70,6 +70,11 @@ const INVITES_KEY = "sync.invites";
 const INTRODUCTIONS_KEY = "sync.introductions";
 // The join this device made with a typed code and waits to hear back on.
 const JOINING_KEY = "sync.joining";
+// The server and the token of a device that stopped syncing (disconnect()).
+// The server still knows the device and its spaces still list it, so the
+// token is all that "sync again" needs. A new join can not replace it: the
+// server refuses a device id that it knows (DeviceApi.cs, 409).
+const STOPPED_KEY = "sync.stopped";
 // The last join of this device that ended: the spaces it gave and the member
 // that answered. The dialog that waits for the join reads it, in any window.
 const JOINED_KEY = "sync.joined";
@@ -1597,6 +1602,9 @@ export function createSyncClient({ store, keyring }) {
     config = next;
     if (next) await putSetting(CONFIG_KEY, next);
     else await deleteSetting(CONFIG_KEY);
+    // A device that syncs has nothing to come back to: a new server
+    // replaced the stopped one, or resume() took it.
+    if (next) await deleteSetting(STOPPED_KEY);
     post("setting", { key: CONFIG_KEY });
     // Only a device token answers /api/model (§27); probeModel checks it.
     void probeModel();
@@ -1604,8 +1612,32 @@ export function createSyncClient({ store, keyring }) {
 
   /** Leave the server: this device forgets its token. Its notes stay. */
   async function disconnect() {
+    // Kept for resume(). Not a config from before §27: its token is the
+    // server token, which only registers.
+    if (isConfigured()) await putSetting(STOPPED_KEY, config);
     await saveConfig(null);
     setStatus({ state: "off" });
+  }
+
+  /** The server this device stopped syncing with, or "" (disconnect()). @returns {Promise<string>} */
+  async function stoppedServer() {
+    const stored = await getSetting(STOPPED_KEY);
+    return stored && typeof stored.url === "string" && stored.token ? stored.url : "";
+  }
+
+  /**
+   * Sync again with the server of disconnect(), with the token this device
+   * had there. No join: the device never left the server or its spaces.
+   * @returns {Promise<boolean>} false when there is nothing to come back to.
+   */
+  async function resume() {
+    const stored = await getSetting(STOPPED_KEY);
+    if (!stored || !(await stoppedServer())) return false;
+    await saveConfig({ url: stored.url, token: stored.token, v: 2 });
+    // As registerFirst(): the status says that sync is on before the first round.
+    setStatus({ state: "idle", lastSyncAt });
+    void syncNow();
+    return true;
   }
 
   /** @returns {Promise<{ok: boolean, message?: string}>} */
@@ -1968,6 +2000,8 @@ export function createSyncClient({ store, keyring }) {
     registerFirst,
     changePassphraseSwitch,
     disconnect,
+    stoppedServer,
+    resume,
     // The server has no device directory: Settings › Devices asks for an update.
     get directoryMissing() {
       return started ? directoryMissing : status.directoryMissing === true;

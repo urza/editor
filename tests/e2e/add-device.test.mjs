@@ -617,5 +617,35 @@ describe(
         20000,
       );
     });
+
+    test("4. A device that stopped syncing comes back with one click, with no join", async () => {
+      const c = laptop.cdp;
+      const before = await c.eval(`({ spaces: window.vrtti.sync.mySpaces(), url: window.vrtti.sync.config.url })`);
+      assert.deepEqual(before, { spaces: ["personal"], url: syncSrv.url });
+
+      await clickSetting(c, "sync-disconnect");
+      const stop = await waitDialog(c, "Stop syncing this device?");
+      assert.match(stop.text, /“connect” in Settings › Sync starts it again\./);
+      await clickInDialog(c, "Stop");
+      await c.waitFor(`!window.vrtti.sync.isConfigured`);
+
+      // The same dialog as for a new device, with one more option. A new
+      // join would fail here: the server knows this device.
+      await clickSetting(c, "sync-connect");
+      const connect = await waitDialog(c, "Sync with a server");
+      assert.ok(connect.buttons.includes("Sync again with " + syncSrv.url + "This device synced with this server before. It needs no invite."));
+      await clickInDialog(c, "Sync again with");
+      await c.waitFor(`window.vrtti.sync.isConfigured && !document.querySelector("dialog[open]")`);
+
+      // The old token works, and the device is in its space as before.
+      const result = await c.eval(`(async () => {
+        const test = await window.vrtti.sync.testConnection();
+        return { ok: test.ok, spaces: window.vrtti.sync.mySpaces(), stopped: await window.vrtti.sync.stoppedServer() };
+      })()`);
+      assert.deepEqual(result, { ok: true, spaces: ["personal"], stopped: "" });
+      // The option is only for a device that stopped.
+      await c.eval(`window.vrtti.run("settings.close")`);
+      await phone.cdp.eval(`window.vrtti.sync.stoppedServer()`).then((url) => assert.equal(url, ""));
+    });
   },
 );

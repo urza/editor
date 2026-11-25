@@ -628,16 +628,35 @@ export function showInvite(opts) {
  *
  * @param {{title: string, label: string, placeholder?: string, hint: string,
  *          message?: string, value?: string, url?: string,
+ *          again?: {label: string, hint: string},
  *          first: {label: string, hint: string},
  *          isCode: (text: string) => boolean,
  *          check: (text: string, url: string) => string}} opts
  *   `message` is why the last try failed; `value` and `url` are what the
  *   person typed then. `check` returns what is wrong with the two values,
- *   or "" when they can go on.
- * @returns {Promise<{kind: "first"} | {kind: "text", text: string, url: string} | null>}
+ *   or "" when they can go on. `again` is an option above the field, for a
+ *   device that synced before and needs nothing from another device.
+ * @returns {Promise<{kind: "first"} | {kind: "again"} | {kind: "text", text: string, url: string} | null>}
  */
 export function askConnect(opts) {
   const { dialog, form, body, actions } = shell(opts.title);
+  // Not submit buttons: Enter in the field must mean "Next", and Enter
+  // picks the first submit button of the form (see cancelButton).
+  /** @param {{label: string, hint: string}} option @param {string} value */
+  const option = (option, value) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "dialog-option";
+    const label = document.createElement("span");
+    label.textContent = option.label;
+    const hint = document.createElement("span");
+    hint.className = "settings-hint";
+    hint.textContent = option.hint;
+    el.append(label, hint);
+    el.addEventListener("click", () => dialog.close(value));
+    body.appendChild(el);
+  };
+  if (opts.again) option(opts.again, "again");
   const input = field(body, opts.label, "text", opts.value ?? "");
   if (opts.placeholder) input.placeholder = opts.placeholder;
   // A phone must not turn a code into a word with a capital letter.
@@ -666,19 +685,7 @@ export function askConnect(opts) {
   input.addEventListener("input", follow);
   follow();
 
-  // Not a submit button: Enter in the field must mean "Next", and Enter
-  // picks the first submit button of the form (see cancelButton).
-  const first = document.createElement("button");
-  first.type = "button";
-  first.className = "dialog-option";
-  const firstLabel = document.createElement("span");
-  firstLabel.textContent = opts.first.label;
-  const firstHint = document.createElement("span");
-  firstHint.className = "settings-hint";
-  firstHint.textContent = opts.first.hint;
-  first.append(firstLabel, firstHint);
-  first.addEventListener("click", () => dialog.close("first"));
-  body.appendChild(first);
+  option(opts.first, "first");
 
   actions.append(cancelButton(dialog), button("Next", "ok", true));
   form.addEventListener("submit", (event) => {
@@ -691,7 +698,7 @@ export function askConnect(opts) {
 
   const read = () => ({ kind: /** @type {"text"} */ ("text"), text: input.value.trim(), url: urlInput.value.trim() });
   return openModal(dialog, (value) =>
-    value === "ok" ? read() : value === "first" ? { kind: /** @type {"first"} */ ("first") } : null
+    value === "ok" ? read() : value === "first" || value === "again" ? { kind: value } : null
   );
 }
 

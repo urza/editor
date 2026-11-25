@@ -609,6 +609,9 @@ async function start() {
     let message = "";
     let text = "";
     let url = sync.config.url;
+    // A device that stopped syncing comes back with one click. A join would
+    // fail there: the server knows this device (client.js STOPPED_KEY).
+    const stopped = await sync.stoppedServer();
     for (;;) {
       const answer = await askConnect({
         title: setup ? "Set up this device" : "Sync with a server",
@@ -620,6 +623,12 @@ async function start() {
         message,
         value: text,
         url,
+        again: stopped
+          ? {
+              label: "Sync again with " + stopped,
+              hint: "This device synced with this server before. It needs no invite.",
+            }
+          : undefined,
         first: setup
           ? { label: "This is my first device", hint: "It gets a name, keys and a recovery key. A server is optional." }
           : {
@@ -636,6 +645,7 @@ async function start() {
         },
       });
       if (!answer) return false;
+      if (answer.kind === "again") return sync.resume();
       if (answer.kind === "first") return setup ? setUpFirstDevice() : connectFirstDevice();
       const invite = decodeInvite(answer.text) ?? { url: answer.url, code: normalizeCode(answer.text), name: "", spaces: {} };
       const result = await joinWith(invite, isInvite(answer.text));
@@ -1283,7 +1293,9 @@ async function start() {
           {
             id: "yes",
             label: "Stop",
-            hint: "This device forgets its server. Your notes stay here. To sync again it joins with a code.",
+            // Not "joins again": the server keeps this device, and a second
+            // join of a known device fails. "connect" brings the sync back.
+            hint: "This device stops syncing. Your notes stay here. “connect” in Settings › Sync starts it again.",
           },
         ],
       });

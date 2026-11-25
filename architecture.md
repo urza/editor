@@ -3462,6 +3462,15 @@ five places in Settings and two different choosers. Now:
 - *A typed code* gives each space the mode Titles only, as an invite and
   `adopt` do. Before, such a join had no modes, and the default of
   `modeOf()` opened every note as a tab.
+- *Stop, and sync again.* "Stop syncing" deleted the server and the token,
+  and its text said that the device joins again with a code. That join
+  failed: the device id stays, and the server refuses an id that it knows
+  (409). "Stop" never removed the device from the server or from a space,
+  so the token is all that is missing. `disconnect()` now keeps the server
+  and the token in `sync.stopped`, and the connect dialog offers "Sync
+  again with <server>" (`resume()`). An invite for another server still
+  works there, and `saveConfig` then drops the kept token. To take a device
+  out of a space, untick it in the grid on another device.
 - The user decided against a link and a QR code for the invite: an app on
   the Home Screen of an iPhone has its own storage, so a link from the
   camera would join Safari and not the app.

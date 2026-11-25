@@ -550,7 +550,7 @@ const SECTIONS = [
         type: "action",
         key: "sync-disconnect",
         label: "Stop syncing this device",
-        hint: "Forgets the server. Notes stay here.",
+        hint: "Stops sync on this device. Notes stay here.",
         button: "stop",
         danger: true,
         visible: () => Boolean(sync?.isConfigured || sync?.needsUpgrade),
