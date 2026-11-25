@@ -1,6 +1,6 @@
 self.__PRECACHE = {
-  "version": "685586c7d6da",
-  "spellVersion": "6ebf48c2260d",
+  "version": "ef96887c60b1",
+  "spellVersion": "473062271b5f",
   "app": [
     "./",
     "./app.css",
@@ -170,7 +170,7 @@ self.__PRECACHE = {
   ],
   "spell": [
     "./vendor/dictionary-cs/index.aff",
-    "./vendor/dictionary-cs/index.dic",
+    "./vendor/dictionary-cs/index.dic.txt",
     "./vendor/dictionary-cs/license",
     "./vendor/harper/BinaryModule-Aj1vLnwf.js",
     "./vendor/harper/harper_wasm_slim_bg.wasm",

@@ -44,6 +44,15 @@ const UPDATE_TRIES_KEY = "vrtti.updateTries";
 // still works. Each one deletes the old caches, so a second one only fails
 // while the CDN still serves old files (Pages: max-age=600).
 const AUTO_TRIES = 2;
+// How long to wait for a newly discovered service worker to install and
+// activate before giving up on this check.
+const INSTALL_WAIT_MS = 30000;
+
+/** @param {string} source @returns {string | null} */
+function parseCommit(source) {
+  const match = /"commit":\s*"([^"]+)"/.exec(source);
+  return match ? match[1] : null;
+}
 
 /** The build on the server. @returns {Promise<string>} */
 async function liveCommit() {
@@ -52,9 +61,63 @@ async function liveCommit() {
   // would still get the cached, old file.
   const res = await fetch("./js/version.js?live=" + Date.now(), { cache: "no-store" });
   if (!res.ok) throw new Error("version.js: " + res.status);
-  const match = /"commit":\s*"([^"]+)"/.exec(await res.text());
-  if (!match) throw new Error("version.js has no commit");
-  return match[1];
+  const commit = parseCommit(await res.text());
+  if (!commit) throw new Error("version.js has no commit");
+  return commit;
+}
+
+/**
+ * The commit that Cache Storage currently serves for `./js/version.js`, or
+ * null if none is cached. Matches the exact lookup sw.js uses on reload so
+ * checkForUpdate can tell when a background SW install already completed.
+ * @returns {Promise<string | null>}
+ */
+async function cachedCommit() {
+  if (!("caches" in window)) return null;
+  try {
+    const hit = await caches.match("./js/version.js", { ignoreSearch: true });
+    if (!hit) return null;
+    return parseCommit(await hit.text());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when an active service worker is settled (nothing installing or
+ * waiting) and the cache sw.js reads on reload already holds `live`.
+ * @param {ServiceWorkerRegistration} reg
+ * @param {string} live
+ * @returns {Promise<boolean>}
+ */
+async function isLiveCached(reg, live) {
+  if (!reg.active || reg.installing || reg.waiting) return false;
+  return (await cachedCommit()) === live;
+}
+
+/**
+ * Check whether the `./sw.js` currently served by the network names a cache
+ * version this device does not already hold. Returns false when the CDN still
+ * serves the old sw.js (Pages: max-age=600) so checkForUpdate skips the 30 s
+ * wait instead of stalling for an `updatefound` that will never fire. Fails
+ * open (true) so WebKit on slow networks keeps the full 30 s window when a
+ * newer sw.js is actually live.
+ * @returns {Promise<boolean>}
+ */
+async function swHasUpdate() {
+  if (!("caches" in window)) return true;
+  try {
+    const res = await fetch("./sw.js", { cache: "no-store" });
+    if (!res.ok) return true;
+    const match = /sw-precache\.js\?v=([0-9a-f]+)(?:-([0-9a-f]+))?/.exec(await res.text());
+    if (!match) return true;
+    const keys = await caches.keys();
+    const hasApp = keys.includes("vrtti-" + match[1]);
+    const hasSpell = !match[2] || keys.includes("vrtti-spell-" + match[2]);
+    return !(hasApp && hasSpell);
+  } catch {
+    return true;
+  }
 }
 
 /** @returns {{commit: string, count: number}} */
@@ -77,25 +140,55 @@ function writeTries(tries) {
 }
 
 /**
- * Wait until a new service worker is active, or redundant, or `ms` passed.
- * @param {ServiceWorkerRegistration} reg @param {number} ms
+ * Wait until a new service worker is active, or redundant, or `ms` passes.
+ * @param {ServiceWorkerRegistration} reg
+ * @param {ServiceWorker | null} [before]
+ * @param {number} [ms]
  */
-function newWorkerSettled(reg, ms) {
+export function newWorkerSettled(reg, before = reg.active, ms = INSTALL_WAIT_MS) {
+  // Fast exit: the new worker already activated during await reg.update().
+  if (reg.active && reg.active !== before) return Promise.resolve(undefined);
   return new Promise((resolve) => {
-    const done = () => {
+    let settled = false;
+    /** @type {ServiceWorker | null} */
+    let watched = null;
+
+    const cleanup = () => {
       clearTimeout(timer);
+      reg.removeEventListener("updatefound", onUpdateFound);
+      if (watched) watched.removeEventListener("statechange", onStateChange);
+    };
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       resolve(undefined);
     };
-    const timer = setTimeout(done, ms);
+    const onStateChange = () => {
+      if (!watched || watched.state === "activated" || watched.state === "redundant") {
+        done();
+      }
+    };
     /** @param {ServiceWorker | null} worker */
     const follow = (worker) => {
+      if (reg.active && reg.active !== before) return done();
       if (!worker) return done();
-      worker.addEventListener("statechange", () => {
-        if (worker.state === "activated" || worker.state === "redundant") done();
-      });
+      // Check current state before attaching: a fast worker can already be
+      // activated or redundant before follow() runs, so statechange will not
+      // fire again.
+      if (worker.state === "activated" || worker.state === "redundant") return done();
+      watched = worker;
+      worker.addEventListener("statechange", onStateChange);
     };
-    if (reg.installing || reg.waiting) return follow(reg.installing ?? reg.waiting);
-    reg.addEventListener("updatefound", () => follow(reg.installing), { once: true });
+    const onUpdateFound = () => follow(reg.installing);
+
+    const timer = setTimeout(done, ms);
+    const existing = reg.installing ?? reg.waiting;
+    if (existing) {
+      follow(existing);
+      return;
+    }
+    reg.addEventListener("updatefound", onUpdateFound, { once: true });
   });
 }
 
@@ -104,11 +197,14 @@ function newWorkerSettled(reg, ms) {
  * short progress strings, then null when the caller should restore its
  * normal display. Resolves true when the page is about to reload.
  *
- * Without the service worker taking the new build in 30 seconds, the old
- * caches go before the reload: the page then loads each file from the
- * network, and the service worker installs the new build at its next check.
+ * When a background worker already cached the live build, this reloads at
+ * once. When the CDN still serves the old sw.js (or a new worker fails to
+ * activate within 30 seconds and nothing is still installing), old app caches
+ * are cleared before reload so the page loads fresh files from the network.
+ * While a worker is still installing on a slow connection, caches stay intact
+ * and the reload waits for a later check.
  * @param {(msg: string | null) => void} [onStatus]
- * @param {{beforeReload?: () => Promise<void>, auto?: boolean}} [opts]
+ * @param {{beforeReload?: () => Promise<void>, auto?: boolean, installWaitMs?: number}} [opts]
  *   beforeReload: save what waits in a debounce. auto: the check at start or
  *   on return, which stops after AUTO_TRIES reloads for one build.
  */
@@ -141,18 +237,40 @@ export async function checkForUpdate(onStatus = () => {}, opts = {}) {
   const reg = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
   let took = false;
   if (reg) {
-    const before = reg.active;
-    try {
-      await reg.update();
-      await newWorkerSettled(reg, 30000);
-      took = Boolean(reg.active && reg.active !== before);
-    } catch (err) {
-      console.log("[vrtti] service worker update failed:", err);
+    // Fast path: index.html registers sw.js at boot, so on fast internet the
+    // new worker often installs and activates before autoUpdate (3 s) or a
+    // manual click runs. If the active cache already serves `live`, reload at
+    // once instead of waiting on a reg.update() that finds no newer sw.js and
+    // wiping the freshly populated cache.
+    if (await isLiveCached(reg, live)) {
+      took = true;
+    } else {
+      const before = reg.active;
+      try {
+        await reg.update();
+        if ((reg.active && reg.active !== before) || (await isLiveCached(reg, live))) {
+          took = true;
+        } else if (reg.installing || reg.waiting || (await swHasUpdate())) {
+          await newWorkerSettled(reg, before, opts.installWaitMs);
+          took = Boolean(reg.active && reg.active !== before) || (await cachedCommit()) === live;
+        }
+      } catch (err) {
+        console.log("[vrtti] service worker update failed:", err);
+      }
     }
+  }
+  if (!took && reg && (reg.installing || reg.waiting)) {
+    // A worker is still installing on a slow connection. Deleting every
+    // vrtti-* cache mid-install would orphan the new worker's own precache
+    // and break offline launches once it activates; let it finish instead.
+    console.log("[vrtti] service worker is still installing; keeping caches");
+    onStatus("still updating in background");
+    clear();
+    return false;
   }
   if (!took && "caches" in window) {
     // Keep both the emoji cache and the content-addressed spellcheck cache so
-    // a slow-network update fallback never discards 12 MB of dictionaries (C4).
+    // a slow-network update fallback never discards 8.9 MB of dictionaries (C4).
     for (const name of await caches.keys()) {
       if (
         name.startsWith("vrtti-") &&

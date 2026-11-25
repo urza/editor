@@ -3,10 +3,10 @@
 // app files change. gen_sw.py also writes the version into the line below,
 // so this file changes with every build: an iPhone ignored a change of the
 // imported sw-precache.js alone and kept an old build. Do not drop the ?v=.
-importScripts("./sw-precache.js?v=685586c7d6da-6ebf48c2260d");
+importScripts("./sw-precache.js?v=ef96887c60b1-473062271b5f");
 
 const CACHE = "vrtti-" + self.__PRECACHE.version;
-// Spellcheck WASM + Czech dictionary (~12.1 MB on the wire) live in their own
+// Spellcheck WASM + Czech dictionary (~8.9 MB on the wire) live in their own
 // content-addressed cache so app-only deploys keep offline spellcheck intact
 // without re-downloading unchanged dictionaries on every release (C4).
 const SPELL_CACHE = "vrtti-spell-" + self.__PRECACHE.spellVersion;
@@ -74,6 +74,14 @@ self.addEventListener("fetch", (event) => {
     // seen emoji is served from EMOJI_CACHE here.
     caches.match(req, { ignoreSearch: true }).then((hit) => {
       if (hit) return hit;
+      // Compatibility alias while open tabs from before the index.dic ->
+      // index.dic.txt rename load Czech spellcheck lazily after
+      // clients.claim() deletes the old spell cache.
+      if (url.pathname.endsWith("/vendor/dictionary-cs/index.dic")) {
+        return caches
+          .match("./vendor/dictionary-cs/index.dic.txt")
+          .then((dic) => dic || fetch("./vendor/dictionary-cs/index.dic.txt"));
+      }
       // First sighting of this emoji: fetch it and keep it, so it works
       // offline from now on.
       if (url.pathname.includes(EMOJI_PATH)) {
