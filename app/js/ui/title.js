@@ -1,6 +1,6 @@
 // @ts-check
-// The window title: "<buffer> - vrtti", with the file's place inside its
-// folder when it has one, so the taskbar button and the tab say what is on
+// The window title: "<buffer> - vrtti", with the full path of a file on disk
+// in the desktop shell, or the file's place inside its folder in a browser, so the taskbar button and the tab say what is on
 // screen (the user asked for a title that fills the taskbar button). The
 // browser tab takes document.title; the desktop shell has its own native
 // title, set through the bridge.
@@ -25,13 +25,19 @@ export function mountTitle(store, { secondary = false, space = "" } = {}) {
     const record = store.activeId ? store.get(store.activeId) : undefined;
     let text = space ? "(" + space + ") - " + app : app;
     if (record) {
-      // A Space Window always marks its space name; elsewhere show the
-      // folder-relative path when the file came from a folder (§2, §28).
-      const place = space
-        ? " (" + space + ")"
+      // A file on disk shows where it is. The desktop shell knows the full
+      // path, and the user asked for it in the title: two files with one name
+      // in two folders looked the same in the taskbar. A browser knows only
+      // the path inside a picked folder, so that stays the fallback (§2, §17).
+      const full = store.fullPath(record);
+      const path = full
+        ? " (" + full + ")"
         : record.file?.path && record.file.path !== record.file.name
           ? " (" + record.file.path + ")"
           : "";
+      // A Space Window always marks its space name (§28). A file there keeps
+      // its full path too.
+      const place = space ? (full ? path : "") + " (" + space + ")" : path;
       text = titleOf(record) + place + " - " + app;
     }
     // Every keystroke emits "change"; only a changed title reaches the shell.

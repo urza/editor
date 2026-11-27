@@ -223,7 +223,7 @@ td small { display: block; color: var(--dim); font-size: 12.5px; margin-top: 3px
 
       <tr class="group"><td colspan="2">Delete</td></tr>
       <tr><td>“Move to trash” on a local note</td><td><span class="to t-trash">Trash</span><small>No dialog asks first. If the note is a tab, the tab closes and the next tab takes the screen.</small></td></tr>
-      <tr><td>“Move to trash” on a synced note</td><td><span class="to t-trash">Trash</span> + <span class="to t-trash">Trash on the other devices</span><small>The menu shows “Deletes in &lt;space&gt; · 30-day Trash on this device”. The device keeps a copy in Trash and sends a deleted mark. Offline, the mark waits and goes out at the next sync.</small></td></tr>
+      <tr><td>“Move to trash” on a synced note</td><td><span class="to t-trash">Trash</span> + <span class="to t-trash">Trash on the other devices</span><small>The menu shows “Trashed for everyone in &lt;space&gt; · 30 days”. The device keeps a copy in Trash and sends a deleted mark. Offline, the mark waits and goes out at the next sync.</small></td></tr>
       <tr><td>“Move to trash” on a title row</td><td><span class="to t-trash">Trash</span><small>The device first gets the text from the server, so it can keep a copy in Trash. Offline, it refuses and shows “offline: cannot trash unopened server note”.</small></td></tr>
       <tr><td>“Remove from list” on a file</td><td><span class="to t-none">off the list</span><small>A file never goes to Trash. The file on disk stays, and vrtti forgets only its own record. For a synced file, the device sends a detached mark, so the other devices keep their copies as local notes. vrtti blocks the action while the file has text that is not on disk yet.</small></td></tr>
       <tr><td>A local note stays 30 days in Recent</td><td><span class="to t-trash">Trash</span><small>The device checks once at each start. The note then stays 30 more days in Trash.</small></td></tr>
@@ -236,8 +236,6 @@ td small { display: block; color: var(--dim); font-size: 12.5px; margin-top: 3px
       <tr><td>A note stays 30 days in Trash</td><td><span class="to t-gone">Gone</span><small>The device checks once at each start.</small></td></tr>
       <tr><td>Open a file whose note is in Trash</td><td><span class="to t-open">Open</span><small>Trash never touches the file on disk. Opening the file takes its record out of Trash, with no copy.</small></td></tr>
 
-      <tr class="group"><td colspan="2">Sync</td></tr>
-      <tr><td>“Stop syncing” a note</td><td><span class="to t-none">stays, now local</span><small>A detached mark tells the other devices. If the note is closed, it moves from its space drawer to Recent.</small></td></tr>
     </tbody>
   </table></div>
 
@@ -290,7 +288,7 @@ td small { display: block; color: var(--dim); font-size: 12.5px; margin-top: 3px
       <tr><td>Edits a note that B moved to Trash while offline</td><td><span class="to t-none">back in its space</span><small>A's edit reaches B before B's deleted mark goes out. The newer edit wins, and the note leaves B's Trash. It goes back to a tab or to a title row. If B had edits from before the trash, they survive as a conflict copy.</small></td></tr>
       <tr><td>Uses “Restore to &lt;space&gt;” after the delete reached the server</td><td><span class="to t-open">Open</span> or <span class="to t-space">title row</span><small>The restored note has a new id, so B gets it as a new note (see “Makes a new synced note”). B's old copy stays in B's Trash until B deletes it or 30 days pass.</small></td></tr>
       <tr><td>Uses “Restore as local”</td><td><span class="to t-none">nothing</span><small>The restored note is local on A. B never hears of it.</small></td></tr>
-      <tr><td>Stops syncing a note, or uses “Remove from list” on a synced file</td><td><span class="to t-none">stays, now local</span><small>“Stop syncing” is not delete. B keeps its copy with sync off. If B's copy is closed, it moves from the space drawer to Recent, and its 30 days start then.</small></td></tr>
+      <tr><td>Uses “Remove from list” on a synced file</td><td><span class="to t-none">stays, now local</span><small>This is not a delete. B keeps its copy with sync off. If B's copy is closed, it moves from the space drawer to Recent, and its 30 days start then.</small></td></tr>
       <tr><td>Moves a note to another space that B is in</td><td><span class="to t-none">follows the note</span><small>B's copy moves to the drawer of the new space, or stays open as a tab.</small></td></tr>
       <tr><td>Moves a note to a space that B is not in</td><td><span class="to t-trash">Trash</span><small>B lost access to the note, so its copy goes to Trash.</small></td></tr>
       <tr><td>Removes B from a space (or B leaves it)</td><td><span class="to t-trash">Trash</span><small>Each note of that space on B goes to Trash, and its title rows go. A Space Window of that space closes.</small></td></tr>

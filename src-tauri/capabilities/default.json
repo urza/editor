@@ -29,6 +29,7 @@
     "allow-disk-read-bytes",
     "allow-disk-write",
     "allow-disk-rename",
+    "allow-disk-reveal",
     "allow-disk-prune"
   ]
 }

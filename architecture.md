@@ -113,6 +113,12 @@ Server model, Dropbox-like and thin:
 - Tombstones have two kinds. `deleted`: other devices remove their copy.
   `detached`: the doc left sync; other devices keep their copy as a local doc.
   "Stop syncing" is not "delete", and nothing is lost.
+  (2026-11-27: the note action "Stop syncing" is removed. One click on one
+  device turned the note into separate local copies on every device, a
+  "Titles only" device kept no copy, and the label read as a pause for this
+  device. A note now leaves its space through "Move to trash" and "Restore as
+  local". The `detached` kind stays for a synced file ("Remove from list",
+  `sealSynced`) and for a mark from an older build.)
 - The client keeps a sync cursor and an outbox of dirty docIds in IndexedDB.
   It pulls changes since the cursor, then pushes.
   Triggers: app start, window focus, coming online, slow timer. Polling is enough.
@@ -1390,7 +1396,8 @@ the settings store. `sync.deviceId` is minted once. `sync.cursor` is the seq.
 - Status events `{ state: 'off' | 'idle' | 'syncing' | 'error' | 'offline',
   message, lastSyncAt }` drive the statusbar state sign, together with the
   open note's own `sync.dirty` and `rev`; click runs `sync.now`.
-- Commands: `doc.sync.on`, `doc.sync.off` (pushes a `detached` tombstone),
+- Commands: `doc.sync.on` (`doc.sync.off`, which pushed a `detached`
+  tombstone, is removed since 2026-11-27),
   `sync.now`, `sync.all` (attach every open doc), `doc.history`.
 - Settings Sync section: server URL and token as text rows (the panel gains a
   `text` item kind, password style for the token), status row, "Test
@@ -2141,6 +2148,7 @@ disk_read(root, path)              -> { text }          (UTF-8, lossy like File.
 disk_read_bytes(root, path)        -> raw bytes         (tauri::ipc::Response)
 disk_write(root, path, text)       -> { mtime }         (atomic, creates the file)
 disk_rename(root, path, newName)   -> { path, name }    (same directory; `exists` when taken)
+disk_reveal(root, path)            -> nothing           (the file manager shows the file; 2026-11-27)
 disk_prune(keep: [rootId])         -> dropped count
 
 Root = { id, kind: "file" | "directory", name, path }   (path absolute, for display)
@@ -3106,7 +3114,7 @@ modes and owns the cursor resets, the detach and the stub removal),
 rejects a name the server would. `model/docs.js`: the `remotes` map
 loaded at start and shared through the `remote` message; the stub
 rules in `applyRemote` (unknown id in a `list` space, the unreceived
-space as detach); `sync.space` set by `setSync(id, true, space)`, by
+space as detach); `sync.space` set by `attachSync(id, space)`, by
 `create` under the default and by `adoptRemote`; `space` in
 `pushPayload`; `detachSpace(space)`; `createFromChange(change, ws)`
 factored out of the unknown-id branch and reused by `remote.open`;
@@ -3539,7 +3547,7 @@ dialog with "Open Settings" and "OK".
   position its recipients came from; `this-device` for a `.age` file and a
   local note. IndexedDB v7 turned `all-devices` into one of the two.
 - A note that starts to sync is encrypted at once, also when empty
-  (`sealForSpace`). A note that leaves sync (Stop syncing, a restore from the
+  (`sealForSpace`). A note that leaves sync (a `detached` mark, a restore from the
   trash, a conflict copy) turns back into plain text (`toLocal`).
 - Sealed meta: `meta.sealed` is one age blob for the same recipients, with
   `{line, origin, title?, lang?, langSource?, pin?, spellOff}`. `spellOff`
@@ -3720,7 +3728,8 @@ version changes are required (IndexedDB remains v8 with optional record fields).
     the record and handle (pushing `detached` first if synced). Records with
     `file.unwritten` are blocked everywhere (`rowMenu`, Delete mode,
     `Shift+click ×`, `doc.trash`) with `"Unsaved text is not on disk; reconnect
-    or Unlink file first"`.
+    or Unlink file first"`. The `rowMenu` hint says it shorter (`"Text not on
+    disk. Reconnect or unlink."`), because a menu hint has one line.
   - Trashing or permanently deleting a PIN-locked note asks the PIN first.
 
 ### Offline sync state machine and Restore (`model/docs.js`)

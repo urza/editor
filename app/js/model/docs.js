@@ -61,7 +61,7 @@ import {
   saveFilePicker,
   writeFile,
 } from "../storage/fsa.js";
-import { isNativeHandle, pickFile } from "../storage/native.js";
+import { isNativeHandle, pickFile, reveal } from "../storage/native.js";
 import { isDesktop } from "./capabilities.js";
 import * as codec from "./codec.js";
 import { deviceId } from "./device.js";
@@ -740,7 +740,8 @@ export function createDocStore({
     if (record.sync) {
       record.updatedAt = now;
       if (record.sync.tombstone === "detached") {
-        // User already clicked Stop syncing ("the text stays on every device"):
+        // A detach already waits (a synced file, or "Stop syncing" of a build
+        // before 2026-11-27, which promised that the text stays everywhere):
         // never turn a pending detach into a space-wide delete (§28).
         if (record.sync.rev > 0) {
           record.sync = { ...record.sync, dirty: true };
@@ -1964,9 +1965,32 @@ export function createDocStore({
    */
   function diskPath(record) {
     if (!record || !record.file) return "";
+    return fullPath(record) || record.file.path || record.file.name;
+  }
+
+  /**
+   * The absolute path of this buffer's file, or "" when the device does not
+   * know it. Only the desktop shell knows: a browser file handle never tells
+   * the page where its file is (architecture.md §17). "Copy full path" and
+   * the window title ask this, and show nothing for "".
+   * @param {BufferRecord | undefined} record @returns {string}
+   */
+  function fullPath(record) {
     const handle = handleFor(record);
-    if (isNativeHandle(handle)) return handle.fullPath;
-    return record.file.path || record.file.name;
+    return isNativeHandle(handle) ? handle.fullPath : "";
+  }
+
+  /**
+   * Show this buffer's file in the file manager of the system ("Open
+   * location"). Desktop shell only, and only a shell new enough to have the
+   * command (capabilities.js canReveal). Rejects when the file is gone.
+   * @param {BufferRecord | undefined} record @returns {Promise<boolean>}
+   */
+  async function revealFile(record) {
+    const handle = handleFor(record);
+    if (!isNativeHandle(handle)) return false;
+    await reveal(handle);
+    return true;
   }
 
   /**
@@ -2323,7 +2347,7 @@ export function createDocStore({
    * caller with the record untouched (architecture.md §19).
    *
    * @param {string} id @param {'this-device'} [preset]  Synced notes are
-   *   encrypted by setSync, never through here.
+   *   encrypted by attachSync, never through here.
    * @returns {Promise<BufferRecord | null>}
    */
   async function encrypt(id, preset = "this-device") {
@@ -2745,46 +2769,42 @@ export function createDocStore({
    */
 
   /**
-   * Attach or detach a server target (architecture.md §3 "What syncs").
+   * Attach a record to a server target (architecture.md §3 "What syncs").
    *
-   * Detaching does not remove `sync`: the other devices have to be told, and
-   * that is a push like any other. The record loses its `sync` only after that
-   * push lands, in clearSync().
+   * There is no detach for a note here any more: "Stop syncing" left the row
+   * menu on 2026-11-27, because one click on one device turned the note into
+   * separate local copies on every device. A note leaves its space through
+   * the Trash (and "Restore as local"). The `detached` tombstone itself
+   * stays: a synced file uses it (trashBuffer, sealSynced), and applyRemote
+   * still obeys one from an older build.
    *
-   * @param {string} id @param {boolean} on
+   * @param {string} id
    * @param {string} [space] Where a new sync goes; the device's default
    *   space when absent (§25). An existing sync keeps its space: a move is
    *   move(), never a second "Sync to".
    */
-  async function setSync(id, on, space) {
+  async function attachSync(id, space) {
     const record = buffers.get(id);
     if (!record) return null;
-    if (on) {
-      // An already attached record is left alone: overwriting its rev with 0
-      // would make the next push claim a revision the server passed long ago.
-      if (!record.sync && isSystemRecord(record)) {
-        // The device directory is no note: it is plain JSON in its own space,
-        // and the server lets it through as the one exception (§27). The
-        // shared settings live in the same space, as an age file (§29).
-        record.sync = { rev: 0, dirty: true, space: KEYRING_SPACE };
-      } else if (!record.sync) {
-        const target = space ?? spaces.defaultSpace();
-        if (!target) throw new Error("sync: this device is in no space");
-        // Each synced note is encrypted (§27). A file turns into an `.age`
-        // file first; the command asked the user (§19).
-        if (record.file && !record.enc) await encrypt(id, "this-device");
-        await sealForSpace(record, target);
-      }
-      else if (record.sync.tombstone) {
-        // Turned off and on again before the tombstone was pushed. The last
-        // click wins, so the pending detach is dropped instead of being sent
-        // and then undone by a second attach.
-        delete record.sync.tombstone;
-        record.sync.dirty = true;
-      }
-    } else {
-      if (!record.sync) return null;
-      record.sync.tombstone = "detached";
+    // An already attached record is left alone: overwriting its rev with 0
+    // would make the next push claim a revision the server passed long ago.
+    if (!record.sync && isSystemRecord(record)) {
+      // The device directory is no note: it is plain JSON in its own space,
+      // and the server lets it through as the one exception (§27). The
+      // shared settings live in the same space, as an age file (§29).
+      record.sync = { rev: 0, dirty: true, space: KEYRING_SPACE };
+    } else if (!record.sync) {
+      const target = space ?? spaces.defaultSpace();
+      if (!target) throw new Error("sync: this device is in no space");
+      // Each synced note is encrypted (§27). A file turns into an `.age`
+      // file first; the command asked the user (§19).
+      if (record.file && !record.enc) await encrypt(id, "this-device");
+      await sealForSpace(record, target);
+    } else if (record.sync.tombstone) {
+      // A detach still waits to be pushed (a build before 2026-11-27 had
+      // "Stop syncing"). The last click wins, so the pending detach is
+      // dropped instead of being sent and then undone by a second attach.
+      delete record.sync.tombstone;
       record.sync.dirty = true;
     }
     await persist({ ...record });
@@ -5113,7 +5133,7 @@ export function createDocStore({
     forkConflict,
     // The sync surface (architecture.md §13.6). The client owns the network
     // and the schedule; every one of these owns a rule about records.
-    setSync,
+    attachSync,
     clearSync,
     clearPurge,
     applyRemote,
@@ -5137,6 +5157,8 @@ export function createDocStore({
     canEncryptFile,
     renameFile,
     diskPath,
+    fullPath,
+    revealFile,
     createFromFile,
     saveAs,
     saveNow,

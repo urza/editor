@@ -1173,7 +1173,10 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   position: fixed;
   z-index: 40;
   min-width: calc(170px * var(--ui-scale));
-  max-width: calc(260px * var(--ui-scale));
+  /* Wide enough for a hint of about 44 characters on one line, and never
+     wider than the window less the 4px gap that place() keeps on each side
+     (ui/menu.js). */
+  max-width: min(calc(340px * var(--ui-scale)), calc(100vw - 8px));
   padding: 4px;
   border: 1px solid var(--st-selection-border);
   border-radius: 4px;
@@ -1312,6 +1315,29 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   line-height: 1.4;
 }
 
+/* Icons of the note menus (ui/icons.js). The icon sits in the check column,
+   which a menu with icons widens to the icon; `inherit` gives the icon the
+   color of its item (one color, red on a danger item) and not the accent of
+   the check mark. The slot is as high as the first line of the label, so the
+   icon centers on the label and not on label plus hint. */
+.menu.has-icons .menu-check { flex-basis: var(--ui-icon-sm); }
+.menu-icon-slot {
+  display: flex;
+  align-items: center;
+  height: 1.4em;
+  color: inherit;
+}
+.menu-icon {
+  width: var(--ui-icon-sm);
+  height: var(--ui-icon-sm);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.8;
+}
+
 .menu-text {
   flex: 1;
   min-width: 0;
@@ -1332,8 +1358,14 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   font-variant-numeric: tabular-nums;
 }
 
+/* One line, always: a wrapped hint makes its row a third taller. The menu
+   grows to its max-width first; a longer hint (a long space name) is cut
+   with an ellipsis. Keep hint texts in ui/sidebar.js to about 40 characters. */
 .menu-hint {
   display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   margin-top: 2px;
   font-size: var(--ui-xs);
   line-height: 1.4;

@@ -1488,8 +1488,8 @@ export function createSyncClient({ store, keyring }) {
   }
 
   async function ensureKeyringSynced() {
-    if (keyringNeedsAttach()) await store.setSync(KEYRING_ID, true, KEYRING_SPACE);
-    if (settingsNeedAttach()) await store.setSync(SETTINGS_ID, true, KEYRING_SPACE);
+    if (keyringNeedsAttach()) await store.attachSync(KEYRING_ID, KEYRING_SPACE);
+    if (settingsNeedAttach()) await store.attachSync(SETTINGS_ID, KEYRING_SPACE);
   }
 
   /** Pull, then push. Single-flight; a call during a run buys one more run. */
