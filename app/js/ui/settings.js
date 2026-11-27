@@ -89,7 +89,7 @@ function spellSummary() {
  * @property {string} [key]    Stable id. Becomes data-key, for tests and for
  *                             the future settings store.
  * @property {string} [label]  Left-hand text of a row (or heading text of a subhead).
- * @property {string} [hint]   Short line under the label (1-2 lines on a phone).
+ * @property {string | (() => string)} [hint]   Short line under the label (1-2 lines on a phone).
  * @property {string} [more]   Optional extra explanation hidden behind an inline (i) button.
  * @property {() => any} [get]        toggle: the state. text/select: the value.
  * @property {(value?: any) => any} [set]  toggle: dispatch the flip. text/select:
@@ -104,13 +104,13 @@ function spellSummary() {
  * @property {string} [placeholder]   text: empty-field hint.
  * @property {string} [invalid]       text: shown under the hint when `set`
  *                             answers false, so a refused value says why.
- * @property {() => string | Promise<string>} [value]    info (and action):
+ * @property {(repaint?: () => void) => string | Promise<string>} [value]    info (and action):
  *                             right-hand text.
  * @property {boolean} [block]        info: the value is a key or a code, so
  *                             it takes its own line in an inset block.
  * @property {() => boolean | Promise<boolean>} [visible] Hide the row when false.
  * @property {string} [button]                           action: single button label.
- * @property {boolean} [danger]                          action: danger styling and top rule.
+ * @property {boolean} [danger]                          action: danger styling and red-bordered box.
  * @property {(repaint: () => void) => any} [act]        action: single button dispatch.
  *                             An action that reports progress calls `repaint`
  *                             at each step.
@@ -406,7 +406,7 @@ const SECTIONS = [
         type: "action",
         key: "spell-page",
         label: "Spellcheck rules and words",
-        hint: "Rules of the English checker, and your own words.",
+        hint: "English rules and words. Syncs.",
         more:
           "Turn single rules on or off, and keep a list of words that neither language marks. " +
           "With sync set up, these settings go to all your devices.",
@@ -448,33 +448,8 @@ const SECTIONS = [
         set: () => run("spell.lang", "en"),
       },
       // Only where "Add diacritics (vllm)" exists: the sync server has a model.
-      // Asked again on each paint, so opening Settings is the way to see if
-      // vLLM came up; the server checks vLLM live, at most every 30 seconds.
-      // The menu entry stays when the model does not answer: vLLM can start
-      // after the app, and a hidden entry would need a reload to come back.
-      {
-        type: "subhead",
-        key: "model-heading",
-        label: "Diacritics model (server)",
-        visible: () => Boolean(sync?.hasModel),
-      },
-      {
-        type: "info",
-        key: "model-state",
-        label: "Model",
-        hint: "Server model for Add diacritics.",
-        more: "The sync server checks vLLM live when you open Settings (at most every 30 seconds).",
-        visible: () => Boolean(sync?.hasModel),
-        value: async () => {
-          await sync?.probeModel();
-          const m = sync?.modelState;
-          // A server from before the check sends no state.
-          if (!m) return sync?.hasModel ? "set" : "not set";
-          if (m.state === "answers") return `${m.name}, answers`;
-          if (m.state === "name not served") return `vLLM answers, but does not serve “${m.name}”`;
-          return `not answering${m.why ? ` (${m.why})` : ""}`;
-        },
-      },
+      // Server model status lives in Sync › vLLM model; Editor keeps only this
+      // device-local diacritics behavior toggle.
       {
         type: "toggle",
         key: "model-czech",
@@ -545,6 +520,35 @@ const SECTIONS = [
             },
           },
         ],
+      },
+      // Server-side vLLM status: asked again on each paint (the server checks
+      // vLLM live at most every 30 seconds), so opening Settings shows whether
+      // the model is configured and answering.
+      {
+        type: "info",
+        key: "model-state",
+        label: "vLLM model",
+        hint: "Server model for Czech diacritics.",
+        more:
+          "Used by “Add diacritics (vllm)” to restore missing Czech diacritics. " +
+          "Configure it on your sync server by passing -e VRTTI_MODEL_URL=http://<host>:8000/v1 and " +
+          "-e VRTTI_MODEL_NAME=<model> (plus -e VRTTI_MODEL_KEY if needed) to docker run. " +
+          "Checked live when you open Settings (at most every 30 seconds).",
+        visible: () => Boolean(sync?.isConfigured),
+        value: async (repaint) => {
+          const hadModel = Boolean(sync?.hasModel);
+          await sync?.probeModel();
+          // If the server gained or lost a model since startup, repaint so
+          // Editor's diacritics toggle follows without reopening Settings.
+          if (Boolean(sync?.hasModel) !== hadModel) repaint?.();
+          if (!sync?.hasModel) return "not configured";
+          const m = sync.modelState;
+          // A server from before the check sends no state.
+          if (!m) return "configured";
+          if (m.state === "answers") return `${m.name}, answers`;
+          if (m.state === "name not served") return `vLLM answers, but does not serve “${m.name}”`;
+          return `not answering${m.why ? ` (${m.why})` : ""}`;
+        },
       },
       {
         type: "action",
@@ -619,10 +623,12 @@ const SECTIONS = [
         type: "action",
         key: "sync-all",
         label: "Sync every open note",
-        hint: "Syncs local notes in Open.",
-        more:
-          "Turns on sync for each note in this window's Open list, into the New notes space " +
-          "(or a space you pick when set to Local only). Notes in Recent and files stay as they are.",
+        hint: () => {
+          const space = sync?.defaultSpace();
+          return space
+            ? `To “${space}”. Skips Recent and files.`
+            : "You will pick a space. Skips Recent and files.";
+        },
         button: "sync all",
         visible: () => Boolean(sync?.isConfigured && sync.mySpaces().length),
         act: () => run("sync.all"),
@@ -639,24 +645,27 @@ const SECTIONS = [
     },
     items: [
       {
-        type: "action",
+        type: "info",
         key: "device-name",
         label: "This device",
-        hint: "Name shown on other devices.",
-        more:
-          "“invite a device” makes an invite for a new device: a text to paste there, and a code to type. " +
-          "The new device joins this server and gets the spaces you tick.",
+        hint: "Shown on other devices. Cannot be changed.",
+        more: "The device name is part of its signed identity in your spaces, so it is fixed at setup.",
         visible: () => Boolean(sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
-        actions: [
-          {
-            // Available even with no space: the new device joins the server,
-            // and the grid adds it once this device has a space.
-            key: "device-invite",
-            button: "invite a device",
-            act: () => run("device.invite"),
-          },
-        ],
+      },
+      {
+        // Available even with no space: the new device joins the server,
+        // and the grid adds it once this device has a space.
+        type: "action",
+        key: "device-invite",
+        label: "Invite a device",
+        hint: "Add another device to this server.",
+        more:
+          "Makes an invite text to paste on the new device, and a code to type. " +
+          "The new device joins this server and gets the spaces you tick.",
+        button: "invite",
+        visible: () => Boolean(sync?.isConfigured),
+        act: () => run("device.invite"),
       },
       {
         type: "note",
@@ -716,7 +725,7 @@ const SECTIONS = [
         type: "info",
         key: "security-device-name",
         label: "This device",
-        hint: "Name stored with this key.",
+        hint: "Name stored with this key. Cannot be changed.",
         visible: () => Boolean(keyring?.isSetUp && !sync?.isConfigured),
         value: () => keyring?.deviceName ?? "",
       },
@@ -885,7 +894,7 @@ const SECTIONS = [
  * one or two lines; optional longer `more` text hides behind an inline "i"
  * button so normal scanning stays compact on phones.
  * @param {string} label
- * @param {string} [hint]
+ * @param {string | (() => string)} [hint]
  * @param {string} [more]
  */
 function labelBlock(label, hint, more) {
@@ -900,7 +909,7 @@ function labelBlock(label, hint, more) {
   if (hint) {
     const small = document.createElement("p");
     small.className = "settings-hint";
-    small.textContent = hint;
+    small.textContent = typeof hint === "function" ? hint() : hint;
     wrap.appendChild(small);
   }
   if (more) {
@@ -1447,7 +1456,7 @@ function makeRow(item, refresh) {
     value.className = "settings-value";
     paintOwn = () => {
       // A sync value renders at once; a promise fills the span when it lands.
-      Promise.resolve(item.value ? item.value() : "").then((text) => {
+      Promise.resolve(item.value ? item.value(refresh) : "").then((text) => {
         value.textContent = text;
       });
     };
@@ -1484,7 +1493,7 @@ function makeRow(item, refresh) {
     }
     paintOwn = () => {
       if (valueEl) {
-        Promise.resolve(item.value ? item.value() : "").then((text) => {
+        Promise.resolve(item.value ? item.value(refresh) : "").then((text) => {
           if (valueEl) valueEl.textContent = text;
         });
       }
@@ -1495,7 +1504,9 @@ function makeRow(item, refresh) {
     row.appendChild(controls);
   }
 
+  const hintEl = typeof item.hint === "function" ? row.querySelector(":scope > .settings-label > .settings-hint, :scope > .settings-list-header > .settings-label > .settings-hint, :scope > .settings-details > .settings-details-summary > .settings-label > .settings-hint") : null;
   const paint = () => {
+    if (hintEl && typeof item.hint === "function") hintEl.textContent = item.hint();
     paintOwn();
     if (!item.visible) return;
     Promise.resolve(item.visible()).then((show) => {
@@ -1609,17 +1620,41 @@ export function mountSettings(deps = {}) {
    */
   const entries = [];
 
-  // Which section the reader is in: the last one that starts under the
-  // sticky head. Once the panel is scrolled to its end, the last visible
-  // section takes the mark, or a short bottom section could never have it. A
-  // panel that does not scroll at all marks the first.
+  // Give the last visible section enough scroll room below it to reach the
+  // sticky head. Without this tail, short bottom sections (Security, Storage,
+  // App) can never reach the head and the atEnd fallback jumps the orange mark
+  // straight from Devices to App, skipping the sections in between.
+  function updateTail() {
+    if (panel.hidden || subPage) return;
+    const shown = entries.filter((entry) => !entry.element.hidden);
+    if (shown.length === 0) return;
+    const panelRect = panel.getBoundingClientRect();
+    if (panelRect.height === 0) return;
+    const headHeight = head.getBoundingClientRect().height;
+    const last = shown[shown.length - 1].element;
+    const lastRect = last.getBoundingClientRect();
+    const naturalBottom = lastRect.bottom - panelRect.top + panel.scrollTop;
+    const panelPadBottom = parseFloat(getComputedStyle(panel).paddingBottom) || 0;
+    const overflows = naturalBottom + panelPadBottom > panel.clientHeight + 1;
+    // + 2 px absorbs subpixel rounding on scaled displays so scrolling to the
+    // end always moves the last section's top past headBottom.
+    const tail = overflows
+      ? Math.max(0, Math.ceil(panel.clientHeight - headHeight - lastRect.height - panelPadBottom) + 2)
+      : 0;
+    const next = tail > 0 ? tail + "px" : "";
+    if (main.style.paddingBottom !== next) main.style.paddingBottom = next;
+  }
+
+  // Which section the reader is in: the last one whose top has reached the
+  // sticky head. With updateTail() sizing the bottom scroll room, every
+  // visible section passes under the head in order as the user scrolls down.
   function markCurrent() {
     const shown = entries.filter((entry) => !entry.element.hidden);
     if (shown.length === 0) return;
-    const top = panel.scrollTop + head.offsetHeight + 1;
+    const headBottom = head.getBoundingClientRect().bottom;
     let current = shown[0];
     for (const entry of shown) {
-      if (entry.element.offsetTop <= top) current = entry;
+      if (entry.element.getBoundingClientRect().top <= headBottom + 2) current = entry;
     }
     const scrolls = panel.scrollHeight > panel.clientHeight + 1;
     const atEnd = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 1;
@@ -1665,6 +1700,30 @@ export function mountSettings(deps = {}) {
     },
     { passive: true },
   );
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      if (!panel.hidden && !subPage) {
+        updateTail();
+        markCurrent();
+      }
+    }).observe(panel);
+  }
+  panel.addEventListener(
+    "toggle",
+    () => {
+      updateTail();
+      markCurrent();
+    },
+    true,
+  );
+  panel.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest(".settings-info-btn")) {
+      requestAnimationFrame(() => {
+        updateTail();
+        markCurrent();
+      });
+    }
+  });
 
   // Hoisted on purpose: the rows below take it as their repaint hook.
   function refresh() {
@@ -1698,6 +1757,7 @@ export function mountSettings(deps = {}) {
           lastVisibleGroup = entry.section.group;
         }
       }
+      updateTail();
       markCurrent();
     }, 0);
   }
