@@ -1397,7 +1397,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   overflow-y: auto;
   /* Keyboard focus scrolls a row out from under the sticky head. */
   scroll-padding-top: var(--ui-top-h);
-  padding: 0 24px 48px;
+  padding: 0 24px 36px;
   background: var(--st-ui-bg);
   color: var(--st-text-fg);
   outline: none;  /* it takes focus on open only to catch Escape */
@@ -1412,7 +1412,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 @media (max-width: 700px) {
   #settings-panel {
     position: fixed;
-    padding: 0 16px 32px;
+    padding: 0 16px 24px;
   }
 }
 
@@ -1482,15 +1482,15 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   flex: 0 0 calc(160px * var(--ui-scale));
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-top: 14px;
+  gap: 1px;
+  padding-top: 10px;
 }
 
 /* Quiet divider between rail groups (Editor / Sync / System). Hidden by
    settings.js whenever adjacent visible sections share a group. */
 .settings-rail-gap {
   height: 1px;
-  margin: 7px 10px;
+  margin: 5px 10px;
   background: #3A4048;
 }
 .settings-rail-gap[hidden] { display: none; }
@@ -1535,14 +1535,14 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 .settings-rail-item {
   display: block;
   width: 100%;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border: 0;
   border-radius: 3px;
   background: transparent;
   color: var(--st-sidebar-label);
   font: inherit;
   font-size: var(--ui-md);
-  line-height: 1.4;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
 }
@@ -1612,10 +1612,10 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
    scroll-padding-top (--ui-top-h). */
 .settings-section {
   position: relative;
-  padding-bottom: calc(36px * var(--ui-scale));
+  padding-bottom: calc(24px * var(--ui-scale));
   scroll-margin-top: var(--settings-jump-h);
 }
-.settings-section:first-child { margin-top: 14px; }
+.settings-section:first-child { margin-top: 10px; }
 
 /* Where the section the reader is in starts and ends: a 2px orange line down
    its left side, in the lane of .settings-main, the same orange as the open
@@ -1627,7 +1627,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   position: absolute;
   left: -14px;
   top: 0;
-  bottom: calc(36px * var(--ui-scale));
+  bottom: calc(24px * var(--ui-scale));
   width: 2px;
   border-radius: 1px;
   background: transparent;
@@ -1651,7 +1651,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   top: calc(var(--ui-top-h) + var(--settings-jump-h));
   z-index: 1;
   margin: 0;
-  padding-bottom: 8px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--st-selection-border);
   background: var(--st-ui-bg);
   font-size: var(--ui-lg);
@@ -1660,9 +1660,9 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   color: var(--st-sidebar-heading);
 }
 
-/* Quiet subgroup heading inside a section (e.g. "Diacritics model (server)"). */
+/* Quiet subgroup heading inside a section. */
 .settings-subhead {
-  margin: 14px 0 2px;
+  margin: 10px 0 2px;
   font-size: var(--ui-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1673,7 +1673,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 /* The panel's scroll-padding clears only the head. Keyboard focus on a
    control also has to clear the narrow jump strip and the pinned heading, so
    each control in a row carries both heights as a scroll margin. */
-.settings-row * { scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 9px); }
+.settings-row * { scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 7px); }
 
 /* Label left, value right. flex-wrap is load-bearing: an age key is 62
    characters, it cannot share a phone row with its label, and without the
@@ -1684,8 +1684,8 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px 16px;
-  padding: 12px 0;
+  gap: 4px 16px;
+  padding: 9px 0;
   border-top: 1px solid var(--st-sidebar-bg);
 }
 
@@ -1706,20 +1706,20 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 /* Compact credit rows at the bottom of App: one top divider before the first
    credit, then tight lines with no rules between them. */
 .settings-note-compact {
-  padding: 2px 0;
+  padding: 1px 0;
   border-top: 0;
   font-size: var(--ui-xs);
 }
 .settings-row:not(.settings-note-compact) + .settings-note-compact {
-  margin-top: 4px;
-  padding-top: 10px;
+  margin-top: 2px;
+  padding-top: 8px;
   border-top: 1px solid var(--st-sidebar-bg);
 }
 
 /* Highlighted callout note (phone local-only guidance, outdated server notice). */
 .settings-callout:not([hidden]) {
-  margin: 8px 0;
-  padding: 9px 12px;
+  margin: 6px 0;
+  padding: 7px 10px;
   border-top: 0;
   border-left: 2px solid var(--st-caret);
   border-radius: 3px;
@@ -1727,10 +1727,14 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   color: var(--st-sidebar-label);
 }
 
-/* Destructive action row (Stop syncing): subtle separation from routine actions. */
+/* Destructive action row (Stop syncing): framed in a red-bordered box instead
+   of a red divider line above it. */
 .settings-row-danger {
-  margin-top: 4px;
-  border-top-color: rgba(236, 95, 103, 0.28);
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--st-danger-border);
+  border-radius: 4px;
+  background: rgba(236, 95, 103, 0.05);
 }
 
 /* min-width: 0 lets the flex column shrink below its content width, or the
@@ -1783,23 +1787,23 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 
 .settings-hint,
 .settings-note {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   max-width: 66ch;
   font-size: var(--ui-sm);
-  line-height: 1.5;
+  line-height: 1.4;
   color: var(--st-gutter-fg);
 }
 
 /* Optional longer explanation revealed by .settings-info-btn. */
 .settings-more {
-  margin: 6px 0 0;
-  padding: 7px 10px;
+  margin: 4px 0 0;
+  padding: 6px 10px;
   max-width: 66ch;
   border-left: 2px solid var(--st-selection-border);
   border-radius: 2px;
   background: var(--st-sidebar-bg);
   font-size: var(--ui-sm);
-  line-height: 1.5;
+  line-height: 1.4;
   color: var(--st-sidebar-label);
 }
 .settings-more[hidden] { display: none; }
@@ -1950,13 +1954,13 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
   gap: 8px 16px;
 }
 .settings-list { display: flex; flex-direction: column; margin-top: 4px; }
-.settings-list-empty { padding: 8px 0 2px; margin: 0; }
+.settings-list-empty { padding: 6px 0 2px; margin: 0; }
 .settings-list-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 10px;
-  padding: 8px 0 8px 10px;
+  gap: 6px 10px;
+  padding: 6px 0 6px 10px;
   border-top: 1px solid var(--st-sidebar-bg);
 }
 .settings-list-text { flex: 1 1 calc(120px * var(--ui-scale)); min-width: 0; }
@@ -2002,7 +2006,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 .settings-grid { border-collapse: collapse; font-size: var(--ui-md); }
 .settings-grid th,
 .settings-grid td {
-  padding: 5px 8px;
+  padding: 4px 8px;
   border-top: 1px solid var(--st-sidebar-bg);
   text-align: center;
   font-weight: normal;
@@ -2086,11 +2090,11 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
 .settings-details-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 8px;
 }
 .settings-key-box {
-  padding: 9px 11px;
+  padding: 7px 10px;
   border-radius: 4px;
   background: var(--st-sidebar-bg);
 }
@@ -2190,7 +2194,7 @@ body.shift-held #open-list .buffer-row:hover .buffer-close {
    the bars and the words of the page stand in no .settings-row (see the
    rule ".settings-row *" for the sum). */
 .spell-page .settings-section * {
-  scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 9px);
+  scroll-margin-top: calc(var(--settings-jump-h) + var(--ui-lg) * 1.4 + 7px);
 }
 
 /* The base rule sizes .settings-input for the right column of a row. Here it

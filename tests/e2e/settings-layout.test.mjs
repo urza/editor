@@ -451,20 +451,73 @@ describe(
         await new Promise((r) => setTimeout(r, 80));
         const panel = document.getElementById("settings-panel");
 
-        // Sync section must only contain server, status (+ inline sync/test), and danger disconnect.
+        // Sync section contains server, status (+ inline sync/test), vLLM model, and danger disconnect box.
         const syncKeys = [...panel.querySelectorAll('[data-section="sync"] .settings-row')]
           .filter((r) => !r.hidden)
           .map((r) => r.dataset.key);
         const hasInlineSyncNow = Boolean(panel.querySelector('[data-key="sync-status"] [data-key="sync-run"]'));
         const hasInlineTest = Boolean(panel.querySelector('[data-key="sync-status"] [data-key="sync-test"]'));
-        const disconnectDanger = panel
-          .querySelector('[data-key="sync-disconnect"] button')
+        const modelVal = panel.querySelector('[data-section="sync"] [data-key="model-state"] .settings-value')?.textContent ?? "";
+        const modelMore = panel.querySelector('[data-section="sync"] [data-key="model-state"] .settings-more')?.textContent ?? "";
+        const editorHasModelState = Boolean(panel.querySelector('[data-section="editor"] [data-key="model-state"]'));
+        const editorHasModelHeading = Boolean(panel.querySelector('[data-section="editor"] [data-key="model-heading"]'));
+        const spellHintEl = panel.querySelector('[data-key="spell-page"] .settings-hint');
+        const spellHintText = spellHintEl?.textContent ?? "";
+        const spellHintLines = spellHintEl
+          ? Math.round(spellHintEl.getBoundingClientRect().height / (parseFloat(getComputedStyle(spellHintEl).lineHeight) || 17))
+          : 0;
+        const disconnectRow = panel.querySelector('[data-key="sync-disconnect"]');
+        const disconnectStyle = getComputedStyle(disconnectRow);
+        const disconnectHasAllBorders =
+          parseFloat(disconnectStyle.borderTopWidth) >= 1 &&
+          parseFloat(disconnectStyle.borderRightWidth) >= 1 &&
+          parseFloat(disconnectStyle.borderBottomWidth) >= 1 &&
+          parseFloat(disconnectStyle.borderLeftWidth) >= 1;
+        const disconnectDanger = disconnectRow
+          .querySelector("button")
           .classList.contains("settings-button-danger");
 
-        // Spaces section: single list (no separate backup list).
+        // Spaces section: single list (no separate backup list), and Sync every open note names the target space.
         const spaceRows = [...panel.querySelectorAll('[data-key="sync-spaces"] .settings-list-row')];
         const spaceNames = spaceRows.map((r) => r.dataset.key);
         const hasBackupRow = Boolean(panel.querySelector('[data-key="sync-backup"]'));
+        const syncAllHintWithDefault = panel.querySelector('[data-key="sync-all"] .settings-hint')?.textContent ?? "";
+        const syncAllHasMore = Boolean(panel.querySelector('[data-key="sync-all"] .settings-more'));
+        const newNotesSelect = panel.querySelector('[data-key="sync-new-notes"] select');
+        newNotesSelect.value = "";
+        newNotesSelect.dispatchEvent(new Event("change"));
+        await new Promise((r) => setTimeout(r, 60));
+        const syncAllHintLocalOnly = panel.querySelector('[data-key="sync-all"] .settings-hint')?.textContent ?? "";
+        newNotesSelect.value = "personal";
+        newNotesSelect.dispatchEvent(new Event("change"));
+        await new Promise((r) => setTimeout(r, 60));
+
+        // Devices section: This device and Invite a device are separate rows.
+        const deviceKeys = [...panel.querySelectorAll('[data-section="devices"] .settings-row')]
+          .filter((r) => !r.hidden)
+          .map((r) => r.dataset.key);
+        const deviceNameHasBtn = Boolean(panel.querySelector('[data-key="device-name"] .settings-button'));
+
+        // Scrolling down visits every section in order without skipping Security or Storage.
+        const visitedSections = [];
+        panel.scrollTop = 0;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const maxScroll = Math.max(0, panel.scrollHeight - panel.clientHeight);
+        for (let y = 0; y <= maxScroll + 40; y += 40) {
+          panel.scrollTop = Math.min(y, maxScroll);
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const active = panel.querySelector('.settings-rail-item[aria-current="true"]')?.firstChild?.textContent?.trim();
+          if (active && visitedSections[visitedSections.length - 1] !== active) visitedSections.push(active);
+        }
+        // Clicking Security in the rail highlights Security (not App).
+        const securityRail = [...panel.querySelectorAll(".settings-rail-item")].find(
+          (b) => b.firstChild.textContent.trim() === "Security"
+        );
+        securityRail.click();
+        await new Promise((r) => setTimeout(r, 60));
+        const activeAfterSecurityClick =
+          panel.querySelector('.settings-rail-item[aria-current="true"]')?.firstChild?.textContent?.trim() ?? "";
+        panel.scrollTop = 0;
 
         // Click personal color swatch in Spaces and confirm Devices grid column updates to match.
         const personalSwatch = panel.querySelector('[data-key="space-personal"] .settings-swatch-button .space-swatch');
@@ -497,9 +550,23 @@ describe(
           syncKeys,
           hasInlineSyncNow,
           hasInlineTest,
+          modelVal,
+          modelMore,
+          editorHasModelState,
+          editorHasModelHeading,
+          spellHintText,
+          spellHintLines,
+          disconnectHasAllBorders,
           disconnectDanger,
           spaceNames,
           hasBackupRow,
+          syncAllHintWithDefault,
+          syncAllHintLocalOnly,
+          syncAllHasMore,
+          deviceKeys,
+          deviceNameHasBtn,
+          visitedSections,
+          activeAfterSecurityClick,
           beforeColor,
           afterSpaceColor,
           gridPersonalColor,
@@ -509,12 +576,36 @@ describe(
         };
       })()`);
 
-      assert.deepEqual(state.syncKeys, ["sync-url", "sync-status", "sync-disconnect"]);
+      assert.deepEqual(state.syncKeys, ["sync-url", "sync-status", "model-state", "sync-disconnect"]);
       assert.equal(state.hasInlineSyncNow, true);
       assert.equal(state.hasInlineTest, true);
+      assert.equal(state.modelVal, "not configured");
+      assert.match(state.modelMore, /VRTTI_MODEL_URL/);
+      assert.match(state.modelMore, /docker run/);
+      assert.equal(state.editorHasModelState, false, "Editor must not hold server model status");
+      assert.equal(state.editorHasModelHeading, false, "Editor must not hold server model subhead");
+      assert.match(state.spellHintText, /Syncs/i);
+      assert.equal(state.spellHintLines, 1, "Spellcheck rules hint must fit on one line on desktop");
+      assert.equal(state.disconnectHasAllBorders, true, "Stop syncing must be framed in a full bordered box");
       assert.equal(state.disconnectDanger, true);
       assert.deepEqual(state.spaceNames, ["space-personal", "space-work"]);
       assert.equal(state.hasBackupRow, false, "duplicate Back up to a folder list must be removed");
+      assert.match(state.syncAllHintWithDefault, /personal/);
+      assert.match(state.syncAllHintLocalOnly, /pick/i);
+      assert.equal(state.syncAllHasMore, false, "Sync every open note must not carry a redundant detail block");
+      assert.deepEqual(state.deviceKeys, ["device-name", "device-invite", "device-grid"]);
+      assert.equal(state.deviceNameHasBtn, false, "Invite button must be on its own row, not on This device");
+      assert.deepEqual(state.visitedSections, [
+        "Appearance",
+        "Editor",
+        "Sync",
+        "Spaces",
+        "Devices",
+        "Security",
+        "Storage",
+        "App",
+      ]);
+      assert.equal(state.activeAfterSecurityClick, "Security");
       assert.notEqual(state.afterSpaceColor, state.beforeColor, "clicking space swatch must cycle its color");
       assert.equal(state.gridPersonalColor, state.afterSpaceColor, "Devices grid color must match Spaces swatch");
       assert.equal(state.gridDevices.length, 2);

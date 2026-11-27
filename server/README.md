@@ -195,7 +195,7 @@ The server checks the model at its start and writes the result to the log, so
 `docker logs vrtti-server` shows a wrong `VRTTI_MODEL_URL` or `VRTTI_MODEL_NAME` right
 after `docker run`. The check asks vLLM for `GET /v1/models` (3-second timeout) and
 looks for the name. `GET /api/model` runs the same check live, at most once per 30
-seconds, and the app shows the result in Settings › Editor › Model. The log gets a new
+seconds, and the app shows the result in Settings › Sync › vLLM model. The log gets a new
 line when the result changes.
 
 ```
