@@ -171,6 +171,7 @@ pub fn run() {
             disk::disk_read_bytes,
             disk::disk_write,
             disk::disk_rename,
+            disk::disk_reveal,
             disk::disk_prune
         ])
         .menu(build_menu)
@@ -317,6 +318,10 @@ fn desktop_marker_js(platform: &str, version: &str, hostname: &str) -> String {
         "platform": platform,
         "version": version,
         "hostname": hostname,
+        // This shell has the command disk_reveal. The page comes from the web
+        // and can be newer than the shell, so it shows "Open location" only
+        // when this says so (app/js/model/capabilities.js, canReveal).
+        "reveal": true,
     });
     format!("window.vrttiDesktop = {desktop};\n{}", debug::RECORDER_JS)
 }

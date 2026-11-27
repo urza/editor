@@ -1108,6 +1108,66 @@ pub async fn disk_rename<R: Runtime>(
     .await
 }
 
+/// Show a file in the file manager of the system: "Open location" in the row
+/// menu of a note. The page names a root id and a relative path, as for every
+/// other command, so it can show only what the user already picked.
+#[tauri::command]
+pub async fn disk_reveal<R: Runtime>(
+    window: WebviewWindow<R>,
+    app: AppHandle<R>,
+    root: String,
+    path: String,
+) -> Result<(), DiskError> {
+    guard(&window)?;
+    blocking(move || {
+        let root = app.state::<Disk>().root(&root)?;
+        let target = resolve(&root, &path, true)?;
+        reveal(&target)
+    })
+    .await
+}
+
+/// Start the file manager on `target`. Windows and macOS select the file in
+/// its folder. Linux has no common "select" call, so the folder opens.
+fn reveal(target: &Path) -> Result<(), DiskError> {
+    use std::process::Command;
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use std::os::windows::process::CommandExt as _;
+        let mut command = Command::new("explorer.exe");
+        // raw_arg, not arg: Explorer reads `/select,"C:\a b\note.md"` and
+        // nothing else. The quoting that `arg` adds for a path with a space
+        // wraps the whole argument, and Explorer then opens Documents. A
+        // Windows path cannot contain a quote, so the format is safe.
+        command.raw_arg(format!("/select,\"{}\"", target.display()));
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg("-R").arg(target);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target.parent().unwrap_or(target));
+        command
+    };
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| DiskError::io(err, target))?;
+    // Reap the helper in the background: a child that nobody waits for stays
+    // a zombie on Unix until the shell exits. Its exit code says nothing
+    // (Explorer returns 1 on success), so it is dropped.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Drop the roots the page no longer references. The page calls this once at
 /// boot with every root id its records still name.
 #[tauri::command]

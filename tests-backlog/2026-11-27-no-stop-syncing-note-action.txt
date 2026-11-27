@@ -1,0 +1,5 @@
+Change: The row menu of a synced note has no "Stop syncing" item any more. A note leaves its space through "Move to trash" and "Restore as local".
+Preconditions: Two devices, A and B, in one space with mode "Open as tabs", connected to one sync server. One synced note with text is open on both devices.
+User Flow: On A, open the row menu of the synced note and read its items. Then select "Move to trash". Open Trash on A, open the menu of the note, and select "Restore as local". Sync B.
+Expected Result: The menu on A shows no "Stop syncing" item (it still shows "Move to <space>" for each other space, "History…", "Close" and "Move to trash"). After the restore, A has the note as a local note in Recent, with no space bar. B has the note in its Trash and not in the space.
+Edge Cases: The Settings panel still has "Stop syncing this device" in the Sync section. A synced file still has "Remove from list", and the other device keeps its copy of that file note as a local note.

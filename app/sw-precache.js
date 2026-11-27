@@ -1,5 +1,5 @@
 self.__PRECACHE = {
-  "version": "3ac5f9e27094",
+  "version": "5f583e7a5bde",
   "spellVersion": "473062271b5f",
   "app": [
     "./",
@@ -50,6 +50,7 @@ self.__PRECACHE = {
     "./js/ui/desktop.js",
     "./js/ui/dialog.js",
     "./js/ui/history.js",
+    "./js/ui/icons.js",
     "./js/ui/menu.js",
     "./js/ui/newbutton.js",
     "./js/ui/pin.js",

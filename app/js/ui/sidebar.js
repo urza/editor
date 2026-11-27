@@ -11,7 +11,7 @@
 
 import { titleOf } from "../model/docs.js";
 import { previewOf, shortTime } from "../model/preview.js";
-import { hasDisk, isDesktop } from "../model/capabilities.js";
+import { canReveal, hasDisk, isDesktop } from "../model/capabilities.js";
 import { daysLeft, RECENT_KEEP, spaceBadge, TRASH_KEEP } from "../model/lifecycle.js";
 import { isNativeHandle } from "../storage/native.js";
 import { register, run } from "../commands/registry.js";
@@ -490,20 +490,33 @@ export function mountSidebar(store, folders, sync, workspaces) {
       // No item at all where the browser cannot rename a file in place: an
       // entry that silently does nothing is worse than a missing one.
       if (store.canRenameFile(record)) {
-        items.push({ label: "Rename file…", act: () => renameAfterPin(record) });
+        items.push({ label: "Rename file…", icon: "rename", act: () => renameAfterPin(record) });
       }
       // The inverse of Save to disk (architecture.md §23), and the way out of
       // a file that is gone for good.
       items.push({
         label: "Unlink file",
-        hint: "The note stays in vrtti, the file stays on disk",
+        icon: "unlink",
+        hint: "Note stays here, file stays on disk",
         act: () => run("file.unlink", record.id),
       });
+      // Only where the device knows the absolute path, which is the desktop
+      // shell: a browser file handle never tells the page where its file is
+      // (architecture.md §17), and an item that copies half a path is worse
+      // than no item.
+      if (store.fullPath(record)) {
+        items.push({ label: "Copy full path", icon: "copyPath", act: () => run("file.copyPath", record.id) });
+        // And only in a shell that has the command (capabilities.js).
+        if (canReveal) {
+          items.push({ label: "Open location", icon: "folder", act: () => run("file.reveal", record.id) });
+        }
+      }
     } else {
-      items.push({ label: "Rename…", act: () => renameAfterPin(record) });
+      items.push({ label: "Rename…", icon: "rename", act: () => renameAfterPin(record) });
       if (record.title) {
         items.push({
           label: "Use first line",
+          icon: "firstLine",
           act: () => run("buffer.rename", { id: record.id, name: "" }),
         });
       }
@@ -511,7 +524,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
 
     // The whole text to the clipboard. On a phone this menu is the one place
     // for it: there is no keyboard for Ctrl+A, Ctrl+C.
-    items.push({ label: "Copy text", act: () => run("doc.copy", record.id) });
+    items.push({ label: "Copy text", icon: "copy", act: () => run("doc.copy", record.id) });
 
     // Czech without diacritics (.work/mixed-spellcheck/plan.md). On a phone
     // this menu is the one place for the commands; from here they work on
@@ -520,12 +533,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
     items.push({ separator: true });
     items.push({
       label: "Add diacritics (local)",
+      icon: "diacritics",
       act: () => run("diacritics.local", record.id),
     });
     if (sync?.hasModel) {
       items.push({
         label: "Add diacritics (vllm)",
-        hint: "Sends the paragraphs to the model of your sync server",
+        icon: "diacritics",
         act: () => run("diacritics.model", record.id),
       });
     }
@@ -535,7 +549,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
     // History is the server's, so it only exists for a document the server
     // knows about.
     if (record.sync && sync?.isConfigured) {
-      items.push({ label: "History…", act: () => run("doc.history", record.id) });
+      items.push({ label: "History…", icon: "history", act: () => run("doc.history", record.id) });
     }
     // Two labels, not one checked item: "Decrypt" says what the click does,
     // and a check mark did not. A synced note stays encrypted (§27), so it
@@ -545,30 +559,31 @@ export function mountSidebar(store, folders, sync, workspaces) {
         items.push(
           store.canEncryptFile(record)
             ? record.enc
-              ? { label: "Decrypt", hint: "Stores the file readable again", act: () => run("doc.decrypt", record.id) }
-              : { label: "Encrypt", hint: "For this device and the recovery key", act: () => run("doc.encrypt", record.id) }
+              ? { label: "Decrypt", icon: "unlock", hint: "Stores the file readable again", act: () => run("doc.decrypt", record.id) }
+              : { label: "Encrypt", icon: "lock", hint: "For this device and the recovery key", act: () => run("doc.encrypt", record.id) }
             : {
                 label: record.enc ? "Decrypt" : "Encrypt",
+                icon: record.enc ? "unlock" : "lock",
                 disabled: true,
-                hint: "Needs Chrome, Edge or the desktop app to rename the file",
+                hint: "Needs Chrome, Edge or the desktop app",
               }
         );
       } else if (record.enc) {
-        items.push({ label: "Decrypt", hint: "Stores the text readable again", act: () => run("doc.decrypt", record.id) });
+        items.push({ label: "Decrypt", icon: "unlock", hint: "Stores the text readable again", act: () => run("doc.decrypt", record.id) });
       }
     }
     items.push(
       record.pin
-        ? { label: "Remove PIN lock", act: () => run("doc.unpin", record.id) }
-        : { label: "Lock with PIN", hint: "The note opens after this device's PIN", act: () => run("doc.pin", record.id) }
+        ? { label: "Remove PIN lock", icon: "pin", act: () => run("doc.unpin", record.id) }
+        : { label: "Lock with PIN", icon: "pin", hint: "The note opens after this device's PIN", act: () => run("doc.pin", record.id) }
     );
     items.push({ separator: true });
     // A row is either a tab of this window (closable) or closed in a drawer;
     // the record itself does not say which (architecture.md §14).
     items.push(
       closable
-        ? { label: "Close", act: () => run("buffer.close", record.id) }
-        : { label: "Reopen", act: () => open(() => run("buffer.reopen", record.id)) }
+        ? { label: "Close", icon: "close", act: () => run("buffer.close", record.id) }
+        : { label: "Reopen", icon: "open", act: () => open(() => run("buffer.reopen", record.id)) }
     );
 
     // Explicit delete / remove action (§28). Files on disk are never deleted;
@@ -579,12 +594,16 @@ export function mountSidebar(store, folders, sync, workspaces) {
         record.file.unwritten
           ? {
               label: "Remove from list",
+              icon: "remove",
               danger: true,
               disabled: true,
-              hint: "Unsaved text is not on disk; reconnect or Unlink file first",
+              // Shorter than the status notice of the same refusal: a menu
+              // hint has one line (.menu-hint in app.css).
+              hint: "Text not on disk. Reconnect or unlink.",
             }
           : {
               label: "Remove from list",
+              icon: "remove",
               danger: true,
               hint: "File stays on disk",
               act: () => run("doc.trash", record.id),
@@ -593,9 +612,14 @@ export function mountSidebar(store, folders, sync, workspaces) {
     } else {
       items.push({
         label: "Move to trash",
+        icon: "trash",
         danger: true,
+        // "for everyone", not "on this device": the deleted mark moves the
+        // note to the Trash of every device in the space, and each keeps it
+        // 30 days (§28). The old "Deletes in … on this device" read as if the
+        // other devices lost the note for good.
         hint: record.sync?.space
-          ? "Deletes in " + record.sync.space + " · 30-day Trash on this device"
+          ? "Trashed for everyone in " + record.sync.space + " · 30 days"
           : "Keeps in Trash for 30 days",
         act: () => run("doc.trash", record.id),
       });
@@ -606,12 +630,13 @@ export function mountSidebar(store, folders, sync, workspaces) {
   /** @param {RemoteStub} stub @returns {import("./menu.js").MenuItem[]} */
   function stubMenu(stub) {
     return [
-      { label: "Open", act: () => open(() => run("remote.open", stub.id)) },
+      { label: "Open", icon: "open", act: () => open(() => run("remote.open", stub.id)) },
       { separator: true },
       {
         label: "Move to trash",
+        icon: "trash",
         danger: true,
-        hint: "Deletes in " + stub.space + " · 30-day Trash on this device",
+        hint: "Trashed for everyone in " + stub.space + " · 30 days",
         act: () => run("remote.trash", stub.id),
       },
     ];
@@ -626,18 +651,22 @@ export function mountSidebar(store, folders, sync, workspaces) {
     if (canRestoreSpace && space) {
       items.push({
         label: "Restore to " + space,
+        icon: "restore",
         swatch: sync?.colorOf(space) || undefined,
-        hint: "Opens in " + space + " and syncs to its devices",
+        // No space name here: the label above has it, and a hint has one line.
+        hint: "Syncs to its devices again",
         act: () => open(() => run("doc.restore", { id: record.id, toSpace: true })),
       });
       items.push({
         label: "Restore as local",
+        icon: "restore",
         hint: "Moves to Recent on this device only",
         act: () => run("doc.restore", { id: record.id, toSpace: false }),
       });
     } else {
       items.push({
         label: "Restore",
+        icon: "restore",
         hint: "Moves to Recent on this device",
         act: () => run("doc.restore", { id: record.id, toSpace: false }),
       });
@@ -645,6 +674,7 @@ export function mountSidebar(store, folders, sync, workspaces) {
     items.push({ separator: true });
     items.push({
       label: "Delete permanently",
+      icon: "trash",
       danger: true,
       hint: "Cannot be undone",
       act: () => run("doc.deleteForever", record.id),
@@ -655,7 +685,8 @@ export function mountSidebar(store, folders, sync, workspaces) {
   /**
    * "Sync to <space>" for an unsynced note, the New notes space first (§27),
    * and for a synced one "Move to <space>" for each other space of this
-   * device, then "Stop syncing" with its space in the hint (§27). The origin
+   * device (§27). A synced note has no "Stop syncing": it leaves its space
+   * through "Move to trash" and "Restore as local". The origin
    * device is the hint of a move: it is what tells a lent note from one of
    * the space's own. Flat items, since the menu has no submenus and two or
    * three spaces need none.
@@ -665,35 +696,30 @@ export function mountSidebar(store, folders, sync, workspaces) {
    */
   function syncItems(record) {
     if (!sync?.isConfigured) {
-      return [{ label: "Sync", disabled: true, hint: "Set up sync in Settings › Sync first" }];
+      return [{ label: "Sync", icon: "sync", disabled: true, hint: "Set up sync in Settings › Sync first" }];
     }
     const mine = sync.mySpaces();
     if (record.sync) {
       const here = record.sync.space ?? "";
       const from = originName(record);
-      return [
-        ...mine
-          .filter((name) => name !== here)
-          .map((name) => ({
-            label: "Move to " + name,
-            swatch: sync.colorOf(name) || undefined,
-            hint: from ? "from " + from : undefined,
-            act: () => run("doc.move", { id: record.id, space: name }),
-          })),
-        {
-          label: "Stop syncing",
-          hint: "in " + here + " · the text stays on every device",
-          act: () => run("doc.sync.off", record.id),
-        },
-      ];
+      return mine
+        .filter((name) => name !== here)
+        .map((name) => ({
+          label: "Move to " + name,
+          icon: "move",
+          swatch: sync.colorOf(name) || undefined,
+          hint: from ? "from " + from : undefined,
+          act: () => run("doc.move", { id: record.id, space: name }),
+        }));
     }
     if (!mine.length) {
-      return [{ label: "Sync", disabled: true, hint: "Make a space in Settings › Spaces first" }];
+      return [{ label: "Sync", icon: "sync", disabled: true, hint: "Make a space in Settings › Spaces first" }];
     }
     // The New notes space first; with Local only, no space is first (§27).
     const first = sync.defaultSpace();
     return [...(first ? [first] : []), ...mine.filter((name) => name !== first)].map((name) => ({
       label: "Sync to " + name,
+      icon: "sync",
       swatch: sync.colorOf(name) || undefined,
       act: () => run("doc.sync.on", { id: record.id, space: name }),
     }));

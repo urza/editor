@@ -20,6 +20,7 @@ fn main() {
             "disk_read_bytes",
             "disk_write",
             "disk_rename",
+            "disk_reveal",
             "disk_prune",
         ]),
     ))

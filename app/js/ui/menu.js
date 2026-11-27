@@ -8,6 +8,7 @@
 //
 // One menu exists at a time. Opening a second one closes the first.
 
+import { menuIcon } from "./icons.js";
 import { watchBack } from "./shell.js";
 
 /**
@@ -19,6 +20,7 @@ import { watchBack } from "./shell.js";
  * @property {{ label: string, act: () => any }} [headerAction]  Optional button on the heading row.
  * @property {string} [label]
  * @property {string} [hint]        Small second line, e.g. why the item is off.
+ * @property {string} [icon]        A name from ui/icons.js, drawn before the label.
  * @property {boolean} [checked]    Present (true or false) means a checkable item.
  * @property {boolean} [disabled]
  * @property {boolean} [danger]     Destructive item styled in danger red.
@@ -121,6 +123,10 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
   const getItems = typeof itemsOrFn === "function" ? itemsOrFn : () => itemsOrFn;
 
   function renderItems() {
+    // The column of a menu with icons is as wide as an icon, also on its
+    // items that have none, so every label still starts at the same x.
+    const items = getItems();
+    el.classList.toggle("has-icons", items.some((item) => Boolean(item.icon)));
     // Re-rendering a `stayOpen` checklist replaces the focused button; restore
     // focus to the same item index afterwards so Enter/Space/Arrows keep working.
     const priorButtons = enabledItems(el);
@@ -129,7 +135,7 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
         ? priorButtons.indexOf(document.activeElement)
         : -1;
     el.replaceChildren();
-    for (const item of getItems()) {
+    for (const item of items) {
       if (item.separator) {
         const line = document.createElement("div");
         line.className = "menu-sep";
@@ -230,6 +236,12 @@ export function openMenu(anchor, itemsOrFn, { at, stayOpen = false } = {}) {
       // The empty span stays on plain items: it holds the column, so every
       // label starts at the same x.
       check.textContent = item.checked ? "✓" : "";
+      // An icon takes the same column as the check mark, so a menu needs no
+      // second gutter. No menu has both on one item.
+      if (item.icon && !checkable) {
+        check.classList.add("menu-icon-slot");
+        check.appendChild(menuIcon(item.icon));
+      }
       button.appendChild(check);
 
       const text = document.createElement("span");

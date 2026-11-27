@@ -22,6 +22,13 @@ export const desktopHostname =
     ? /** @type {any} */ (window).vrttiDesktop.hostname.trim()
     : "";
 
+// "Open location" in the row menu needs the shell command `disk_reveal`. The
+// page updates from the web and the shell from its own installer, so a new
+// page can run in a shell that predates the command. The shell says that it
+// has it; the menu shows no item otherwise.
+export const canReveal =
+  isDesktop && /** @type {any} */ (window).vrttiDesktop?.reveal === true;
+
 // "Can this device open files and folders at all?" Every gate about disk asks
 // this one, because the shell reaches disk through Rust and needs no browser
 // API (architecture.md §17). hasFileSystemAccess stays the narrower fact, and

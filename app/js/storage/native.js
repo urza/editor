@@ -366,6 +366,16 @@ export function reviveHandle(value) {
 }
 
 /**
+ * Show a file in the file manager of the system, selected where the system
+ * can do that. The shell resolves the path itself from the root id, like
+ * every other disk command: the page sends no absolute path.
+ * @param {{root: string, path: string}} handle A native file handle.
+ */
+export async function reveal(handle) {
+  await call("disk_reveal", { root: handle.root, path: handle.path });
+}
+
+/**
  * @param {string} command @param {object} args
  * @returns {Promise<Root>} Rejects with AbortError when the user cancels, the
  *   name main.js already reads as "the user closed the dialog".

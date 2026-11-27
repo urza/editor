@@ -1341,26 +1341,13 @@ async function start() {
         if (answer !== "yes") return false;
       }
       try {
-        await store.setSync(target, true, into);
+        await store.attachSync(target, into);
         sidebar?.unhideFor(store.get(target));
       } catch (err) {
         console.log("[vrtti] sync on failed", err);
         statusbar.notice("sync failed");
         return false;
       }
-      return true;
-    },
-  });
-  register({
-    id: "doc.sync.off",
-    title: "Stop syncing this note",
-    // The record keeps its text and pushes a `detached` tombstone, so the
-    // other devices keep their copies too (architecture.md §3).
-    run: async (id) => {
-      const target = id ?? store.activeId;
-      if (!target) return false;
-      await store.setSync(target, false);
-      sidebar?.unhideFor(store.get(target));
       return true;
     },
   });
@@ -1486,7 +1473,7 @@ async function start() {
       const space = sync.defaultSpace() ?? (await pickSpace("Sync every open note to"));
       if (!space) return false;
       for (const record of store.openBuffers()) {
-        if (!record.sync && !record.file) await store.setSync(record.id, true, space).catch(() => {});
+        if (!record.sync && !record.file) await store.attachSync(record.id, space).catch(() => {});
       }
       return true;
     },
@@ -1701,6 +1688,43 @@ async function start() {
       id: "file.reconnect",
       title: "Reconnect file",
       run: (id) => store.reconnect(id),
+    });
+    register({
+      id: "file.copyPath",
+      title: "Copy full path",
+      // The absolute path of the note's file, for a terminal or another
+      // program. The store has it only in the desktop shell (fullPath).
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        const path = store.fullPath(target ? store.get(target) : undefined);
+        if (!path) return false;
+        try {
+          await navigator.clipboard.writeText(path);
+        } catch (err) {
+          console.log("[vrtti] copy path failed", err);
+          statusbar.notice("copy failed");
+          return false;
+        }
+        statusbar.notice("path copied");
+        return true;
+      },
+    });
+    register({
+      id: "file.reveal",
+      title: "Open location",
+      // The folder of the note's file in the file manager of the system
+      // (desktop shell, command disk_reveal).
+      run: async (id) => {
+        const target = id ?? store.activeId;
+        try {
+          return await store.revealFile(target ? store.get(target) : undefined);
+        } catch (err) {
+          // The file or its folder is gone, or the system has no file manager.
+          console.log("[vrtti] open location failed", err);
+          statusbar.notice("cannot open the location");
+          return false;
+        }
+      },
     });
     register({
       id: "file.unlink",
