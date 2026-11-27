@@ -1,6 +1,6 @@
 # vrtti sync server
 
-A thin sync backend for the vrtti editor. ASP.NET Core minimal API on .NET 10, SQLite,
+A thin sync backend for the vrtti editor. ASP.NET Core minimal API on .NET 11, SQLite,
 raw SQL. The server stores age-encrypted content and a small `meta` object. It cannot
 read a note: it only checks that the content is an age file and that `meta` holds no
 readable fields.

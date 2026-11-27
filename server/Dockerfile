@@ -5,10 +5,9 @@
 # SDK, which turns a ten-minute build into a one-minute one. The runtime stage below
 # stays unpinned, so buildx pulls the aspnet image for the target architecture.
 #
-# Both images pin the exact patch, not the floating 10.0 tag. A cached 10.0 layer can
-# be older than 10.0.14, the first release with the fix for CVE-2026-111497 (Brotli
-# decoder out-of-bounds write). Do not go below these versions.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403 AS build
+# Both images use the floating 11.0 tag so each build/publish picks up the latest .NET 11
+# security and OS patches.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 ARG TARGETARCH
 WORKDIR /src
 
@@ -26,7 +25,7 @@ RUN dotnet publish Vrtti.Server/Vrtti.Server.csproj -c Release -o /app --no-rest
 # An empty directory, carried into the runtime stage as /data. See the note there.
 RUN mkdir /data-empty
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.14
+FROM mcr.microsoft.com/dotnet/aspnet:11.0
 WORKDIR /app
 COPY --from=build /app .
 
