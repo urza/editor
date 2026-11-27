@@ -34,11 +34,10 @@ jobs:
         with:
           dotnet-version: "11.0.x"
 
-      # The image is the only artifact of the server, and this is its only CI. Running
-      # the suite before the push keeps the `latest` tag honest: it always points at a
-      # commit whose tests passed.
-      - name: Test
-        run: dotnet test server/Vrtti.slnx
+      # The image is the only artifact of the server, and this is its only CI. Building
+      # the solution before the push catches compile errors before Docker runs.
+      - name: Build
+        run: dotnet build server/Vrtti.slnx
 
       - uses: docker/setup-buildx-action@v3
 

@@ -31,6 +31,47 @@ Comments carry the reasoning the code can't show. Specifically:
 - **Guard invariants where they'd be broken**: when a line looks removable or wrong but is deliberate (a `pointer-events: none`, a static class attribute JS owns, an inverse filename rule), say so *at that line* — that's exactly where a future cleanup would silently break it.
 - **Keep it at the code**, not only in docs or commit messages — the next reader has the file open, nothing else.
 
+## Testing & Verification Rules
+
+These rules apply to dev sessions. A session that runs as the **Test Implementer** follows its own prompt for the write, repair, and run of tests.
+
+### 1. Fast Dev Loop (Default)
+- **Do NOT run existing test suites** (unit, integration, or E2E) during normal development unless explicitly asked.
+- **Do NOT write or modify automated tests** during normal feature or bug-fix work unless explicitly asked.
+  - Exception: you may make mechanical edits to tests so the build stays green (renames, changed signatures). Do not change what a test asserts.
+- Verify **only** what you changed:
+  - Run fast static checks (compile, build, typecheck).
+  - Run the app/code and verify your change directly.
+  - For non-trivial web UI changes, use **Playwright** to inspect the running UI (verify the flow works and check for console/network errors). This is for live verification only. Do not commit permanent Playwright test files during the dev loop. Skip Playwright for trivial edits (copy, minor styling, etc.).
+  - For apps without a web UI, use the closest equivalent or run the app directly.
+- Always enforce explicit timeouts on any verification command so nothing can hang indefinitely.
+- In your reply, state what you verified and how. State plainly what you did not verify.
+- Once verified (and after adding any `tests-backlog/` proposal per §2), commit + push or open a PR according to the active workflow.
+
+### 2. Proposing Tests (`tests-backlog/`)
+Instead of writing tests in the dev loop, leave a short black-box test proposal for the standalone **Test Implementer** to automate later as an E2E test.
+
+- **When to log:** Only for a new user-visible feature, changed behavior in an existing user flow, or a fix for a bug the user reported. **Skip** trivial changes (copy edits, minor styling tweaks, pure internal refactors with no behavior change).
+- **Where & naming:** Create one new file per proposal in `tests-backlog/` named `yyyy-MM-dd-slug-name.txt` (e.g. `tests-backlog/2026-11-27-checkout-discount-code.txt`). Keep proposals in repo files only. Do not open GitHub issues for them.
+- **Commit it with the change:** The proposal goes in the same commit as the code it describes, so the history links the two.
+- **Do not touch other proposals:** Do not edit or delete proposals from other sessions. Only the Test Implementer removes files from `tests-backlog/`.
+- **Keep it black-box and brief (no internal function names or mock details):**
+
+```text
+Change: <1-line summary of what changed>
+Preconditions: <starting state / user role / seed data needed>
+User Flow: <step-by-step real user actions in the app>
+Expected Result: <verifiable visible UI state, persisted data, or API effect>
+Edge Cases: <optional; a specific edge or failure case worth a check>
+Bug Repro: <bug fixes only; the steps that showed the bug before the fix>
+```
+
+### 3. Running the Test Suite (On Demand Only)
+- Only run the automated test suite when explicitly asked by the user.
+- Always enforce hard timeouts (both per-test and overall command timeout) so a stuck test or infinite loop fails fast instead of hanging.
+- **Reporting:** In an interactive session, report results in the reply. In an unattended run, file one GitHub issue per failed flow (check open issues first and comment instead of opening a duplicate).
+- **On failure:** Report the failure. Do not start a repair of the test or the code unless the user asks.
+
 # Model economy: save Fable tokens
 
 **Condition: these rules apply only when the main agent runs on Fable.**
@@ -58,9 +99,10 @@ Use `model: "sonnet"` or `model: "haiku"` when the task is simple and mechanical
 - **Code exploration.** Use the `Explore` agent for searches across the
   codebase. Do not read many files into the main context. Read a file
   directly only when you know the exact file and the exact lines.
-- **Verification.** Send test runs, Playwright/browser checks, build checks,
-  and bug reproduction to a `general-purpose` agent on Opus. Ask for a
-  pass/fail verdict plus only the relevant failure output.
+- **Verification.** Send Playwright/browser checks, build checks, bug
+  reproduction, and (only when explicitly asked) test runs to a
+  `general-purpose` agent on Opus. Ask for a pass/fail verdict plus only
+  the relevant failure output.
 - **Mechanical changes at scale.** Delegate an edit only when it is
   repetitive and fully specified: renames, migrations, and the same
   pattern applied across many files. If the edit needs judgment,
